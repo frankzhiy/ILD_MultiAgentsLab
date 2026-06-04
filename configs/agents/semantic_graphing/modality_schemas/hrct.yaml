@@ -1,0 +1,56 @@
+name: HRCT Pattern-Centered Graph Schema
+source_type: hrct
+graph_construction_strategy: pattern_centered
+graph_center: radiological_pattern
+primary_questions:
+  - What imaging findings are present, absent, or uncertain?
+  - Where are the findings distributed anatomically?
+  - Do the findings combine into a fibrotic pattern?
+  - Do they support UIP, probable UIP, NSIP, HP, OP, sarcoidosis, or an alternative diagnosis?
+allowed_node_types:
+  - imaging_finding
+  - anatomical_location
+  - distribution_pattern
+  - radiological_pattern
+  - diagnostic_hypothesis
+  - imaging_absence
+  - imaging_uncertainty
+allowed_edge_types:
+  - located_in
+  - has_distribution
+  - co_occurs_with
+  - contributes_to
+  - supports
+  - argues_against
+  - suggests_pattern
+  - excludes_or_reduces_likelihood
+required_node_attributes:
+  - status
+  - certainty
+  - evidence
+  - temporality
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - honeycombing status
+  - traction bronchiectasis status
+  - distribution by axial and craniocaudal location
+  - ground-glass extent
+  - nodules or mosaic attenuation or air trapping
+  - comparison with prior HRCT
+construction_rules:
+  - Build findings first, then attach location/distribution, then form pattern nodes.
+  - Do not diagnose IPF from HRCT alone; connect findings to radiological patterns or hypotheses.
+  - Explicitly preserve absent and uncertain findings.
+  - Alternative-diagnosis features should argue against typical UIP when evidence supports that relation.
+diagnostic_targets:
+  - UIP pattern
+  - probable UIP pattern
+  - indeterminate for UIP
+  - alternative diagnosis pattern
+  - NSIP pattern
+  - HP pattern
+  - OP pattern
+

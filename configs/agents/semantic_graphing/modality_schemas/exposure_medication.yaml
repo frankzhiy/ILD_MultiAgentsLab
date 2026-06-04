@@ -1,0 +1,52 @@
+name: Exposure and Medication Causal-Exposure Graph Schema
+source_type: exposure_medication
+graph_construction_strategy: causal_exposure
+graph_center: candidate_causal_chain
+primary_questions:
+  - Which environmental, occupational, hobby, home, medication, radiation, or toxic exposures are present or absent?
+  - What intensity, duration, latency, and temporal relationship are described?
+  - Was removal or discontinuation associated with improvement?
+allowed_node_types:
+  - exposure
+  - medication
+  - exposure_context
+  - latency_interval
+  - dechallenge_response
+  - causal_risk
+  - diagnostic_hypothesis
+allowed_edge_types:
+  - has_duration
+  - has_intensity
+  - has_latency
+  - temporally_precedes
+  - supports
+  - argues_against
+  - removed_or_discontinued
+  - improves_after
+required_node_attributes:
+  - status
+  - certainty
+  - temporality
+  - evidence
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - bird exposure
+  - mold or water damage exposure
+  - occupational dust exposure
+  - medication exposure
+  - radiation history
+  - exposure duration and timing
+  - response after avoidance or discontinuation
+construction_rules:
+  - Model a candidate causal chain only when timing is available or can be explicitly marked unknown.
+  - Keep absent exposures as structured negatives when stated.
+  - Do not overstate causality from exposure presence alone.
+diagnostic_targets:
+  - hypersensitivity pneumonitis hypothesis
+  - drug-induced ILD hypothesis
+  - pneumoconiosis or occupational ILD hypothesis
+  - radiation-induced ILD hypothesis
+

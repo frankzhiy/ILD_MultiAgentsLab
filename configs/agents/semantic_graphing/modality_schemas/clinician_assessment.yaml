@@ -1,0 +1,47 @@
+name: Clinician Assessment Provenance Graph Schema
+source_type: clinician_assessment
+graph_construction_strategy: assessment_provenance
+graph_center: clinician_assessment
+primary_questions:
+  - Which statements are primary facts and which are clinician interpretations?
+  - What evidence does the clinician cite?
+  - What diagnosis, differential, plan, or uncertainty is proposed?
+allowed_node_types:
+  - clinician_assessment
+  - cited_evidence
+  - diagnostic_hypothesis
+  - management_plan
+  - uncertainty
+  - follow_up_recommendation
+allowed_edge_types:
+  - cites
+  - proposes
+  - supports
+  - argues_against
+  - recommends
+  - requires_clarification
+required_node_attributes:
+  - status
+  - certainty
+  - evidence
+  - assessor_role
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - whether assessment cites HRCT
+  - whether assessment cites exposure history
+  - whether assessment cites autoimmune evaluation
+  - whether MDD conclusion is present
+construction_rules:
+  - Do not treat clinician interpretation as raw clinical fact.
+  - Preserve certainty language such as possible, probable, likely, favors, cannot exclude.
+  - Link assessments to cited evidence when explicitly stated.
+diagnostic_targets:
+  - IPF hypothesis
+  - CTD-ILD hypothesis
+  - HP hypothesis
+  - unclassifiable ILD
+  - MDD recommendation
+

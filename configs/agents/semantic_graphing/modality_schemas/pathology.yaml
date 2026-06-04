@@ -1,0 +1,49 @@
+name: Pathology Morphology-Pattern Graph Schema
+source_type: pathology
+graph_construction_strategy: morphology_pattern
+graph_center: histopathologic_pattern
+primary_questions:
+  - What histopathologic findings are present, absent, or uncertain?
+  - Do findings form UIP, NSIP, OP, HP, vasculitis, infection, malignancy, or another pattern?
+  - Is the sample location and adequacy clear?
+allowed_node_types:
+  - histopathologic_finding
+  - specimen
+  - sampling_quality
+  - histopathologic_pattern
+  - diagnostic_hypothesis
+allowed_edge_types:
+  - observed_in
+  - co_occurs_with
+  - contributes_to
+  - supports
+  - argues_against
+  - limited_by
+required_node_attributes:
+  - status
+  - certainty
+  - temporality
+  - evidence
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - biopsy type
+  - sampled lung region
+  - sample adequacy
+  - temporal heterogeneity
+  - fibroblastic foci
+  - granulomas
+  - organizing pneumonia
+construction_rules:
+  - Build histologic finding nodes before pattern nodes.
+  - Sampling limitations should reduce certainty rather than erase findings.
+  - Do not convert a pathologist's differential into raw findings.
+diagnostic_targets:
+  - UIP histopathologic pattern
+  - NSIP histopathologic pattern
+  - OP pattern
+  - HP pattern
+  - granulomatous disease
+

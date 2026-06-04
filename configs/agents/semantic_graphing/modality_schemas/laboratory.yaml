@@ -1,0 +1,50 @@
+name: Laboratory Evidence-to-Phenotype Graph Schema
+source_type: laboratory
+graph_construction_strategy: evidence_to_phenotype
+graph_center: immune_or_alternative_phenotype
+primary_questions:
+  - Which autoimmune, inflammatory, infectious, allergic, or malignancy-related labs are present?
+  - Which results are positive, negative, borderline, or missing?
+  - What phenotype or differential diagnosis do they support or argue against?
+allowed_node_types:
+  - lab_test
+  - lab_result
+  - immune_phenotype
+  - inflammatory_phenotype
+  - infection_evidence
+  - diagnostic_hypothesis
+allowed_edge_types:
+  - has_result
+  - indicates
+  - supports
+  - argues_against
+  - requires_follow_up
+required_node_attributes:
+  - status
+  - value
+  - reference_range
+  - certainty
+  - evidence
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - ANA
+  - RF
+  - anti-CCP
+  - myositis antibody panel
+  - ENA panel
+  - inflammatory markers
+  - eosinophil count
+construction_rules:
+  - Separate raw lab results from inferred immune or inflammatory phenotypes.
+  - Negative autoimmune tests should be preserved when explicitly stated.
+  - A positive nonspecific test should weakly support phenotype unless a disease-specific antibody is present.
+diagnostic_targets:
+  - autoimmune phenotype
+  - CTD-ILD hypothesis
+  - RA-ILD hypothesis
+  - myositis-associated ILD hypothesis
+  - infection-related alternative diagnosis
+

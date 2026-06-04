@@ -1,0 +1,12 @@
+agent_name: modality_aware_ild_semantic_graph_agent
+version: 0.1.0
+default_model_env: CHATANYWHERE_MODEL
+default_model: gpt-5.5
+base_url_env: CHATANYWHERE_BASE_URL
+api_key_env: CHATANYWHERE_API_KEY
+temperature: 0.1
+max_tokens: 6000
+strict_json: true
+classification_prompt: src/prompts/semantic_graphing/document_classification.md
+subgraph_prompt: src/prompts/semantic_graphing/subgraph_construction.md
+modality_schema_dir: configs/agents/semantic_graphing/modality_schemas

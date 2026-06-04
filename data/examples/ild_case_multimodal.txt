@@ -1,0 +1,24 @@
+Patient is a 67-year-old man with progressive exertional dyspnea and dry cough for two years.
+He denies fever, hemoptysis, Raynaud phenomenon, inflammatory arthritis, sicca symptoms, and skin
+rash. He is a former smoker with 25 pack-years. No known family history of pulmonary fibrosis.
+
+Exposure and medication history: He kept pigeons at home for more than ten years but stopped six
+months ago. He reports intermittent mold exposure in a damp basement. No amiodarone, nitrofurantoin,
+immune checkpoint inhibitor, or thoracic radiation exposure is reported.
+
+HRCT chest: Bilateral lower-lobe and subpleural reticulation is present with traction bronchiectasis.
+There is no definite honeycombing. Mild patchy ground-glass opacity is present but is not the dominant
+abnormality. No profuse micronodules, lobular air trapping, or upper-lobe predominance is described.
+The radiologist's impression is probable UIP pattern.
+
+Pulmonary function tests from 2026-02-12: FVC is 62% predicted, TLC is 68% predicted, and DLCO is
+41% predicted. Compared with testing one year earlier, FVC declined from 74% to 62% predicted.
+
+Laboratory tests: ANA is negative, RF is negative, anti-CCP is negative, and myositis antibody panel
+is negative. CRP is mildly elevated. Peripheral eosinophil count is normal.
+
+Clinician assessment: The pulmonologist notes fibrotic ILD with probable UIP pattern. Given the bird
+and mold exposure history, chronic hypersensitivity pneumonitis remains in the differential, although
+the HRCT description lacks classic air trapping or centrilobular nodules. IPF is also considered.
+Multidisciplinary discussion is recommended.
+

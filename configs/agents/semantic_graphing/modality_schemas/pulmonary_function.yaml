@@ -1,0 +1,51 @@
+name: Pulmonary Function Physiology-Trend Graph Schema
+source_type: pulmonary_function
+graph_construction_strategy: physiology_trend
+graph_center: physiological_impairment
+primary_questions:
+  - What PFT measurements are reported?
+  - Do they indicate restriction, obstruction, mixed impairment, or impaired gas transfer?
+  - What is the severity?
+  - Is there longitudinal decline suggesting progression?
+allowed_node_types:
+  - pulmonary_function_measurement
+  - physiological_impairment
+  - severity_grade
+  - longitudinal_trend
+  - functional_phenotype
+  - diagnostic_hypothesis
+allowed_edge_types:
+  - indicates
+  - has_severity
+  - has_trend
+  - supports
+  - argues_against
+  - compares_with_prior
+required_node_attributes:
+  - value
+  - unit
+  - percent_predicted
+  - status
+  - certainty
+  - evidence
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - FVC percent predicted
+  - TLC percent predicted
+  - DLCO percent predicted
+  - test date
+  - prior PFT comparison
+  - oxygen requirement or six-minute walk if mentioned elsewhere
+construction_rules:
+  - Convert isolated numbers into measurement nodes, then infer impairment nodes.
+  - Longitudinal decline should be represented as a trend node, not only as an attribute.
+  - Do not infer progression unless a time interval or comparison is provided.
+diagnostic_targets:
+  - restrictive ventilatory defect
+  - impaired gas transfer
+  - progressive pulmonary fibrosis
+  - clinically significant ILD
+

@@ -1,0 +1,52 @@
+name: Clinical History Timeline-Risk-Factor Graph Schema
+source_type: history
+graph_construction_strategy: timeline_risk_factor
+graph_center: disease_course
+primary_questions:
+  - What respiratory symptoms are present and how did they evolve?
+  - Is the course acute, subacute, chronic, progressive, stable, or improving?
+  - Are there systemic autoimmune features?
+  - Are there infection, cardiac, malignancy, or aspiration mimics?
+allowed_node_types:
+  - symptom
+  - disease_course
+  - autoimmune_feature
+  - comorbidity
+  - risk_factor
+  - clinical_phenotype
+  - diagnostic_hypothesis
+allowed_edge_types:
+  - has_duration
+  - has_trajectory
+  - temporally_precedes
+  - co_occurs_with
+  - supports
+  - argues_against
+  - suggests_phenotype
+required_node_attributes:
+  - status
+  - certainty
+  - temporality
+  - evidence
+required_edge_attributes:
+  - certainty
+  - evidence
+  - polarity
+key_missingness_checks:
+  - symptom onset and duration
+  - disease trajectory
+  - autoimmune symptoms
+  - family history
+  - smoking history
+  - infection or cardiac mimic symptoms
+construction_rules:
+  - Treat temporal course as a central graph object rather than a free-text attribute only.
+  - Link symptoms and systemic features to clinical phenotypes or diagnostic hypotheses only when supported.
+  - Preserve absent autoimmune features because they affect CTD-ILD reasoning.
+diagnostic_targets:
+  - chronic fibrosing ILD phenotype
+  - acute or subacute ILD phenotype
+  - CTD-ILD hypothesis
+  - infection mimic
+  - cardiac mimic
+
