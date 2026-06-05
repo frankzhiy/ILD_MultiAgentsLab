@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ class ChatAnywhereClient(LLMClient):
     api_key: str
     model: str = "gpt-5.5"
     base_url: str = "https://api.chatanywhere.tech/v1"
-    timeout_seconds: int = 120
+    timeout_seconds: int = 300
     response_format_json: bool = True
 
     @classmethod
@@ -24,6 +25,7 @@ class ChatAnywhereClient(LLMClient):
             api_key=api_key,
             model=os.environ.get("CHATANYWHERE_MODEL", "gpt-5.5"),
             base_url=os.environ.get("CHATANYWHERE_BASE_URL", "https://api.chatanywhere.tech/v1"),
+            timeout_seconds=int(os.environ.get("CHATANYWHERE_TIMEOUT_SECONDS", "300")),
         )
 
     def complete(
@@ -65,6 +67,14 @@ class ChatAnywhereClient(LLMClient):
             raise RuntimeError(f"ChatAnywhere HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"ChatAnywhere request failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"ChatAnywhere request timed out after {self.timeout_seconds}s"
+            ) from exc
+        except socket.timeout as exc:
+            raise RuntimeError(
+                f"ChatAnywhere request timed out after {self.timeout_seconds}s"
+            ) from exc
 
         try:
             content = raw["choices"][0]["message"]["content"]

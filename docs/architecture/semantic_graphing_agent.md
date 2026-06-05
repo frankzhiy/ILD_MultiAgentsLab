@@ -1,43 +1,35 @@
 # Semantic Graphing Agent Architecture
 
-The first agent is a modality-aware ILD semantic graph construction agent.
+The first agent is an ILD clinical discourse + graph unit extraction agent.
 
 ## Research Objective
 
-Transform unstructured clinical narratives into an evidence-grounded, patient-specific semantic
-graph for downstream diagnostic reasoning agents.
+Transform unstructured clinical narratives into evidence-grounded, patient-specific graph units
+for downstream diagnostic reasoning agents.
 
 ## Workflow
 
 ```text
 free-text input
-  -> source-aware segmentation and classification
-  -> modality graph construction schema selection
-  -> local semantic subgraph construction
+  -> clinical discourse segmentation
+  -> discourse unit labeling with contained source types
+  -> graph unit extraction (one clinical event nucleus per unit)
   -> machine JSON and human-readable HTML report
 ```
 
-The current runnable script is intentionally stopped at Step 2 so the classification result can be
-manually inspected before graph construction is enabled.
+The runnable script produces discourse segments and graph units for manual inspection before
+downstream node/edge graph construction is enabled.
 
 ## Core Design Choice
 
-The agent has three schema layers:
+The pipeline separates three conceptual layers:
 
-1. Document type schema: identifies whether text is history, HRCT, PFT, labs, pathology,
-   exposure/medication, or clinician assessment.
-2. Concept schema: constrains node types, edge types, and required attributes.
-3. Graph construction schema: defines the graph center and construction logic for each modality.
-
-Examples:
-
-- HRCT: pattern-centered graph.
-- History: timeline-risk-factor graph.
-- Pulmonary function: physiology-trend graph.
-- Laboratory: evidence-to-phenotype graph.
-- Pathology: morphology-pattern graph.
-- Exposure/medication: causal-exposure graph.
-- Clinician assessment: assessment-provenance graph.
+1. Segment layer: a complete clinical discourse unit / episode or a standalone report-like unit.
+2. Graph unit layer: one clinical event nucleus inside a segment (a single onset / flare / visit /
+   exam / treatment), labeled with its own `source_type`. Modifiers such as time anchors, symptom
+   attributes, and patient attitude stay inside their event nucleus and never become separate units.
+3. Node/edge layer: finding-level decomposition, performed by downstream graph construction (not
+   part of this agent).
 
 ## Manual Run
 
@@ -56,8 +48,8 @@ choose one interactively in the CLI.
 
 Current outputs:
 
-- `classification.json`
-- `classification_report.html`
+- `discourse_segments.json`
+- `discourse_segmentation_report.html`
 - `trace.json`
 - `timing.json`
 

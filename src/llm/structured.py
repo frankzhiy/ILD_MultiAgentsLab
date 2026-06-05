@@ -1,4 +1,4 @@
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -27,11 +27,13 @@ class StructuredLLMGenerator:
         temperature: float,
         max_tokens: int,
         max_attempts: int = 3,
+        response_format_mode: str = "json_object",
     ) -> None:
         self.llm = llm
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_attempts = max_attempts
+        self.response_format_mode = response_format_mode
 
     def generate(
         self,
@@ -40,13 +42,14 @@ class StructuredLLMGenerator:
         schema_name: str,
         system_prompt: str,
         user_prompt: str,
+        extra_validation: Callable[[T], T] | None = None,
     ) -> tuple[T, dict]:
         messages = [
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
         attempts: list[dict] = []
-        response_format = json_schema_response_format(schema_model, schema_name)
+        response_format = self._initial_response_format(schema_model, schema_name)
 
         last_error = None
         for attempt_index in range(1, self.max_attempts + 1):
@@ -79,6 +82,8 @@ class StructuredLLMGenerator:
             try:
                 parsed = parse_llm_json(response.content)
                 validated = schema_model.model_validate(parsed)
+                if extra_validation:
+                    validated = extra_validation(validated)
                 attempt_record["validated"] = True
                 attempts.append(attempt_record)
                 return validated, {"prompt": user_prompt, "attempts": attempts}
@@ -107,3 +112,10 @@ class StructuredLLMGenerator:
         raise RuntimeError(
             f"Structured LLM generation failed after {self.max_attempts} attempts: {last_error}"
         )
+
+    def _initial_response_format(self, schema_model: type[BaseModel], schema_name: str) -> dict:
+        if self.response_format_mode == "json_schema":
+            return json_schema_response_format(schema_model, schema_name)
+        if self.response_format_mode == "json_object":
+            return {"type": "json_object"}
+        raise ValueError(f"Unsupported response_format_mode: {self.response_format_mode}")

@@ -2,13 +2,13 @@
 
 Research-oriented multi-agent framework for interstitial lung disease diagnostic reasoning.
 
-The first implemented component is a modality-aware semantic graph construction agent:
+The first implemented component is a clinical discourse + graph unit extraction agent:
 
 ```text
 free-text clinical narrative
-  -> document/segment type classification
-  -> modality-specific graph construction schema activation
-  -> local semantic subgraph construction
+  -> clinical discourse segmentation
+  -> discourse unit labeling with contained source types
+  -> graph unit extraction (one clinical event nucleus per unit)
   -> HTML research report for manual inspection
 ```
 
@@ -25,7 +25,7 @@ export CHATANYWHERE_BASE_URL="https://api.chatanywhere.tech/v1"
 export CHATANYWHERE_MODEL="gpt-5.5"
 ```
 
-The current manual script runs Step 2 only: source-aware text segmentation and classification.
+The current manual script runs clinical discourse segmentation and graph unit extraction.
 
 ```bash
 python3 scripts/run/run_semantic_graph_agent.py \
@@ -41,7 +41,7 @@ python3 scripts/run/run_semantic_graph_agent.py
 
 The script writes a timestamped run folder under `outputs/runs/`, including:
 
-- `classification.json`
-- `classification_report.html`
+- `discourse_segments.json`
+- `discourse_segmentation_report.html`
 - `trace.json`
 - `timing.json`

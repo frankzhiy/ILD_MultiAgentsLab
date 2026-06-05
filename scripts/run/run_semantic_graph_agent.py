@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -8,13 +10,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+except ImportError:  # pragma: no cover - fallback for minimal environments
+    Console = None
+    Progress = None
+    SpinnerColumn = None
+    TextColumn = None
+    TimeElapsedColumn = None
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent  # noqa: E402
 from src.llm.chatanywhere_client import ChatAnywhereClient  # noqa: E402
-from src.reporting.html_report import render_classification_report  # noqa: E402
+from src.reporting.html_report import render_report  # noqa: E402
+from src.utils.config import load_yaml  # noqa: E402
 
 
 def load_env_file(path: Path = ROOT / ".env") -> None:
@@ -62,6 +75,8 @@ class ProgressReporter:
         self.started_at = time.perf_counter()
         self.active_steps: dict[str, float] = {}
         self.records: list[dict[str, Any]] = []
+        self.console = Console() if Console is not None else None
+        self.progress: Any | None = None
 
     def _elapsed(self) -> float:
         return time.perf_counter() - self.started_at
@@ -74,7 +89,11 @@ class ProgressReporter:
         return f"{int(minutes)}m {remainder:.1f}s"
 
     def log(self, message: str) -> None:
-        print(f"[{self._format_seconds(self._elapsed())}] {message}", flush=True)
+        text = f"[{self._format_seconds(self._elapsed())}] {message}"
+        if self.console is not None:
+            self.console.print(text)
+        else:
+            print(text, flush=True)
 
     def event(self, event: str, payload: dict[str, Any]) -> None:
         now = time.perf_counter()
@@ -89,10 +108,12 @@ class ProgressReporter:
                 }
             )
             self.log(self._started_message(step, payload))
+            self._start_live_timer(step, payload)
             return
 
         if event.endswith("_completed"):
             step = event.removesuffix("_completed")
+            self._stop_live_timer()
             step_started = self.active_steps.pop(step, None)
             duration = None if step_started is None else now - step_started
             record = {
@@ -105,6 +126,8 @@ class ProgressReporter:
             self.log(self._completed_message(step, payload, duration))
             return
 
+        if event == "run_failed":
+            self._stop_live_timer()
         self.records.append(
             {
                 "event": event,
@@ -114,13 +137,45 @@ class ProgressReporter:
         )
         self.log(f"{event}: {payload}")
 
+    def _start_live_timer(self, step: str, payload: dict[str, Any]) -> None:
+        self._stop_live_timer()
+        if Progress is None or self.console is None:
+            return
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
+            console=self.console,
+            transient=True,
+        )
+        self.progress.start()
+        self.progress.add_task(self._timer_label(step, payload), total=None)
+
+    def _stop_live_timer(self) -> None:
+        if self.progress is not None:
+            self.progress.stop()
+        self.progress = None
+
+    def _timer_label(self, step: str, payload: dict[str, Any]) -> str:
+        if step == "classification":
+            return "正在进行：clinical discourse segmentation"
+        if step == "graph_unit_extraction":
+            return (
+                f"正在并行切分 graph units："
+                f"{payload.get('segment_count')} 个 segment，"
+                f"{payload.get('max_workers')} 个并发任务"
+            )
+        if step == "write_outputs":
+            return "正在进行：写入结果文件和 HTML 报告"
+        return f"正在进行：{step}"
+
     def _started_message(self, step: str, payload: dict[str, Any]) -> str:
         if step == "classification":
-            return "开始文本分段和来源类型分类..."
-        if step == "subgraph":
+            return "开始 clinical discourse segmentation..."
+        if step == "graph_unit_extraction":
             return (
-                f"开始构建子图 {payload.get('index')}/{payload.get('total')} "
-                f"({payload.get('segment_id')}, {payload.get('source_type')})..."
+                f"开始并行 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
+                f"max_workers={payload.get('max_workers')}..."
             )
         if step == "write_outputs":
             return "开始写入结果文件和 HTML 报告..."
@@ -135,14 +190,13 @@ class ProgressReporter:
         duration_text = "耗时未知" if duration is None else f"耗时 {self._format_seconds(duration)}"
         if step == "classification":
             return (
-                f"完成分类：{payload.get('segment_count')} 个片段，"
-                f"类型 {payload.get('source_types')}，{duration_text}"
+                f"完成 discourse segmentation：{payload.get('segment_count')} 个片段，"
+                f"contained={payload.get('contained_source_types')}，{duration_text}"
             )
-        if step == "subgraph":
+        if step == "graph_unit_extraction":
             return (
-                f"完成子图 {payload.get('segment_id')}："
-                f"{payload.get('node_count')} nodes / {payload.get('edge_count')} edges，"
-                f"{duration_text}"
+                f"完成 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
+                f"{payload.get('graph_unit_count')} 个 graph units，{duration_text}"
             )
         if step == "write_outputs":
             return f"完成结果写入，{duration_text}"
@@ -157,7 +211,10 @@ class ProgressReporter:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run Step 2 of the ILD semantic graphing workflow: segment classification."
+        description=(
+            "Run Step 2 and Step 3 of the ILD semantic graphing workflow: "
+            "clinical discourse segmentation and graph-unit extraction."
+        )
     )
     parser.add_argument(
         "--input",
@@ -178,6 +235,12 @@ def main() -> int:
         default="outputs/runs",
         help="Directory where timestamped run folders are created.",
     )
+    parser.add_argument(
+        "--graph-unit-workers",
+        type=int,
+        default=None,
+        help="Parallel LLM workers for per-segment graph-unit extraction.",
+    )
     args = parser.parse_args()
     load_env_file()
 
@@ -185,12 +248,18 @@ def main() -> int:
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
+    config = load_yaml(args.config)
+    graph_unit_workers = int(
+        args.graph_unit_workers
+        if args.graph_unit_workers is not None
+        else config.get("graph_unit_max_workers", 4)
+    )
     case_id = args.case_id or input_path.stem
     llm = ChatAnywhereClient.from_env()
     agent = SemanticGraphingAgent.from_config(args.config, llm)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(args.output_dir) / f"{timestamp}_{case_id}_step2_classification"
+    run_dir = Path(args.output_dir) / f"{timestamp}_{case_id}_step2_step3_graph_units"
     run_dir.mkdir(parents=True, exist_ok=False)
 
     input_text = input_path.read_text(encoding="utf-8")
@@ -198,10 +267,18 @@ def main() -> int:
     reporter.log(f"输入文件：{input_path}")
     reporter.log(f"输出目录：{run_dir}")
     reporter.log(f"模型：{llm.model}")
-    reporter.log("当前阶段：Step 2 文本分段与来源类型分类；不做建图，不做子图合并。")
+    reporter.log(
+        "当前阶段：Step 2 clinical discourse segmentation + Step 3 graph-unit extraction；"
+        "不做 node/edge 建图，不做子图合并。"
+    )
 
     try:
         result = agent.classify(input_text, case_id=case_id, progress=reporter.event)
+        graph_units, graph_unit_trace = agent.extract_graph_units(
+            result.classification,
+            max_workers=graph_unit_workers,
+            progress=reporter.event,
+        )
     except Exception as exc:
         reporter.event("run_failed", {"error": str(exc)})
         (run_dir / "input.txt").write_text(input_text, encoding="utf-8")
@@ -220,27 +297,41 @@ def main() -> int:
         return 1
 
     reporter.event("write_outputs_started", {})
-    write_json(run_dir / "classification.json", result.classification.model_dump())
-    write_json(run_dir / "trace.json", result.trace)
+    write_json(run_dir / "discourse_segments.json", result.classification.model_dump())
+    write_json(run_dir / "graph_units.json", graph_units.model_dump())
+    write_json(
+        run_dir / "trace.json",
+        {
+            **result.trace,
+            "graph_unit_extraction": graph_unit_trace,
+        },
+    )
     (run_dir / "input.txt").write_text(input_text, encoding="utf-8")
     timing_before_report = reporter.summary()
-    report_path = render_classification_report(
+    report_path = render_report(
         result,
+        graph_units,
         source_filename=input_path.name,
         raw_text=input_text,
         timing=timing_before_report,
-        output_path=run_dir / "classification_report.html",
+        output_path=run_dir / "report.html",
     )
-    reporter.event("write_outputs_completed", {"report_path": str(report_path)})
+    reporter.event(
+        "write_outputs_completed",
+        {
+            "report_path": str(report_path),
+        },
+    )
     timing_summary = reporter.summary()
     write_json(run_dir / "timing.json", timing_summary)
 
     print(f"Run directory: {run_dir.resolve()}")
     print(f"HTML report: {report_path.resolve()}")
     print(f"Segments: {len(result.classification.segments)}")
+    print(f"Graph units: {sum(len(item.graph_units) for item in graph_units.segments)}")
     print(
-        "Source types: "
-        f"{[str(item) for item in result.classification.detected_source_types]}"
+        "Contained source types: "
+        f"{[str(item) for item in result.classification.detected_contained_source_types]}"
     )
     print(
         "Total elapsed: "
