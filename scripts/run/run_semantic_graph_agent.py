@@ -165,6 +165,12 @@ class ProgressReporter:
                 f"{payload.get('segment_count')} 个 segment，"
                 f"{payload.get('max_workers')} 个并发任务"
             )
+        if step == "frame_triage":
+            return (
+                f"正在并行分诊 frame："
+                f"{payload.get('unit_count')} 个 graph unit，"
+                f"{payload.get('max_workers')} 个并发任务"
+            )
         if step == "write_outputs":
             return "正在进行：写入结果文件和 HTML 报告"
         return f"正在进行：{step}"
@@ -175,6 +181,11 @@ class ProgressReporter:
         if step == "graph_unit_extraction":
             return (
                 f"开始并行 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
+                f"max_workers={payload.get('max_workers')}..."
+            )
+        if step == "frame_triage":
+            return (
+                f"开始并行 frame triage（分诊）：{payload.get('unit_count')} 个 graph unit，"
                 f"max_workers={payload.get('max_workers')}..."
             )
         if step == "write_outputs":
@@ -197,6 +208,11 @@ class ProgressReporter:
             return (
                 f"完成 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
                 f"{payload.get('graph_unit_count')} 个 graph units，{duration_text}"
+            )
+        if step == "frame_triage":
+            return (
+                f"完成 frame triage：{payload.get('unit_count')} 个 graph unit，"
+                f"{payload.get('triggered_frame_count')} 个触发 frame，{duration_text}"
             )
         if step == "write_outputs":
             return f"完成结果写入，{duration_text}"
@@ -241,6 +257,12 @@ def main() -> int:
         default=None,
         help="Parallel LLM workers for per-segment graph-unit extraction.",
     )
+    parser.add_argument(
+        "--frame-triage-workers",
+        type=int,
+        default=None,
+        help="Parallel LLM workers for per-segment frame triage.",
+    )
     args = parser.parse_args()
     load_env_file()
 
@@ -254,12 +276,17 @@ def main() -> int:
         if args.graph_unit_workers is not None
         else config.get("graph_unit_max_workers", 4)
     )
+    frame_triage_workers = int(
+        args.frame_triage_workers
+        if args.frame_triage_workers is not None
+        else config.get("frame_triage_max_workers", 4)
+    )
     case_id = args.case_id or input_path.stem
     llm = ChatAnywhereClient.from_env()
     agent = SemanticGraphingAgent.from_config(args.config, llm)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(args.output_dir) / f"{timestamp}_{case_id}_step2_step3_graph_units"
+    run_dir = Path(args.output_dir) / f"{timestamp}_{case_id}_step2_step3"
     run_dir.mkdir(parents=True, exist_ok=False)
 
     input_text = input_path.read_text(encoding="utf-8")
@@ -268,8 +295,8 @@ def main() -> int:
     reporter.log(f"输出目录：{run_dir}")
     reporter.log(f"模型：{llm.model}")
     reporter.log(
-        "当前阶段：Step 2 clinical discourse segmentation + Step 3 graph-unit extraction；"
-        "不做 node/edge 建图，不做子图合并。"
+        "当前阶段：Step 2 discourse segmentation + Step 3 Stage 1 frame triage；"
+        "产出 discourse segments + graph units + frame triage。"
     )
 
     try:
@@ -277,6 +304,11 @@ def main() -> int:
         graph_units, graph_unit_trace = agent.extract_graph_units(
             result.classification,
             max_workers=graph_unit_workers,
+            progress=reporter.event,
+        )
+        frame_triage, frame_triage_trace = agent.triage_frames(
+            graph_units,
+            max_workers=frame_triage_workers,
             progress=reporter.event,
         )
     except Exception as exc:
@@ -299,11 +331,13 @@ def main() -> int:
     reporter.event("write_outputs_started", {})
     write_json(run_dir / "discourse_segments.json", result.classification.model_dump())
     write_json(run_dir / "graph_units.json", graph_units.model_dump())
+    write_json(run_dir / "frame_triage.json", frame_triage.model_dump())
     write_json(
         run_dir / "trace.json",
         {
             **result.trace,
             "graph_unit_extraction": graph_unit_trace,
+            "frame_triage": frame_triage_trace,
         },
     )
     (run_dir / "input.txt").write_text(input_text, encoding="utf-8")
@@ -315,6 +349,7 @@ def main() -> int:
         raw_text=input_text,
         timing=timing_before_report,
         output_path=run_dir / "report.html",
+        frame_triage=frame_triage,
     )
     reporter.event(
         "write_outputs_completed",
@@ -329,6 +364,10 @@ def main() -> int:
     print(f"HTML report: {report_path.resolve()}")
     print(f"Segments: {len(result.classification.segments)}")
     print(f"Graph units: {sum(len(item.graph_units) for item in graph_units.segments)}")
+    print(
+        "Triggered frames: "
+        f"{sum(len(unit.triggered_frames) for item in frame_triage.segments for unit in item.units)}"
+    )
     print(
         "Contained source types: "
         f"{[str(item) for item in result.classification.detected_contained_source_types]}"

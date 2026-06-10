@@ -4,7 +4,30 @@ from pathlib import Path
 from typing import Any
 
 from src.agents.semantic_graphing.agent import ClassificationRunResult
-from src.schemas.semantic_graphing import DocumentGraphUnits
+from src.schemas.semantic_graphing import (
+    DocumentFrameTriage,
+    DocumentGraphUnits,
+    FRAME_DEFINITION_BY_FRAME,
+)
+
+
+FRAME_ZH: dict[str, str] = {
+    "symptom_episode": "症状起病/加重",
+    "encounter": "就诊/住院接触",
+    "examination_report": "检查报告面板",
+    "diagnosis": "诊断判断",
+    "treatment_course": "独立治疗/用药",
+    "background_fact": "背景史",
+}
+
+FRAME_COLORS: dict[str, str] = {
+    "symptom_episode": "#bfdbfe",
+    "encounter": "#fed7aa",
+    "examination_report": "#c7d2fe",
+    "diagnosis": "#fdba74",
+    "treatment_course": "#fde68a",
+    "background_fact": "#e5e7eb",
+}
 
 
 SOURCE_TYPE_ZH: dict[str, str] = {
@@ -89,6 +112,7 @@ def render_report(
     raw_text: str,
     timing: dict[str, Any],
     output_path: str | Path,
+    frame_triage: DocumentFrameTriage | None = None,
 ) -> Path:
     """Render a single HTML report covering the full run pipeline."""
     html = _render_html(
@@ -97,6 +121,7 @@ def render_report(
         source_filename=source_filename,
         raw_text=raw_text,
         timing=timing,
+        frame_triage=frame_triage,
     )
     path = Path(output_path)
     path.write_text(html, encoding="utf-8")
@@ -110,6 +135,7 @@ def _render_html(
     source_filename: str,
     raw_text: str,
     timing: dict[str, Any],
+    frame_triage: DocumentFrameTriage | None = None,
 ) -> str:
     classification = result.classification
     segments = classification.segments
@@ -130,6 +156,15 @@ def _render_html(
     )
     detected_contained = [str(item) for item in classification.detected_contained_source_types]
 
+    triage_by_unit: dict[str, list] = {}
+    frame_counts: Counter = Counter()
+    if frame_triage is not None:
+        for seg in frame_triage.segments:
+            for unit in seg.units:
+                triage_by_unit[unit.graph_unit_id] = list(unit.triggered_frames)
+                for tf in unit.triggered_frames:
+                    frame_counts[str(tf.frame)] += 1
+
     total_elapsed = timing.get("total_elapsed_seconds")
     elapsed_text = f"{total_elapsed:.2f}s" if isinstance(total_elapsed, int | float) else "N/A"
     highlighted_text = _render_highlighted_raw_text(raw_text, segments)
@@ -138,35 +173,42 @@ def _render_html(
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>{escape(result.case_id)} semantic graphing report</title>
+  <title>{escape(result.case_id)} 语义图谱报告</title>
   <style>
     body {{ margin: 32px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             line-height: 1.7; color: #1f2937; background: #f8fafc; }}
-    main {{ max-width: 1180px; margin: 0 auto; }}
-    h1 {{ margin-bottom: 8px; font-size: 26px; }}
-    h2 {{ margin-top: 40px; font-size: 21px; border-bottom: 2px solid #94a3b8; padding-bottom: 6px; }}
-    h3 {{ margin: 18px 0 8px; font-size: 15px; color: #334155; }}
-    .meta {{ margin-bottom: 24px; color: #475569; font-size: 14px; }}
-    .note {{ color: #475569; font-size: 13px; margin: 8px 0 14px; }}
-    .stat-badge {{ display: inline-block; background: #e2e8f0; border-radius: 3px;
-                   padding: 1px 7px; font-size: 12px; margin-right: 4px; }}
-    .pipeline {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 14px 0 18px; }}
-    .stage-card {{ background: #ffffff; border: 1px solid #cbd5e1; border-radius: 5px; padding: 10px; min-height: 92px; }}
-    .stage-card strong {{ display: block; font-size: 13px; margin-bottom: 4px; }}
-    .stage-card .count {{ display: block; color: #0f172a; font-size: 18px; font-weight: 700; margin-bottom: 2px; }}
-    .stage-card .desc {{ color: #64748b; font-size: 12px; line-height: 1.45; }}
-    .segment-card {{ margin: 14px 0; padding: 14px 16px; border-left: 6px solid; border-radius: 4px;
-                     background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
-    .segment-card h3 {{ margin: 0 0 8px; font-size: 16px; }}
-    .fields {{ font-size: 12px; color: #475569; margin-bottom: 8px; }}
-    .unit {{ margin: 8px 0; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 4px;
-             background: #f8fafc; }}
-    .unit-head {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }}
-    .badge {{ display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 12px; }}
+    main {{ max-width: 1200px; margin: 0 auto; }}
+    h1 {{ margin-bottom: 8px; font-size: 28px; color: #0f172a; }}
+    h2 {{ margin-top: 40px; font-size: 20px; border-bottom: 2px solid #94a3b8; padding-bottom: 8px; color: #334155; }}
+    h3 {{ margin: 18px 0 10px; font-size: 16px; color: #475569; font-weight: 600; }}
+    .meta {{ margin-bottom: 24px; color: #475569; font-size: 14px; line-height: 1.8; }}
+    .note {{ color: #64748b; font-size: 13px; margin: 8px 0 16px; font-style: italic; }}
+    .stat-badge {{ display: inline-block; background: #e2e8f0; border-radius: 4px;
+                   padding: 3px 10px; font-size: 13px; margin-right: 6px; font-weight: 500; }}
+    .segment-card {{ margin: 20px 0; padding: 0; border-left: 5px solid; border-radius: 6px;
+                     background: #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.06); overflow: hidden; }}
+    .segment-header {{ padding: 16px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }}
+    .segment-header h3 {{ margin: 0 0 8px; font-size: 17px; color: #0f172a; }}
+    .segment-info {{ font-size: 12px; color: #64748b; line-height: 1.6; }}
+    .segment-text {{ padding: 16px 20px; background: #ffffff; border-bottom: 1px solid #f1f5f9; }}
+    .segment-text pre {{ margin: 0; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; 
+                        font-size: 14px; line-height: 1.7; color: #1e293b; background: none; padding: 0; }}
+    .units-container {{ padding: 16px 20px; }}
+    .unit {{ margin: 12px 0; padding: 14px; border: 1px solid #e2e8f0; border-radius: 6px;
+             background: #fafbfc; }}
+    .unit-id {{ font-weight: 700; font-size: 13px; color: #0f172a; margin-bottom: 8px; }}
+    .unit-meta {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }}
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }}
     .badge-spec {{ display: inline-flex; align-items: center; gap: 4px; padding: 1px 9px;
                    border-radius: 999px; font-size: 12px; font-weight: 600; background: #ffffff;
                    border: 1.5px solid #94a3b8; color: #1f2937; }}
     .badge-spec::before {{ content: "\\1F3E5"; font-size: 11px; }}
+    .badge-frame {{ font-weight: 600; border: 1px solid rgba(15,23,42,0.15); }}
+    .frame-row {{ margin: 4px 0 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }}
+    .frame-label {{ font-size: 12px; color: #475569; }}
+    .frame-list {{ list-style: none; margin: 0; padding: 0; }}
+    .frame-list li {{ display: flex; gap: 8px; align-items: flex-start; margin: 5px 0; }}
+    .frame-rationale {{ font-size: 12px; color: #475569; line-height: 1.5; }}
     .highlight-box {{ white-space: pre-wrap; word-break: break-word;
                       font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
                       background: #ffffff; padding: 14px; border: 1px solid #cbd5e1;
@@ -187,6 +229,19 @@ def _render_html(
                                  font-size: 11px; color: #64748b; transition: transform 0.15s; }}
     details[open] > summary::before {{ transform: rotate(90deg); }}
     details .body {{ padding: 0 14px 12px; }}
+    .graph-view {{ border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; margin: 14px 0; }}
+    .graph-toolbar {{ display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+                      background: #f8fafc; border-bottom: 1px solid #e2e8f0; }}
+    .graph-toolbar button {{ padding: 4px 12px; border: 1px solid #94a3b8; border-radius: 4px;
+                             background: #fff; cursor: pointer; font-size: 12px; }}
+    .graph-toolbar button:hover {{ background: #e2e8f0; }}
+    .cy-graph {{ height: 480px; background: #fafafa; }}
+    .cy-graph.is-empty {{ display: flex; align-items: center; justify-content: center;
+                          color: #94a3b8; font-size: 14px; padding: 24px; }}
+    .graph-legend {{ display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
+                     background: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 11px; color: #475569; }}
+    .graph-legend i {{ display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+                       vertical-align: middle; margin-right: 3px; }}
     @media (max-width: 900px) {{
       body {{ margin: 18px; }}
       .pipeline {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -202,196 +257,166 @@ def _render_html(
       <span class="stat-badge">segment {len(segments)}</span>
       <span class="stat-badge">graph unit {total_units}</span>
       <span class="stat-badge">contained source type {len(detected_contained)}</span>
+      <span class="stat-badge">触发 frame {sum(frame_counts.values())}</span>
       <span class="stat-badge">总耗时 {escape(elapsed_text)}</span>
     </div>
 
-    <h2>Pipeline Overview</h2>
-    {_render_pipeline_overview(raw_text, segments, total_units, elapsed_text)}
-
-    <h2>Step 2 · Clinical Discourse Segmentation</h2>
-    <p class="note">将原文切分为完整的 clinical discourse unit / episode。颜色用于区分相邻 segment。</p>
-    <h3>原文切分查看</h3>
+    <h2>📋 原文分段视图</h2>
+    <p class="note">原文按临床叙述逻辑切分为多个discourse segment，每种颜色代表一个segment</p>
     <div class="highlight-box">{highlighted_text}</div>
-    <h3>Segment 列表</h3>
-    {_render_segment_cards(segments)}
 
-    <h2>Step 3 · Graph Unit Extraction</h2>
-    <p class="note">每个 segment 内部切出 graph unit（一个临床事件核），不是最终 node/edge。</p>
-    {_render_graph_unit_cards(graph_units, segment_by_id)}
+    <h2>🔍 Segment 详细分析</h2>
+    <p class="note">每个segment包含：段落分类、内部的graph units（临床事件核心）及其触发的临床框架</p>
+    {_render_unified_segments(graph_units, segment_by_id, triage_by_unit)}
 
-    <h2>计数与字典</h2>
-    {_render_counts_section(unit_type_counts, source_counts, specialty_counts)}
+    <h2>📊 统计信息</h2>
+    {_render_statistics_summary(frame_counts, source_counts, specialty_counts)}
   </main>
 </body>
 </html>
 """
 
 
-def _render_pipeline_overview(
-    raw_text: str,
-    segments: list,
-    total_units: int,
-    elapsed: str,
+def _render_unified_segments(
+    graph_units: DocumentGraphUnits,
+    segment_by_id: dict,
+    triage_by_unit: dict[str, list] | None = None,
 ) -> str:
-    cards = [
-        ("Input", str(len(raw_text)), "原始病例文本字符数"),
-        ("Step 2", str(len(segments)), "clinical discourse segmentation"),
-        ("Step 3", str(total_units), "per-segment graph unit extraction"),
-        ("Output", str(len(segments)), f"segment / {total_units} unit；耗时 {elapsed}"),
-    ]
-    return '<div class="pipeline">' + "".join(
-        "<div class='stage-card'>"
-        f"<strong>{escape(title)}</strong>"
-        f"<span class='count'>{escape(count)}</span>"
-        f"<span class='desc'>{escape(desc)}</span>"
-        "</div>"
-        for title, count, desc in cards
-    ) + "</div>"
-
-
-def _render_segment_cards(segments: list) -> str:
+    """统一渲染：每个segment只显示一次，包含其graph units和triggered frames"""
+    triage_by_unit = triage_by_unit or {}
     cards = []
-    for index, seg in enumerate(segments):
-        color = _segment_color(index)
-        contained = ", ".join(str(item) for item in seg.contained_source_types)
-        cards.append(
-            f"<div class='segment-card' style='border-left-color:{escape(color)}'>"
-            f"<h3>{escape(seg.segment_id)} · {escape(str(seg.unit_type))}</h3>"
-            f"<div class='fields'>contained_source_types=<code>{escape(contained)}</code> · "
-            f"clinical_frame=<code>{escape(seg.clinical_frame)}</code> · "
-            f"span={seg.start_char}-{seg.end_char} ({len(seg.text)} 字符) · "
-            f"temporal_anchor={escape(seg.temporal_anchor or '')} · "
-            f"confidence={seg.confidence:.2f} · rationale={escape(seg.rationale)}</div>"
-            f"<pre>{escape(seg.text)}</pre>"
-            "</div>"
-        )
-    return "".join(cards)
-
-
-def _render_graph_unit_cards(graph_units: DocumentGraphUnits, segment_by_id: dict) -> str:
-    cards = []
+    
     for index, segment_units in enumerate(graph_units.segments):
         parent = segment_by_id.get(segment_units.segment_id)
+        if parent is None:
+            continue
+            
         color = _segment_color(index)
-        parent_fields = ""
-        parent_text = ""
-        if parent is not None:
-            contained = ", ".join(str(item) for item in parent.contained_source_types)
-            parent_fields = (
-                f"unit_type=<code>{escape(str(parent.unit_type))}</code> · "
-                f"contained=<code>{escape(contained)}</code> · "
-                f"span={parent.start_char}-{parent.end_char}"
-            )
-            parent_text = f"<pre>{escape(parent.text)}</pre>"
-
-        unit_blocks = []
-        for unit in segment_units.graph_units:
-            unit_source = str(unit.source_type)
-            unit_color = SOURCE_TYPE_COLORS.get(unit_source, "#e5e7eb")
-            span = ""
-            if unit.start_char is not None and unit.end_char is not None:
-                span = f" · span={unit.start_char}-{unit.end_char}"
-            specialty_badges = "".join(
-                f"<span class='badge-spec' style='border-color:{escape(MDT_SPECIALTY_COLORS.get(str(s), '#94a3b8'))}'>"
-                f"{escape(MDT_SPECIALTY_ZH.get(str(s), str(s)))} / <code>{escape(str(s))}</code></span>"
-                for s in unit.mdt_specialty
-            )
-            unit_blocks.append(
-                "<div class='unit'>"
-                "<div class='unit-head'>"
-                f"<strong>{escape(unit.graph_unit_id)}</strong>"
-                f"<span class='badge' style='background:{escape(unit_color)}'>"
-                f"{escape(SOURCE_TYPE_ZH.get(unit_source, unit_source))} / "
-                f"<code>{escape(unit_source)}</code></span>"
-                f"{specialty_badges}"
-                f"<span class='badge'>status=<code>{escape(unit.status)}</code></span>"
-                f"<span class='badge'>certainty=<code>{escape(unit.certainty)}</code>{span}</span>"
-                "</div>"
-                f"<pre>{escape(unit.text)}</pre>"
-                f"<div class='fields'>time={escape(unit.temporal_anchor or '')} · "
-                f"context={escape(unit.clinical_context or '')} · "
-                f"rationale={escape(unit.rationale)}</div>"
-                "</div>"
-            )
-        if not unit_blocks:
-            unit_blocks.append("<p class='note'>该 segment 未输出 graph unit。</p>")
-
-        cards.append(
-            f"<div class='segment-card' style='border-left-color:{escape(color)}'>"
-            f"<h3>{escape(segment_units.segment_id)}</h3>"
-            f"<div class='fields'>{parent_fields}</div>"
-            f"{parent_text}"
-            f"{''.join(unit_blocks)}"
+        
+        # Segment header - 简化信息，只显示关键字段
+        contained_labels = [SOURCE_TYPE_ZH.get(str(item), str(item)) for item in parent.contained_source_types]
+        contained_zh = ", ".join(contained_labels)
+        
+        segment_header = (
+            f"<div class='segment-header'>"
+            f"<h3>{escape(parent.segment_id)} · {escape(str(parent.unit_type))}</h3>"
+            f"<div class='segment-info'>"
+            f"📦 包含信息类型: <strong>{escape(contained_zh)}</strong> · "
+            f"⏱️ 时间: {escape(parent.temporal_anchor or '无')} · "
+            f"📏 长度: {len(parent.text)} 字符"
+            f"</div>"
             "</div>"
         )
+        
+        # Segment text
+        segment_text = f"<div class='segment-text'><pre>{escape(parent.text)}</pre></div>"
+        
+        # Graph Units
+        unit_blocks = []
+        if segment_units.graph_units:
+            for unit in segment_units.graph_units:
+                unit_source = str(unit.source_type)
+                unit_color = SOURCE_TYPE_COLORS.get(unit_source, "#e5e7eb")
+                
+                # Source type badge
+                source_badge = (
+                    f"<span class='badge' style='background:{escape(unit_color)}'>"
+                    f"{escape(SOURCE_TYPE_ZH.get(unit_source, unit_source))}</span>"
+                )
+                
+                # MDT specialty badges
+                specialty_badges = "".join(
+                    f"<span class='badge-spec' style='border-color:{escape(MDT_SPECIALTY_COLORS.get(str(s), '#94a3b8'))}'>"
+                    f"{escape(MDT_SPECIALTY_ZH.get(str(s), str(s)))}</span>"
+                    for s in unit.mdt_specialty
+                )
+                
+                # Status & certainty
+                status_badge = f"<span class='badge' style='background:#dbeafe'>状态: {escape(unit.status)}</span>"
+                certainty_badge = f"<span class='badge' style='background:#fef3c7'>确定性: {escape(unit.certainty)}</span>"
+                
+                # Triggered frames
+                triggered = triage_by_unit.get(unit.graph_unit_id, [])
+                frame_badges = ""
+                if triggered:
+                    frame_badges = "<div class='frame-row'><span class='frame-label'>🎯 触发框架:</span>" + "".join(
+                        f"<span class='badge badge-frame' style='background:{escape(FRAME_COLORS.get(str(tf.frame), '#e5e7eb'))}'>"
+                        f"{escape(FRAME_ZH.get(str(tf.frame), str(tf.frame)))}</span>"
+                        for tf in triggered
+                    ) + "</div>"
+                
+                unit_blocks.append(
+                    "<div class='unit'>"
+                    f"<div class='unit-id'>{escape(unit.graph_unit_id)}</div>"
+                    f"<div class='unit-meta'>{source_badge}{specialty_badges}{status_badge}{certainty_badge}</div>"
+                    f"{frame_badges}"
+                    f"<pre style='background:#f8fafc;padding:8px;border-radius:4px;font-size:13px;'>{escape(unit.text)}</pre>"
+                    "</div>"
+                )
+        else:
+            unit_blocks.append("<p class='note' style='padding:16px 20px;'>该segment未提取出graph unit</p>")
+        
+        cards.append(
+            f"<div class='segment-card' style='border-left-color:{escape(color)}'>"
+            f"{segment_header}"
+            f"{segment_text}"
+            f"<div class='units-container'>"
+            f"<h4 style='margin:0 0 12px;font-size:14px;color:#64748b;font-weight:600;'>Graph Units ({len(segment_units.graph_units)})</h4>"
+            f"{''.join(unit_blocks)}"
+            "</div>"
+            "</div>"
+        )
+    
     return "".join(cards)
 
 
-def _render_counts_section(
-    unit_type_counts: Counter,
+def _render_statistics_summary(
+    frame_counts: Counter,
     source_counts: Counter,
     specialty_counts: Counter,
 ) -> str:
-    body = (
-        _render_unit_dictionary(unit_type_counts)
-        + _render_counter_table("Graph Unit · Source Type（叙事角色）", source_counts)
-        + _render_counter_table("Graph Unit · MDT Specialty（会诊专科）", specialty_counts)
-    )
-    return (
-        "<details>"
-        "<summary>展开计数与字典</summary>"
-        f"<div class='body'>{body}</div>"
-        "</details>"
-    )
-
-
-def _render_unit_dictionary(counts: Counter) -> str:
-    rows = []
-    unit_types = [
-        "demographics_chief_complaint",
-        "past_medical_history",
-        "current_medication",
-        "clinical_episode",
-        "general_condition",
-        "standalone_imaging_report",
-        "standalone_pulmonary_function_report",
-        "standalone_lab_panel",
-        "standalone_pathology_report",
-        "standalone_treatment_plan",
-        "standalone_clinician_assessment",
-        "other",
-    ]
-    for unit_type in unit_types:
-        count = counts.get(unit_type, 0)
-        rows.append(
-            "<tr>"
-            f"<td><code>{escape(unit_type)}</code></td>"
-            f"<td>{count}</td>"
-            "</tr>"
+    """简化的统计信息展示"""
+    
+    # Frame统计
+    frame_rows = []
+    for frame, count in frame_counts.most_common():
+        frame_label = FRAME_ZH.get(frame, frame)
+        frame_rows.append(
+            f"<tr><td><span class='badge badge-frame' style='background:{escape(FRAME_COLORS.get(frame, '#e5e7eb'))}'>"
+            f"{escape(frame_label)}</span></td><td>{count}</td></tr>"
         )
+    frame_table = (
+        "<table><thead><tr><th>临床框架类型</th><th>触发次数</th></tr></thead>"
+        f"<tbody>{''.join(frame_rows) if frame_rows else '<tr><td colspan=\"2\">无数据</td></tr>'}</tbody></table>"
+    )
+    
+    # Source type统计
+    source_rows = []
+    for source, count in source_counts.most_common():
+        source_label = SOURCE_TYPE_ZH.get(source, source)
+        source_rows.append(f"<tr><td>{escape(source_label)}</td><td>{count}</td></tr>")
+    source_table = (
+        "<table><thead><tr><th>信息来源类型</th><th>Graph Unit数量</th></tr></thead>"
+        f"<tbody>{''.join(source_rows)}</tbody></table>"
+    )
+    
+    # MDT specialty统计
+    specialty_rows = []
+    for specialty, count in specialty_counts.most_common():
+        specialty_label = MDT_SPECIALTY_ZH.get(specialty, specialty)
+        specialty_rows.append(f"<tr><td>{escape(specialty_label)}</td><td>{count}</td></tr>")
+    specialty_table = (
+        "<table><thead><tr><th>MDT专科</th><th>相关Unit数量</th></tr></thead>"
+        f"<tbody>{''.join(specialty_rows)}</tbody></table>"
+    )
+    
     return (
-        "<h3>Segment · Discourse Unit Type</h3>"
-        "<table><thead><tr><th>unit_type</th><th>当前数量</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<details open><summary>临床框架触发统计</summary><div class='body'>{frame_table}</div></details>"
+        f"<details><summary>信息来源类型分布</summary><div class='body'>{source_table}</div></details>"
+        f"<details><summary>MDT专科分布</summary><div class='body'>{specialty_table}</div></details>"
     )
 
 
-def _render_counter_table(title: str, counts: Counter) -> str:
-    rows = []
-    for key, count in counts.most_common():
-        rows.append(
-            "<tr>"
-            f"<td><code>{escape(str(key))}</code></td>"
-            f"<td>{count}</td>"
-            "</tr>"
-        )
-    if not rows:
-        rows.append("<tr><td colspan='2'>无</td></tr>")
-    return (
-        f"<h3>{escape(title)}</h3>"
-        "<table><thead><tr><th>Type</th><th>Count</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
-    )
 
 
 def _render_highlighted_raw_text(raw_text: str, segments: list) -> str:
