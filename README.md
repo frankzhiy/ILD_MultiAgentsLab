@@ -21,9 +21,10 @@ Set your ChatAnywhere credentials:
 
 ```bash
 export CHATANYWHERE_API_KEY="..."
-export CHATANYWHERE_BASE_URL="https://api.chatanywhere.tech/v1"
-export CHATANYWHERE_MODEL="gpt-5.5"
 ```
+
+Set the model, ChatAnywhere base URL, and timeout in
+`configs/agents/semantic_graphing/agent.yaml`.
 
 The current manual script runs clinical discourse segmentation and graph unit extraction.
 

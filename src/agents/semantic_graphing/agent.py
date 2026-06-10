@@ -12,6 +12,7 @@ from src.schemas.semantic_graphing import (
     DocumentClassification,
     DocumentFrameTriage,
     DocumentGraphUnits,
+    SegmentFrameTriage,
 )
 from src.utils.config import load_yaml
 
@@ -67,7 +68,6 @@ class SemanticGraphingAgent:
                 temperature=temperature,
                 max_tokens=max_tokens,
             ),
-            
         )
 
     def classify(
@@ -104,7 +104,6 @@ class SemanticGraphingAgent:
         self,
         classification: DocumentClassification,
         *,
-        max_workers: int = 4,
         progress: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> tuple[DocumentGraphUnits, dict[str, Any]]:
         def report(event: str, **payload: Any) -> None:
@@ -112,11 +111,11 @@ class SemanticGraphingAgent:
                 progress(event, payload)
 
         segments = list(classification.segments)
-        worker_count = max(1, min(max_workers, len(segments) or 1))
+        worker_count = max(1, len(segments))
         report(
             "graph_unit_extraction_started",
             segment_count=len(segments),
-            max_workers=worker_count,
+            concurrent_tasks=len(segments),
         )
 
         indexed_results: dict[int, Any] = {}
@@ -159,14 +158,13 @@ class SemanticGraphingAgent:
 
         return document_graph_units, {
             "segments": ordered_traces,
-            "max_workers": worker_count,
+            "concurrent_tasks": len(segments),
         }
 
     def triage_frames(
         self,
         graph_units: DocumentGraphUnits,
         *,
-        max_workers: int = 4,
         progress: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> tuple[DocumentFrameTriage, dict[str, Any]]:
         def report(event: str, **payload: Any) -> None:
@@ -175,48 +173,70 @@ class SemanticGraphingAgent:
 
         segments = list(graph_units.segments)
         unit_total = sum(len(item.graph_units) for item in segments)
-        worker_count = max(1, min(max_workers, len(segments) or 1))
+        worker_count = max(1, unit_total)
         report(
             "frame_triage_started",
             segment_count=len(segments),
             unit_count=unit_total,
-            max_workers=worker_count,
+            concurrent_tasks=unit_total,
         )
 
-        indexed_results: dict[int, Any] = {}
-        indexed_traces: dict[int, dict[str, Any]] = {}
+        indexed_results: dict[tuple[int, int], Any] = {}
+        indexed_traces: dict[tuple[int, int], dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
-                executor.submit(self.frame_triager.triage_segment, segment): (index, segment)
-                for index, segment in enumerate(segments)
+                executor.submit(self.frame_triager.triage_unit, unit): (
+                    segment_index,
+                    unit_index,
+                    segment,
+                    unit,
+                )
+                for segment_index, segment in enumerate(segments)
+                for unit_index, unit in enumerate(segment.graph_units)
             }
             for future in as_completed(futures):
-                index, segment = futures[future]
+                segment_index, unit_index, segment, unit = futures[future]
                 try:
                     triage, trace = future.result()
                 except Exception as exc:
                     raise RuntimeError(
-                        f"Frame triage failed for {segment.segment_id}: {exc}"
+                        f"Frame triage failed for {unit.graph_unit_id}: {exc}"
                     ) from exc
-                indexed_results[index] = triage
-                indexed_traces[index] = {
-                    "segment_id": segment.segment_id,
+                key = (segment_index, unit_index)
+                indexed_results[key] = triage
+                indexed_traces[key] = {
+                    "graph_unit_id": unit.graph_unit_id,
                     "trace": trace,
                 }
-                triggered_total = sum(
-                    len(unit.triggered_frames) for unit in triage.units
-                )
                 report(
-                    "frame_triage_segment_done",
+                    "frame_triage_unit_done",
                     segment_id=segment.segment_id,
-                    index=index + 1,
-                    total=len(segments),
-                    unit_count=len(triage.units),
-                    triggered_frame_count=triggered_total,
+                    graph_unit_id=unit.graph_unit_id,
+                    completed=len(indexed_results),
+                    total=unit_total,
+                    triggered_frame_count=len(triage.triggered_frames),
                 )
 
-        ordered_results = [indexed_results[index] for index in range(len(segments))]
-        ordered_traces = [indexed_traces[index] for index in range(len(segments))]
+        ordered_results = [
+            SegmentFrameTriage(
+                segment_id=segment.segment_id,
+                units=[
+                    indexed_results[(segment_index, unit_index)]
+                    for unit_index in range(len(segment.graph_units))
+                ],
+            )
+            for segment_index, segment in enumerate(segments)
+        ]
+        ordered_traces = [
+            {
+                "segment_id": segment.segment_id,
+                "units": [
+                    indexed_traces[(segment_index, unit_index)]
+                    for unit_index in range(len(segment.graph_units))
+                ],
+            }
+            for segment_index, segment in enumerate(segments)
+        ]
         document_triage = DocumentFrameTriage(segments=ordered_results)
         triggered_frame_count = sum(
             len(unit.triggered_frames)
@@ -232,7 +252,5 @@ class SemanticGraphingAgent:
 
         return document_triage, {
             "segments": ordered_traces,
-            "max_workers": worker_count,
+            "concurrent_tasks": unit_total,
         }
-
-    

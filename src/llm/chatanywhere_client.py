@@ -4,6 +4,7 @@ import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 from src.llm.base import LLMClient, LLMMessage, LLMResponse
 
@@ -11,21 +12,26 @@ from src.llm.base import LLMClient, LLMMessage, LLMResponse
 @dataclass
 class ChatAnywhereClient(LLMClient):
     api_key: str
-    model: str = "gpt-5.5"
-    base_url: str = "https://api.chatanywhere.tech/v1"
+    model: str
+    base_url: str
     timeout_seconds: int = 300
     response_format_json: bool = True
 
     @classmethod
-    def from_env(cls) -> "ChatAnywhereClient":
-        api_key = os.environ.get("CHATANYWHERE_API_KEY")
+    def from_config(cls, config: dict[str, Any]) -> "ChatAnywhereClient":
+        api_key_env = str(config.get("api_key_env", "CHATANYWHERE_API_KEY"))
+        api_key = os.environ.get(api_key_env)
         if not api_key:
-            raise RuntimeError("CHATANYWHERE_API_KEY is required for real LLM runs.")
+            raise RuntimeError(f"{api_key_env} is required for real LLM runs.")
+        if not config.get("model"):
+            raise ValueError("Agent config must define model.")
+        if not config.get("base_url"):
+            raise ValueError("Agent config must define base_url.")
         return cls(
             api_key=api_key,
-            model=os.environ.get("CHATANYWHERE_MODEL", "gpt-5.5"),
-            base_url=os.environ.get("CHATANYWHERE_BASE_URL", "https://api.chatanywhere.tech/v1"),
-            timeout_seconds=int(os.environ.get("CHATANYWHERE_TIMEOUT_SECONDS", "300")),
+            model=str(config["model"]),
+            base_url=str(config["base_url"]),
+            timeout_seconds=int(config.get("timeout_seconds", 300)),
         )
 
     def complete(
@@ -61,7 +67,7 @@ class ChatAnywhereClient(LLMClient):
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = json.loads(response.read().decode("utf-8"))
+                response_text = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"ChatAnywhere HTTP {exc.code}: {body}") from exc
@@ -77,7 +83,20 @@ class ChatAnywhereClient(LLMClient):
             ) from exc
 
         try:
+            raw = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "ChatAnywhere returned a non-JSON response: "
+                f"{response_text[:1000]!r}"
+            ) from exc
+
+        try:
             content = raw["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"Unexpected ChatAnywhere response shape: {raw}") from exc
+        if not isinstance(content, str):
+            raise RuntimeError(
+                f"ChatAnywhere returned non-string message content: {content!r}; "
+                f"response={raw}"
+            )
         return LLMResponse(content=content, raw=raw)

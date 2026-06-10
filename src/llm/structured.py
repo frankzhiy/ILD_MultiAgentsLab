@@ -1,4 +1,4 @@
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -6,6 +6,12 @@ from src.llm.base import LLMClient, LLMMessage
 from src.utils.json_utils import parse_llm_json
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class StructuredGenerationError(RuntimeError):
+    def __init__(self, message: str, *, attempts: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.attempts = attempts
 
 
 def json_schema_response_format(model: type[BaseModel], name: str) -> dict:
@@ -72,7 +78,19 @@ class StructuredLLMGenerator:
                         }
                     )
                     continue
-                raise
+                attempts.append(
+                    {
+                        "attempt": attempt_index,
+                        "response_format": (
+                            response_format.get("type") if response_format else None
+                        ),
+                        "transport_error": str(exc),
+                    }
+                )
+                raise StructuredGenerationError(
+                    f"Structured LLM request failed on attempt {attempt_index}: {exc}",
+                    attempts=attempts,
+                ) from exc
             attempt_record = {
                 "attempt": attempt_index,
                 "response_format": response_format.get("type") if response_format else None,
@@ -109,8 +127,11 @@ class StructuredLLMGenerator:
                     ),
                 ]
 
-        raise RuntimeError(
-            f"Structured LLM generation failed after {self.max_attempts} attempts: {last_error}"
+        summaries = "; ".join(_summarize_attempt(item) for item in attempts)
+        raise StructuredGenerationError(
+            f"Structured LLM generation failed after {self.max_attempts} attempts: "
+            f"{last_error}. Attempts: {summaries}",
+            attempts=attempts,
         )
 
     def _initial_response_format(self, schema_model: type[BaseModel], schema_name: str) -> dict:
@@ -119,3 +140,17 @@ class StructuredLLMGenerator:
         if self.response_format_mode == "json_object":
             return {"type": "json_object"}
         raise ValueError(f"Unsupported response_format_mode: {self.response_format_mode}")
+
+
+def _summarize_attempt(attempt: dict[str, Any]) -> str:
+    if attempt.get("transport_error"):
+        return f"#{attempt['attempt']} transport_error={attempt['transport_error']}"
+    raw = attempt.get("raw_response") or {}
+    choices = raw.get("choices") or []
+    finish_reason = choices[0].get("finish_reason") if choices else None
+    content = attempt.get("content")
+    content_length = len(content) if isinstance(content, str) else None
+    return (
+        f"#{attempt['attempt']} content_length={content_length}, "
+        f"finish_reason={finish_reason!r}, error={attempt.get('validation_error')}"
+    )

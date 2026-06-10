@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ if str(ROOT) not in sys.path:
 
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent  # noqa: E402
 from src.llm.chatanywhere_client import ChatAnywhereClient  # noqa: E402
+from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.reporting.html_report import render_report  # noqa: E402
 from src.utils.config import load_yaml  # noqa: E402
 
@@ -68,6 +70,26 @@ def choose_input_file(data_dir: str = "data/raw_cases") -> Path:
 
 def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def exception_diagnostics(exc: BaseException) -> dict[str, Any]:
+    chain: list[dict[str, Any]] = []
+    current: BaseException | None = exc
+    while current is not None:
+        item: dict[str, Any] = {
+            "error": str(current),
+            "error_type": type(current).__name__,
+        }
+        if isinstance(current, StructuredGenerationError):
+            item["attempts"] = current.attempts
+        chain.append(item)
+        current = current.__cause__ or current.__context__
+    return {
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+        "exception_chain": chain,
+        "traceback": "".join(traceback.format_exception(exc)),
+    }
 
 
 class ProgressReporter:
@@ -163,13 +185,13 @@ class ProgressReporter:
             return (
                 f"正在并行切分 graph units："
                 f"{payload.get('segment_count')} 个 segment，"
-                f"{payload.get('max_workers')} 个并发任务"
+                f"{payload.get('concurrent_tasks')} 个任务全部并发"
             )
         if step == "frame_triage":
             return (
                 f"正在并行分诊 frame："
                 f"{payload.get('unit_count')} 个 graph unit，"
-                f"{payload.get('max_workers')} 个并发任务"
+                f"{payload.get('concurrent_tasks')} 个任务全部并发"
             )
         if step == "write_outputs":
             return "正在进行：写入结果文件和 HTML 报告"
@@ -181,12 +203,12 @@ class ProgressReporter:
         if step == "graph_unit_extraction":
             return (
                 f"开始并行 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
-                f"max_workers={payload.get('max_workers')}..."
+                f"{payload.get('concurrent_tasks')} 个任务全部并发..."
             )
         if step == "frame_triage":
             return (
                 f"开始并行 frame triage（分诊）：{payload.get('unit_count')} 个 graph unit，"
-                f"max_workers={payload.get('max_workers')}..."
+                f"{payload.get('concurrent_tasks')} 个任务全部并发..."
             )
         if step == "write_outputs":
             return "开始写入结果文件和 HTML 报告..."
@@ -251,18 +273,6 @@ def main() -> int:
         default="outputs/runs",
         help="Directory where timestamped run folders are created.",
     )
-    parser.add_argument(
-        "--graph-unit-workers",
-        type=int,
-        default=None,
-        help="Parallel LLM workers for per-segment graph-unit extraction.",
-    )
-    parser.add_argument(
-        "--frame-triage-workers",
-        type=int,
-        default=None,
-        help="Parallel LLM workers for per-segment frame triage.",
-    )
     args = parser.parse_args()
     load_env_file()
 
@@ -271,18 +281,8 @@ def main() -> int:
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
     config = load_yaml(args.config)
-    graph_unit_workers = int(
-        args.graph_unit_workers
-        if args.graph_unit_workers is not None
-        else config.get("graph_unit_max_workers", 4)
-    )
-    frame_triage_workers = int(
-        args.frame_triage_workers
-        if args.frame_triage_workers is not None
-        else config.get("frame_triage_max_workers", 4)
-    )
     case_id = args.case_id or input_path.stem
-    llm = ChatAnywhereClient.from_env()
+    llm = ChatAnywhereClient.from_config(config)
     agent = SemanticGraphingAgent.from_config(args.config, llm)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -303,29 +303,35 @@ def main() -> int:
         result = agent.classify(input_text, case_id=case_id, progress=reporter.event)
         graph_units, graph_unit_trace = agent.extract_graph_units(
             result.classification,
-            max_workers=graph_unit_workers,
             progress=reporter.event,
         )
         frame_triage, frame_triage_trace = agent.triage_frames(
             graph_units,
-            max_workers=frame_triage_workers,
             progress=reporter.event,
         )
     except Exception as exc:
-        reporter.event("run_failed", {"error": str(exc)})
+        diagnostics = exception_diagnostics(exc)
+        reporter.event(
+            "run_failed",
+            {
+                "error": diagnostics["error"],
+                "error_type": diagnostics["error_type"],
+            },
+        )
         (run_dir / "input.txt").write_text(input_text, encoding="utf-8")
         write_json(
             run_dir / "error.json",
             {
                 "case_id": case_id,
                 "input_path": str(input_path),
-                "error": str(exc),
-                "error_type": type(exc).__name__,
+                "model": llm.model,
+                **diagnostics,
             },
         )
         write_json(run_dir / "timing.json", reporter.summary())
         print(f"Run directory: {run_dir.resolve()}")
         print(f"Error: {exc}")
+        print(f"Detailed diagnostics: {(run_dir / 'error.json').resolve()}")
         return 1
 
     reporter.event("write_outputs_started", {})
