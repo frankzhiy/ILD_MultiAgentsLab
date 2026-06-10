@@ -9,5 +9,5 @@ max_tokens: 10000000
 strict_json: true
 classification_prompt: src/prompts/semantic_graphing/document_classification.md
 graph_unit_prompt: src/prompts/semantic_graphing/graph_unit_extraction.md
-frame_triage_prompt: src/prompts/semantic_graphing/frame_triage.md
+primary_frame_prompt: src/prompts/semantic_graphing/primary_frame_selection.md
 slot_filling_prompt: src/prompts/semantic_graphing/frame_slot_filling.md

@@ -9,6 +9,7 @@ free-text clinical narrative
   -> clinical discourse segmentation
   -> discourse unit labeling with contained source types
   -> graph unit extraction (one clinical event nucleus per unit)
+  -> primary frame selection (one organization template per graph unit)
   -> HTML research report for manual inspection
 ```
 
@@ -26,7 +27,8 @@ export CHATANYWHERE_API_KEY="..."
 Set the model, ChatAnywhere base URL, and timeout in
 `configs/agents/semantic_graphing/agent.yaml`.
 
-The current manual script runs clinical discourse segmentation and graph unit extraction.
+The current manual script runs clinical discourse segmentation, graph-unit extraction,
+and primary-frame selection.
 
 ```bash
 python3 scripts/run/run_semantic_graph_agent.py \
@@ -43,6 +45,8 @@ python3 scripts/run/run_semantic_graph_agent.py
 The script writes a timestamped run folder under `outputs/runs/`, including:
 
 - `discourse_segments.json`
-- `discourse_segmentation_report.html`
+- `graph_units.json`
+- `primary_frames.json`
+- `report.html`
 - `trace.json`
 - `timing.json`

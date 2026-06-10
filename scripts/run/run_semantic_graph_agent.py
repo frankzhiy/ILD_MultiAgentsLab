@@ -187,9 +187,9 @@ class ProgressReporter:
                 f"{payload.get('segment_count')} 个 segment，"
                 f"{payload.get('concurrent_tasks')} 个任务全部并发"
             )
-        if step == "frame_triage":
+        if step == "primary_frame_selection":
             return (
-                f"正在并行分诊 frame："
+                f"正在并行选择 primary frame："
                 f"{payload.get('unit_count')} 个 graph unit，"
                 f"{payload.get('concurrent_tasks')} 个任务全部并发"
             )
@@ -205,9 +205,9 @@ class ProgressReporter:
                 f"开始并行 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
                 f"{payload.get('concurrent_tasks')} 个任务全部并发..."
             )
-        if step == "frame_triage":
+        if step == "primary_frame_selection":
             return (
-                f"开始并行 frame triage（分诊）：{payload.get('unit_count')} 个 graph unit，"
+                f"开始并行 primary frame selection：{payload.get('unit_count')} 个 graph unit，"
                 f"{payload.get('concurrent_tasks')} 个任务全部并发..."
             )
         if step == "write_outputs":
@@ -231,10 +231,10 @@ class ProgressReporter:
                 f"完成 graph-unit extraction：{payload.get('segment_count')} 个 segment，"
                 f"{payload.get('graph_unit_count')} 个 graph units，{duration_text}"
             )
-        if step == "frame_triage":
+        if step == "primary_frame_selection":
             return (
-                f"完成 frame triage：{payload.get('unit_count')} 个 graph unit，"
-                f"{payload.get('triggered_frame_count')} 个触发 frame，{duration_text}"
+                f"完成 primary frame selection：{payload.get('unit_count')} 个 graph unit，"
+                f"{payload.get('boundary_warning_count')} 个边界复核提示，{duration_text}"
             )
         if step == "write_outputs":
             return f"完成结果写入，{duration_text}"
@@ -251,7 +251,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Run Step 2 and Step 3 of the ILD semantic graphing workflow: "
-            "clinical discourse segmentation and graph-unit extraction."
+            "clinical discourse segmentation, graph-unit extraction, and primary-frame selection."
         )
     )
     parser.add_argument(
@@ -295,8 +295,8 @@ def main() -> int:
     reporter.log(f"输出目录：{run_dir}")
     reporter.log(f"模型：{llm.model}")
     reporter.log(
-        "当前阶段：Step 2 discourse segmentation + Step 3 Stage 1 frame triage；"
-        "产出 discourse segments + graph units + frame triage。"
+        "当前阶段：Step 2 discourse segmentation + Step 3 Stage 1 primary frame selection；"
+        "产出 discourse segments + graph units + primary frames。"
     )
 
     try:
@@ -305,7 +305,7 @@ def main() -> int:
             result.classification,
             progress=reporter.event,
         )
-        frame_triage, frame_triage_trace = agent.triage_frames(
+        primary_frames, primary_frame_trace = agent.select_primary_frames(
             graph_units,
             progress=reporter.event,
         )
@@ -337,13 +337,13 @@ def main() -> int:
     reporter.event("write_outputs_started", {})
     write_json(run_dir / "discourse_segments.json", result.classification.model_dump())
     write_json(run_dir / "graph_units.json", graph_units.model_dump())
-    write_json(run_dir / "frame_triage.json", frame_triage.model_dump())
+    write_json(run_dir / "primary_frames.json", primary_frames.model_dump())
     write_json(
         run_dir / "trace.json",
         {
             **result.trace,
             "graph_unit_extraction": graph_unit_trace,
-            "frame_triage": frame_triage_trace,
+            "primary_frame_selection": primary_frame_trace,
         },
     )
     (run_dir / "input.txt").write_text(input_text, encoding="utf-8")
@@ -355,7 +355,7 @@ def main() -> int:
         raw_text=input_text,
         timing=timing_before_report,
         output_path=run_dir / "report.html",
-        frame_triage=frame_triage,
+        primary_frames=primary_frames,
     )
     reporter.event(
         "write_outputs_completed",
@@ -370,9 +370,10 @@ def main() -> int:
     print(f"HTML report: {report_path.resolve()}")
     print(f"Segments: {len(result.classification.segments)}")
     print(f"Graph units: {sum(len(item.graph_units) for item in graph_units.segments)}")
+    print(f"Primary frames: {sum(len(item.units) for item in primary_frames.segments)}")
     print(
-        "Triggered frames: "
-        f"{sum(len(unit.triggered_frames) for item in frame_triage.segments for unit in item.units)}"
+        "Boundary warnings: "
+        f"{sum(unit.boundary_warning is not None for item in primary_frames.segments for unit in item.units)}"
     )
     print(
         "Contained source types: "

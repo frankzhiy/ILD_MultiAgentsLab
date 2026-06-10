@@ -4,40 +4,38 @@ from src.schemas.semantic_graphing.document import (
     DocumentClassification,
     SourceType,
 )
-from src.schemas.semantic_graphing.frame import (
-    DocumentFrameTriage,
-    FRAME_DEFINITION_BY_FRAME,
-    FRAME_DEFINITIONS,
-    FrameDefinition,
-    GraphFrame,
-    GraphUnitFrameTriage,
-    SegmentFrameTriage,
-    TriagedFrame,
-    render_frame_catalog,
-)
 from src.schemas.semantic_graphing.graph_unit import (
     DocumentGraphUnits,
     GraphUnit,
     MdtSpecialty,
     SegmentGraphUnits,
 )
+from src.schemas.semantic_graphing.primary_frame import (
+    DocumentPrimaryFrames,
+    GraphUnitPrimaryFrame,
+    PRIMARY_FRAME_DEFINITION_BY_FRAME,
+    PRIMARY_FRAME_DEFINITIONS,
+    PrimaryFrame,
+    PrimaryFrameDefinition,
+    SegmentPrimaryFrames,
+    render_primary_frame_catalog,
+)
 
 __all__ = [
     "ClassifiedSegment",
     "DiscourseUnitType",
     "DocumentClassification",
-    "DocumentFrameTriage",
     "DocumentGraphUnits",
-    "FRAME_DEFINITIONS",
-    "FRAME_DEFINITION_BY_FRAME",
-    "FrameDefinition",
-    "GraphFrame",
+    "DocumentPrimaryFrames",
     "GraphUnit",
-    "GraphUnitFrameTriage",
+    "GraphUnitPrimaryFrame",
     "MdtSpecialty",
-    "SegmentFrameTriage",
+    "PRIMARY_FRAME_DEFINITIONS",
+    "PRIMARY_FRAME_DEFINITION_BY_FRAME",
+    "PrimaryFrame",
+    "PrimaryFrameDefinition",
+    "SegmentPrimaryFrames",
     "SegmentGraphUnits",
     "SourceType",
-    "TriagedFrame",
-    "render_frame_catalog",
+    "render_primary_frame_catalog",
 ]

@@ -4,15 +4,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents.semantic_graphing.document_classifier import DocumentClassifier
-from src.agents.semantic_graphing.frame_triage import FrameTriager
 from src.agents.semantic_graphing.graph_unit_extractor import SegmentGraphUnitExtractor
+from src.agents.semantic_graphing.primary_frame_selector import PrimaryFrameSelector
 
 from src.llm.base import LLMClient
 from src.schemas.semantic_graphing import (
     DocumentClassification,
-    DocumentFrameTriage,
     DocumentGraphUnits,
-    SegmentFrameTriage,
+    DocumentPrimaryFrames,
+    SegmentPrimaryFrames,
 )
 from src.utils.config import load_yaml
 
@@ -30,13 +30,11 @@ class SemanticGraphingAgent:
         *,
         classifier: DocumentClassifier,
         graph_unit_extractor: SegmentGraphUnitExtractor,
-        frame_triager: FrameTriager,
-
+        primary_frame_selector: PrimaryFrameSelector,
     ) -> None:
         self.classifier = classifier
         self.graph_unit_extractor = graph_unit_extractor
-        self.frame_triager = frame_triager
-
+        self.primary_frame_selector = primary_frame_selector
 
     @classmethod
     def from_config(cls, config_path: str | Path, llm: LLMClient) -> "SemanticGraphingAgent":
@@ -59,11 +57,11 @@ class SemanticGraphingAgent:
                 temperature=temperature,
                 max_tokens=max_tokens,
             ),
-            frame_triager=FrameTriager(
+            primary_frame_selector=PrimaryFrameSelector(
                 llm,
                 config.get(
-                    "frame_triage_prompt",
-                    "src/prompts/semantic_graphing/frame_triage.md",
+                    "primary_frame_prompt",
+                    "src/prompts/semantic_graphing/primary_frame_selection.md",
                 ),
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -161,12 +159,12 @@ class SemanticGraphingAgent:
             "concurrent_tasks": len(segments),
         }
 
-    def triage_frames(
+    def select_primary_frames(
         self,
         graph_units: DocumentGraphUnits,
         *,
         progress: Callable[[str, dict[str, Any]], None] | None = None,
-    ) -> tuple[DocumentFrameTriage, dict[str, Any]]:
+    ) -> tuple[DocumentPrimaryFrames, dict[str, Any]]:
         def report(event: str, **payload: Any) -> None:
             if progress:
                 progress(event, payload)
@@ -175,7 +173,7 @@ class SemanticGraphingAgent:
         unit_total = sum(len(item.graph_units) for item in segments)
         worker_count = max(1, unit_total)
         report(
-            "frame_triage_started",
+            "primary_frame_selection_started",
             segment_count=len(segments),
             unit_count=unit_total,
             concurrent_tasks=unit_total,
@@ -185,7 +183,7 @@ class SemanticGraphingAgent:
         indexed_traces: dict[tuple[int, int], dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
-                executor.submit(self.frame_triager.triage_unit, unit): (
+                executor.submit(self.primary_frame_selector.select_unit, unit): (
                     segment_index,
                     unit_index,
                     segment,
@@ -197,28 +195,29 @@ class SemanticGraphingAgent:
             for future in as_completed(futures):
                 segment_index, unit_index, segment, unit = futures[future]
                 try:
-                    triage, trace = future.result()
+                    selection, trace = future.result()
                 except Exception as exc:
                     raise RuntimeError(
-                        f"Frame triage failed for {unit.graph_unit_id}: {exc}"
+                        f"Primary-frame selection failed for {unit.graph_unit_id}: {exc}"
                     ) from exc
                 key = (segment_index, unit_index)
-                indexed_results[key] = triage
+                indexed_results[key] = selection
                 indexed_traces[key] = {
                     "graph_unit_id": unit.graph_unit_id,
                     "trace": trace,
                 }
                 report(
-                    "frame_triage_unit_done",
+                    "primary_frame_selection_unit_done",
                     segment_id=segment.segment_id,
                     graph_unit_id=unit.graph_unit_id,
                     completed=len(indexed_results),
                     total=unit_total,
-                    triggered_frame_count=len(triage.triggered_frames),
+                    primary_frame=str(selection.primary_frame),
+                    has_boundary_warning=selection.boundary_warning is not None,
                 )
 
         ordered_results = [
-            SegmentFrameTriage(
+            SegmentPrimaryFrames(
                 segment_id=segment.segment_id,
                 units=[
                     indexed_results[(segment_index, unit_index)]
@@ -237,20 +236,18 @@ class SemanticGraphingAgent:
             }
             for segment_index, segment in enumerate(segments)
         ]
-        document_triage = DocumentFrameTriage(segments=ordered_results)
-        triggered_frame_count = sum(
-            len(unit.triggered_frames)
-            for item in ordered_results
-            for unit in item.units
+        document_primary_frames = DocumentPrimaryFrames(segments=ordered_results)
+        boundary_warning_count = sum(
+            unit.boundary_warning is not None for item in ordered_results for unit in item.units
         )
         report(
-            "frame_triage_completed",
+            "primary_frame_selection_completed",
             segment_count=len(ordered_results),
             unit_count=unit_total,
-            triggered_frame_count=triggered_frame_count,
+            boundary_warning_count=boundary_warning_count,
         )
 
-        return document_triage, {
+        return document_primary_frames, {
             "segments": ordered_traces,
             "concurrent_tasks": unit_total,
         }

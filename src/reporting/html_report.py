@@ -5,28 +5,27 @@ from typing import Any
 
 from src.agents.semantic_graphing.agent import ClassificationRunResult
 from src.schemas.semantic_graphing import (
-    DocumentFrameTriage,
     DocumentGraphUnits,
-    FRAME_DEFINITION_BY_FRAME,
+    DocumentPrimaryFrames,
 )
 
 
-FRAME_ZH: dict[str, str] = {
-    "symptom_episode": "症状起病/加重",
-    "encounter": "就诊/住院接触",
-    "examination_report": "检查报告面板",
-    "diagnosis": "诊断判断",
-    "treatment_course": "独立治疗/用药",
-    "background_fact": "背景史",
+PRIMARY_FRAME_ZH: dict[str, str] = {
+    "symptom_episode": "症状病程事件",
+    "encounter": "诊疗接触事件",
+    "standalone_examination": "独立检查事件",
+    "clinical_assessment": "独立临床判断事件",
+    "treatment_course": "独立治疗过程",
+    "background_context": "背景上下文",
 }
 
-FRAME_COLORS: dict[str, str] = {
+PRIMARY_FRAME_COLORS: dict[str, str] = {
     "symptom_episode": "#bfdbfe",
     "encounter": "#fed7aa",
-    "examination_report": "#c7d2fe",
-    "diagnosis": "#fdba74",
+    "standalone_examination": "#c7d2fe",
+    "clinical_assessment": "#fdba74",
     "treatment_course": "#fde68a",
-    "background_fact": "#e5e7eb",
+    "background_context": "#e5e7eb",
 }
 
 
@@ -112,7 +111,7 @@ def render_report(
     raw_text: str,
     timing: dict[str, Any],
     output_path: str | Path,
-    frame_triage: DocumentFrameTriage | None = None,
+    primary_frames: DocumentPrimaryFrames | None = None,
 ) -> Path:
     """Render a single HTML report covering the full run pipeline."""
     html = _render_html(
@@ -121,7 +120,7 @@ def render_report(
         source_filename=source_filename,
         raw_text=raw_text,
         timing=timing,
-        frame_triage=frame_triage,
+        primary_frames=primary_frames,
     )
     path = Path(output_path)
     path.write_text(html, encoding="utf-8")
@@ -135,14 +134,13 @@ def _render_html(
     source_filename: str,
     raw_text: str,
     timing: dict[str, Any],
-    frame_triage: DocumentFrameTriage | None = None,
+    primary_frames: DocumentPrimaryFrames | None = None,
 ) -> str:
     classification = result.classification
     segments = classification.segments
     segment_by_id = {segment.segment_id: segment for segment in segments}
 
     total_units = sum(len(item.graph_units) for item in graph_units.segments)
-    unit_type_counts = Counter(str(seg.unit_type) for seg in segments)
     source_counts = Counter(
         str(unit.source_type)
         for item in graph_units.segments
@@ -156,14 +154,13 @@ def _render_html(
     )
     detected_contained = [str(item) for item in classification.detected_contained_source_types]
 
-    triage_by_unit: dict[str, list] = {}
-    frame_counts: Counter = Counter()
-    if frame_triage is not None:
-        for seg in frame_triage.segments:
+    primary_frame_by_unit: dict[str, Any] = {}
+    primary_frame_counts: Counter = Counter()
+    if primary_frames is not None:
+        for seg in primary_frames.segments:
             for unit in seg.units:
-                triage_by_unit[unit.graph_unit_id] = list(unit.triggered_frames)
-                for tf in unit.triggered_frames:
-                    frame_counts[str(tf.frame)] += 1
+                primary_frame_by_unit[unit.graph_unit_id] = unit
+                primary_frame_counts[str(unit.primary_frame)] += 1
 
     total_elapsed = timing.get("total_elapsed_seconds")
     elapsed_text = f"{total_elapsed:.2f}s" if isinstance(total_elapsed, int | float) else "N/A"
@@ -257,7 +254,7 @@ def _render_html(
       <span class="stat-badge">segment {len(segments)}</span>
       <span class="stat-badge">graph unit {total_units}</span>
       <span class="stat-badge">contained source type {len(detected_contained)}</span>
-      <span class="stat-badge">触发 frame {sum(frame_counts.values())}</span>
+      <span class="stat-badge">primary frame {sum(primary_frame_counts.values())}</span>
       <span class="stat-badge">总耗时 {escape(elapsed_text)}</span>
     </div>
 
@@ -266,11 +263,11 @@ def _render_html(
     <div class="highlight-box">{highlighted_text}</div>
 
     <h2>🔍 Segment 详细分析</h2>
-    <p class="note">每个segment包含：段落分类、内部的graph units（临床事件核心）及其触发的临床框架</p>
-    {_render_unified_segments(graph_units, segment_by_id, triage_by_unit)}
+    <p class="note">每个segment包含：段落分类、内部的graph units（临床事件核心）及其单一 primary frame</p>
+    {_render_unified_segments(graph_units, segment_by_id, primary_frame_by_unit)}
 
     <h2>📊 统计信息</h2>
-    {_render_statistics_summary(frame_counts, source_counts, specialty_counts)}
+    {_render_statistics_summary(primary_frame_counts, source_counts, specialty_counts)}
   </main>
 </body>
 </html>
@@ -280,10 +277,10 @@ def _render_html(
 def _render_unified_segments(
     graph_units: DocumentGraphUnits,
     segment_by_id: dict,
-    triage_by_unit: dict[str, list] | None = None,
+    primary_frame_by_unit: dict[str, Any] | None = None,
 ) -> str:
-    """统一渲染：每个segment只显示一次，包含其graph units和triggered frames"""
-    triage_by_unit = triage_by_unit or {}
+    """Render each segment once with its graph units and primary-frame selections."""
+    primary_frame_by_unit = primary_frame_by_unit or {}
     cards = []
     
     for index, segment_units in enumerate(graph_units.segments):
@@ -335,21 +332,29 @@ def _render_unified_segments(
                 status_badge = f"<span class='badge' style='background:#dbeafe'>状态: {escape(unit.status)}</span>"
                 certainty_badge = f"<span class='badge' style='background:#fef3c7'>确定性: {escape(unit.certainty)}</span>"
                 
-                # Triggered frames
-                triggered = triage_by_unit.get(unit.graph_unit_id, [])
-                frame_badges = ""
-                if triggered:
-                    frame_badges = "<div class='frame-row'><span class='frame-label'>🎯 触发框架:</span>" + "".join(
-                        f"<span class='badge badge-frame' style='background:{escape(FRAME_COLORS.get(str(tf.frame), '#e5e7eb'))}'>"
-                        f"{escape(FRAME_ZH.get(str(tf.frame), str(tf.frame)))}</span>"
-                        for tf in triggered
-                    ) + "</div>"
+                selection = primary_frame_by_unit.get(unit.graph_unit_id)
+                primary_frame_block = ""
+                if selection is not None:
+                    frame = str(selection.primary_frame)
+                    warning = (
+                        f"<div class='frame-rationale'><strong>边界复核提示：</strong>"
+                        f"{escape(selection.boundary_warning)}</div>"
+                        if selection.boundary_warning
+                        else ""
+                    )
+                    primary_frame_block = (
+                        "<div class='frame-row'><span class='frame-label'>Primary frame:</span>"
+                        f"<span class='badge badge-frame' style='background:{escape(PRIMARY_FRAME_COLORS.get(frame, '#e5e7eb'))}'>"
+                        f"{escape(PRIMARY_FRAME_ZH.get(frame, frame))}</span></div>"
+                        f"<div class='frame-rationale'>{escape(selection.rationale)}</div>"
+                        f"{warning}"
+                    )
                 
                 unit_blocks.append(
                     "<div class='unit'>"
                     f"<div class='unit-id'>{escape(unit.graph_unit_id)}</div>"
                     f"<div class='unit-meta'>{source_badge}{specialty_badges}{status_badge}{certainty_badge}</div>"
-                    f"{frame_badges}"
+                    f"{primary_frame_block}"
                     f"<pre style='background:#f8fafc;padding:8px;border-radius:4px;font-size:13px;'>{escape(unit.text)}</pre>"
                     "</div>"
                 )
@@ -371,23 +376,24 @@ def _render_unified_segments(
 
 
 def _render_statistics_summary(
-    frame_counts: Counter,
+    primary_frame_counts: Counter,
     source_counts: Counter,
     specialty_counts: Counter,
 ) -> str:
     """简化的统计信息展示"""
     
-    # Frame统计
+    # Primary frame statistics
     frame_rows = []
-    for frame, count in frame_counts.most_common():
-        frame_label = FRAME_ZH.get(frame, frame)
+    for frame, count in primary_frame_counts.most_common():
+        frame_label = PRIMARY_FRAME_ZH.get(frame, frame)
         frame_rows.append(
-            f"<tr><td><span class='badge badge-frame' style='background:{escape(FRAME_COLORS.get(frame, '#e5e7eb'))}'>"
+            f"<tr><td><span class='badge badge-frame' style='background:{escape(PRIMARY_FRAME_COLORS.get(frame, '#e5e7eb'))}'>"
             f"{escape(frame_label)}</span></td><td>{count}</td></tr>"
         )
+    frame_rows_html = "".join(frame_rows) or "<tr><td colspan='2'>无数据</td></tr>"
     frame_table = (
-        "<table><thead><tr><th>临床框架类型</th><th>触发次数</th></tr></thead>"
-        f"<tbody>{''.join(frame_rows) if frame_rows else '<tr><td colspan=\"2\">无数据</td></tr>'}</tbody></table>"
+        "<table><thead><tr><th>Primary frame 类型</th><th>Unit 数量</th></tr></thead>"
+        f"<tbody>{frame_rows_html}</tbody></table>"
     )
     
     # Source type统计
@@ -411,7 +417,7 @@ def _render_statistics_summary(
     )
     
     return (
-        f"<details open><summary>临床框架触发统计</summary><div class='body'>{frame_table}</div></details>"
+        f"<details open><summary>Primary frame 统计</summary><div class='body'>{frame_table}</div></details>"
         f"<details><summary>信息来源类型分布</summary><div class='body'>{source_table}</div></details>"
         f"<details><summary>MDT专科分布</summary><div class='body'>{specialty_table}</div></details>"
     )

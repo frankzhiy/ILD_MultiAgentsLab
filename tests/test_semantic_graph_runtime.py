@@ -13,13 +13,12 @@ from src.schemas.semantic_graphing import (
     DiscourseUnitType,
     DocumentClassification,
     DocumentGraphUnits,
-    GraphFrame,
     GraphUnit,
-    GraphUnitFrameTriage,
+    GraphUnitPrimaryFrame,
     MdtSpecialty,
+    PrimaryFrame,
     SegmentGraphUnits,
     SourceType,
-    TriagedFrame,
 )
 
 
@@ -48,13 +47,12 @@ class FakeGraphUnitExtractor:
         return SegmentGraphUnits(segment_id=segment.segment_id, graph_units=[unit]), {}
 
 
-class FakeFrameTriager:
-    def triage_unit(self, unit):
-        result = GraphUnitFrameTriage(
+class FakePrimaryFrameSelector:
+    def select_unit(self, unit):
+        result = GraphUnitPrimaryFrame(
             graph_unit_id=unit.graph_unit_id,
-            triggered_frames=[
-                TriagedFrame(frame=GraphFrame.BACKGROUND_FACT, rationale="test")
-            ],
+            primary_frame=PrimaryFrame.BACKGROUND_CONTEXT,
+            rationale="test",
         )
         return result, {}
 
@@ -113,7 +111,7 @@ def test_each_stage_runs_all_tasks_concurrently(monkeypatch):
     agent = SemanticGraphingAgent(
         classifier=None,
         graph_unit_extractor=FakeGraphUnitExtractor(),
-        frame_triager=FakeFrameTriager(),
+        primary_frame_selector=FakePrimaryFrameSelector(),
     )
     classification = DocumentClassification(
         segments=[
@@ -143,8 +141,8 @@ def test_each_stage_runs_all_tasks_concurrently(monkeypatch):
             *graph_units.segments[1:],
         ]
     )
-    _, triage_trace = agent.triage_frames(graph_units)
+    _, primary_frame_trace = agent.select_primary_frames(graph_units)
 
     assert worker_counts == [3, 4]
     assert graph_trace["concurrent_tasks"] == 3
-    assert triage_trace["concurrent_tasks"] == 4
+    assert primary_frame_trace["concurrent_tasks"] == 4
