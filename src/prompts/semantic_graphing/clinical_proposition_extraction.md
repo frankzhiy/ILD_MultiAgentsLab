@@ -36,11 +36,12 @@
 - 每个 proposition、modifier 和 attribution 都必须提供 `evidence.evidence_ids` 和 `evidence.quote`。
 - `evidence_ids` 必须从下方 evidence blocks 中选择，按原文顺序排列，且只能引用连续 blocks。
 - `quote` 必须是所引用 evidence blocks 合并文本中的完整连续原文子串。
-- `concept_text` 表达可独立引用的临床命题，允许对原文中的并列省略进行语义展开；`evidence.quote` 表达支持该命题的原文证据，两者不要求逐字相同。
+- `concept_text` 表达一条最小但语义完整、可独立理解的临床命题。对于原文中的并列省略，可以补全各并列项共享但被省略的主语、宾语、谓词、状态或判断结果，使每条 proposition 能够独立理解。除完成该命题所必需的共享语义外，不要加入可单独归入 modifier 的限定信息。任何已经写入 concept_text 的语义，不得再次作为该 proposition 的 modifier 输出。`evidence.quote` 表达支持该命题的原文证据，两者不要求逐字相同。
 - 不要把语义展开或规范化后的 `concept_text` 直接复制为 `evidence.quote`。
 - proposition 的 quote 应覆盖表达该临床陈述的最小充分连续原文。
 - 当 proposition 展开了并列省略、导致展开后的 `concept_text` 不是原文连续子串时，`quote` 必须引用包含该概念及共享谓词或状态的完整连续原文；多个 proposition 可以共享同一 evidence block 或 quote。
 - modifier 的 quote 应仅覆盖表达该修饰信息的连续原文，并至少与所属 proposition 共享一个 evidence_id。
+- actor_text 必须逐字包含于 attribution 的 evidence.quote 中。
 
 ID 规则：
 - proposition_id 在当前 unit 内唯一，使用 `prop_001`、`prop_002` 等形式。
