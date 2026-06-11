@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.semantic_graphing.graph_unit import GraphUnitCertainty, GraphUnitStatus
 from src.schemas.semantic_graphing.primary_frame import PrimaryFrame
@@ -71,29 +71,34 @@ class AttributionType(StrEnum):
     OTHER = "other"
 
 
-class EvidenceSpan(BaseModel):
-    """Exact evidence span using offsets relative to the graph-unit text."""
+class EvidenceBlock(BaseModel):
+    """Stable, ordered source-text block addressable by graph nodes and agents."""
 
     model_config = ConfigDict(extra="forbid")
 
+    evidence_id: str = Field(
+        pattern=r"^.+_ev_\d{3,}$",
+        description="Identifier unique across the document, derived from graph_unit_id and order.",
+    )
     text: str = Field(
         min_length=1,
-        description="Exact continuous substring copied from the graph-unit text.",
-    )
-    start_char: int = Field(
-        ge=0,
-        description="Program-computed 0-based inclusive start offset relative to graph-unit text.",
-    )
-    end_char: int = Field(
-        ge=1,
-        description="Program-computed 0-based exclusive end offset relative to graph-unit text.",
+        description="Exact continuous block copied from the graph-unit text.",
     )
 
-    @model_validator(mode="after")
-    def validate_offsets(self) -> "EvidenceSpan":
-        if self.end_char <= self.start_char:
-            raise ValueError("end_char must be greater than start_char")
-        return self
+
+class EvidenceReference(BaseModel):
+    """A precise quote grounded in one or more contiguous evidence blocks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_ids: list[str] = Field(
+        min_length=1,
+        description="Contiguous evidence blocks supporting this item, in source order.",
+    )
+    quote: str = Field(
+        min_length=1,
+        description="Exact continuous quote contained in the referenced evidence blocks.",
+    )
 
 
 class ClinicalAttribution(BaseModel):
@@ -108,8 +113,8 @@ class ClinicalAttribution(BaseModel):
         min_length=1,
         description="Verbatim or minimally scoped text naming the responsible source.",
     )
-    source_span: EvidenceSpan = Field(
-        description="Evidence span that explicitly establishes the attribution."
+    evidence: EvidenceReference = Field(
+        description="Evidence reference that explicitly establishes the attribution."
     )
 
 
@@ -129,8 +134,8 @@ class ClinicalModifier(BaseModel):
         min_length=1,
         description="Modifier value stated in the source text without unsupported normalization.",
     )
-    source_span: EvidenceSpan = Field(
-        description="Minimal exact source span expressing this modifier."
+    evidence: EvidenceReference = Field(
+        description="Minimal exact evidence reference expressing this modifier."
     )
 
 
@@ -166,8 +171,8 @@ class ClinicalProposition(BaseModel):
         default_factory=list,
         description="Modifiers that belong specifically to this proposition.",
     )
-    source_span: EvidenceSpan = Field(
-        description="Minimal sufficient exact source span supporting the proposition."
+    evidence: EvidenceReference = Field(
+        description="Minimal sufficient evidence reference supporting the proposition."
     )
     rationale: str = Field(
         min_length=1,
@@ -183,6 +188,10 @@ class GraphUnitClinicalPropositions(BaseModel):
     graph_unit_id: str = Field(description="Graph unit from which these propositions were extracted.")
     primary_frame: PrimaryFrame = Field(
         description="Selected event-nucleus organization template for the graph unit."
+    )
+    evidence_blocks: list[EvidenceBlock] = Field(
+        min_length=1,
+        description="Program-generated ordered evidence blocks reconstructing the graph-unit text.",
     )
     event_modifiers: list[ClinicalModifier] = Field(
         default_factory=list,

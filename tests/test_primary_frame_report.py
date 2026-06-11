@@ -9,7 +9,8 @@ from src.schemas.semantic_graphing import (
     DocumentClinicalPropositions,
     DocumentGraphUnits,
     DocumentPrimaryFrames,
-    EvidenceSpan,
+    EvidenceBlock,
+    EvidenceReference,
     GraphUnit,
     GraphUnitClinicalPropositions,
     GraphUnitPrimaryFrame,
@@ -62,10 +63,10 @@ def test_report_renders_single_primary_frame_and_boundary_warning(tmp_path):
             SegmentPrimaryFrames(
                 segment_id="seg_001",
                 units=[
-                    GraphUnitPrimaryFrame(
-                        graph_unit_id="seg_001_gu_001",
-                        primary_frame=PrimaryFrame.ENCOUNTER,
-                        rationale="围绕一次接触展开。",
+                        GraphUnitPrimaryFrame(
+                            graph_unit_id="seg_001_gu_001",
+                            primary_frame=PrimaryFrame.ENCOUNTER,
+                            rationale="围绕一次接触展开。",
                         boundary_warning="复核事件核边界。",
                     )
                 ],
@@ -80,25 +81,26 @@ def test_report_renders_single_primary_frame_and_boundary_warning(tmp_path):
                     GraphUnitClinicalPropositions(
                         graph_unit_id="seg_001_gu_001",
                         primary_frame=PrimaryFrame.ENCOUNTER,
+                        evidence_blocks=[
+                            EvidenceBlock(evidence_id="seg_001_gu_001_ev_001", text=text)
+                        ],
                         propositions=[
                             ClinicalProposition(
                                 proposition_id="prop_001",
                                 proposition_type=PropositionType.SYMPTOM,
                                 concept_text="测试",
-                                source_span=EvidenceSpan(
-                                    text="测试",
-                                    start_char=0,
-                                    end_char=2,
+                                evidence=EvidenceReference(
+                                    evidence_ids=["seg_001_gu_001_ev_001"],
+                                    quote="测试",
                                 ),
                                 modifiers=[
                                     ClinicalModifier(
                                         modifier_id="mod_001",
                                         modifier_type=ModifierType.QUALITY,
                                         value_text="原文",
-                                        source_span=EvidenceSpan(
-                                            text="原文",
-                                            start_char=2,
-                                            end_char=4,
+                                        evidence=EvidenceReference(
+                                            evidence_ids=["seg_001_gu_001_ev_001"],
+                                            quote="原文",
                                         ),
                                     )
                                 ],
@@ -128,8 +130,4 @@ def test_report_renders_single_primary_frame_and_boundary_warning(tmp_path):
     assert "复核事件核边界。" in html
     assert "Clinical propositions" in html
     assert "quality" in html
-    EvidenceSpan,
-    GraphUnitClinicalPropositions,
-    ModifierType,
-    PropositionType,
-    SegmentClinicalPropositions,
+    assert "seg_001_gu_001_ev_001" in html

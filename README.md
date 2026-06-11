@@ -10,6 +10,7 @@ free-text clinical narrative
   -> discourse unit labeling with contained source types
   -> graph unit extraction (one clinical event nucleus per unit)
   -> primary frame selection (one organization template per graph unit)
+  -> deterministic evidence-block generation with stable evidence IDs
   -> evidence-grounded clinical proposition and modifier extraction
   -> deterministic clinical proposition validation
   -> HTML research report for manual inspection
@@ -75,6 +76,10 @@ The script writes a timestamped run folder under `outputs/runs/`, including:
 - `trace.json`
 - `timing.json`
 - `task_cache/` with successful per-segment and per-unit results for interrupted-run recovery
+
+Each graph unit in `clinical_propositions.json` contains ordered evidence blocks with globally unique
+IDs. Propositions, modifiers, and attributions reference those blocks and retain an exact quote,
+allowing downstream doctor agents to discuss structured claims while citing the original text.
 
 Resume an interrupted run without repeating completed tasks:
 

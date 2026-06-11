@@ -20,7 +20,8 @@ from src.schemas.semantic_graphing import (
     DocumentClassification,
     DocumentClinicalPropositions,
     DocumentGraphUnits,
-    EvidenceSpan,
+    EvidenceBlock,
+    EvidenceReference,
     GraphUnit,
     GraphUnitPrimaryFrame,
     GraphUnitClinicalPropositions,
@@ -96,20 +97,20 @@ class FakePrimaryFrameSelector:
 
 class FakeClinicalPropositionExtractor:
     def extract_unit(self, unit, primary_frame, chunk_cache_dir=None):
-        from src.schemas.semantic_graphing import ClinicalProposition, EvidenceSpan, PropositionType
-
         result = GraphUnitClinicalPropositions(
             graph_unit_id=unit.graph_unit_id,
             primary_frame=primary_frame.primary_frame,
+            evidence_blocks=[
+                EvidenceBlock(evidence_id=f"{unit.graph_unit_id}_ev_001", text=unit.text)
+            ],
             propositions=[
                 ClinicalProposition(
                     proposition_id="prop_001",
                     proposition_type=PropositionType.OTHER,
                     concept_text=unit.text,
-                    source_span=EvidenceSpan(
-                        text=unit.text,
-                        start_char=0,
-                        end_char=len(unit.text),
+                    evidence=EvidenceReference(
+                        evidence_ids=[f"{unit.graph_unit_id}_ev_001"],
+                        quote=unit.text,
                     ),
                     rationale="test",
                 )
@@ -482,7 +483,7 @@ def test_completed_tasks_are_reused_from_cache(tmp_path):
     assert cached_graph_units == graph_units
     assert cached_primary_frames == primary_frames
     assert cached_propositions == propositions
-    require_complete_output_offsets(classification, graph_units, propositions)
+    require_complete_output_offsets(classification, graph_units)
 
 
 def test_final_output_contract_rejects_missing_offsets():
@@ -495,9 +496,6 @@ def test_final_output_contract_rejects_missing_offsets():
             confidence=1,
             rationale="test",
         )
-    with pytest.raises(ValidationError, match="start_char|end_char"):
-        EvidenceSpan(text="text")
-
     classification = DocumentClassification(
         segments=[
             ClassifiedSegment(
@@ -529,31 +527,8 @@ def test_final_output_contract_rejects_missing_offsets():
             )
         ]
     )
-    propositions = DocumentClinicalPropositions(
-        segments=[
-            SegmentClinicalPropositions(
-                segment_id="seg_001",
-                units=[
-                    GraphUnitClinicalPropositions(
-                        graph_unit_id="seg_001_gu_001",
-                        primary_frame=PrimaryFrame.BACKGROUND_CONTEXT,
-                        propositions=[
-                            ClinicalProposition(
-                                proposition_id="prop_001",
-                                proposition_type=PropositionType.OTHER,
-                                concept_text="text",
-                                source_span=EvidenceSpan(text="text", start_char=0, end_char=4),
-                                rationale="test",
-                            )
-                        ],
-                    )
-                ],
-            )
-        ]
-    )
-
     with pytest.raises(ValueError, match="missing offsets"):
-        require_complete_output_offsets(classification, graph_units, propositions)
+        require_complete_output_offsets(classification, graph_units)
 
 
 def test_run_signature_changes_when_prompt_content_changes(tmp_path):

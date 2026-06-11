@@ -443,12 +443,26 @@ def _render_clinical_propositions(unit_propositions: Any | None) -> str:
     if unit_propositions is None:
         return ""
 
+    evidence_blocks = "".join(
+        "<li>"
+        f"<code>{escape(block.evidence_id)}</code>: {escape(block.text)}"
+        "</li>"
+        for block in unit_propositions.evidence_blocks
+    )
+    evidence_section = (
+        "<div class='evidence-blocks'><strong>Evidence blocks</strong>"
+        f"<ul class='modifier-list'>{evidence_blocks}</ul></div>"
+    )
+
+    def render_evidence(evidence: Any) -> str:
+        evidence_ids = ", ".join(escape(item) for item in evidence.evidence_ids)
+        return f"<code>{evidence_ids}</code> · quote: {escape(evidence.quote)}"
+
     event_modifiers = ""
     if unit_propositions.event_modifiers:
         items = "".join(
             f"<li><strong>{escape(str(modifier.modifier_type))}</strong>: "
-            f"{escape(modifier.value_text)} "
-            f"<code>[{modifier.source_span.start_char}:{modifier.source_span.end_char}]</code></li>"
+            f"{escape(modifier.value_text)} · {render_evidence(modifier.evidence)}</li>"
             for modifier in unit_propositions.event_modifiers
         )
         event_modifiers = (
@@ -462,8 +476,7 @@ def _render_clinical_propositions(unit_propositions: Any | None) -> str:
         if proposition.modifiers:
             modifier_items = "".join(
                 f"<li><strong>{escape(str(modifier.modifier_type))}</strong>: "
-                f"{escape(modifier.value_text)} "
-                f"<code>[{modifier.source_span.start_char}:{modifier.source_span.end_char}]</code></li>"
+                f"{escape(modifier.value_text)} · {render_evidence(modifier.evidence)}</li>"
                 for modifier in proposition.modifiers
             )
             modifiers = f"<ul class='modifier-list'>{modifier_items}</ul>"
@@ -477,14 +490,13 @@ def _render_clinical_propositions(unit_propositions: Any | None) -> str:
             f"<div class='proposition-head'>{escape(proposition.concept_text)}</div>"
             f"<div class='proposition-meta'>{escape(str(proposition.proposition_type))} · "
             f"status: {escape(proposition.status)} · certainty: {escape(proposition.certainty)}"
-            f"{attribution} · "
-            f"span: [{proposition.source_span.start_char}:{proposition.source_span.end_char}]</div>"
+            f"{attribution} · {render_evidence(proposition.evidence)}</div>"
             f"{modifiers}</div>"
         )
 
     return (
         "<div class='propositions'><strong>Clinical propositions</strong>"
-        f"{event_modifiers}{''.join(proposition_items)}</div>"
+        f"{evidence_section}{event_modifiers}{''.join(proposition_items)}</div>"
     )
 
 
@@ -524,11 +536,12 @@ def _render_proposition_validation(unit_validation: Any | None) -> str:
 
     return (
         f"<div class='validation {state_class}'><strong>{state_label}</strong>"
-        f" · evidence coverage {metrics.evidence_coverage:.1%}"
         f" · propositions {metrics.proposition_count}"
         f" · event modifiers {metrics.event_modifier_count}"
         f" · proposition modifiers {metrics.proposition_modifier_count}"
         f" · attributed propositions {metrics.attributed_proposition_count}"
+        f" · evidence blocks {metrics.referenced_evidence_block_count}/{metrics.evidence_block_count}"
+        f" ({metrics.evidence_block_coverage:.1%})"
         f"{issues}</div>"
     )
 

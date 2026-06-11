@@ -2,11 +2,14 @@
 
 from collections import Counter, defaultdict
 
+from src.agents.semantic_graphing.clinical_proposition_extractor import build_evidence_blocks
 from src.schemas.semantic_graphing import (
     DocumentClinicalPropositions,
     DocumentGraphUnits,
     DocumentPrimaryFrames,
     DocumentPropositionValidation,
+    EvidenceBlock,
+    EvidenceReference,
     GraphUnit,
     GraphUnitClinicalPropositions,
     GraphUnitPrimaryFrame,
@@ -199,8 +202,18 @@ class ClinicalPropositionValidator:
         proposition_ids: set[str] = set()
         modifier_ids: set[str] = set()
         proposition_signatures: set[tuple] = set()
-        evidence_ranges: list[tuple[int, int]] = []
-        shared_modifier_spans: dict[tuple[int, int, str], list[str]] = defaultdict(list)
+        shared_modifier_evidence: dict[tuple[tuple[str, ...], str, str], list[str]] = defaultdict(list)
+        referenced_evidence_ids: set[str] = set()
+
+        if propositions.evidence_blocks != build_evidence_blocks(unit):
+            issues.append(
+                _issue(
+                    "evidence_blocks_mismatch",
+                    ValidationSeverity.ERROR,
+                    "Evidence blocks do not match deterministic graph-unit evidence blocks.",
+                )
+            )
+        evidence_by_id = {block.evidence_id: block for block in propositions.evidence_blocks}
 
         if not propositions.propositions:
             issues.append(
@@ -211,7 +224,6 @@ class ClinicalPropositionValidator:
                 )
             )
 
-        previous_proposition_start = -1
         for proposition in propositions.propositions:
             proposition_id = proposition.proposition_id
             if proposition_id in proposition_ids:
@@ -224,34 +236,20 @@ class ClinicalPropositionValidator:
                     )
                 )
             proposition_ids.add(proposition_id)
-            if proposition.source_span.start_char < previous_proposition_start:
-                issues.append(
-                    _issue(
-                        "propositions_out_of_source_order",
-                        ValidationSeverity.WARNING,
-                        "Propositions are not ordered by their source spans.",
-                        proposition_id=proposition_id,
-                    )
-                )
-            previous_proposition_start = proposition.source_span.start_char
-            _validate_span(
-                unit.text,
-                proposition.source_span.text,
-                proposition.source_span.start_char,
-                proposition.source_span.end_char,
+            _validate_evidence_reference(
+                proposition.evidence,
+                propositions.evidence_blocks,
                 issues,
                 owner_code="proposition",
                 proposition_id=proposition_id,
             )
-            evidence_ranges.append(
-                (proposition.source_span.start_char, proposition.source_span.end_char)
-            )
+            referenced_evidence_ids.update(proposition.evidence.evidence_ids)
             signature = (
                 proposition.proposition_type,
                 proposition.concept_text,
                 proposition.status,
-                proposition.source_span.start_char,
-                proposition.source_span.end_char,
+                tuple(proposition.evidence.evidence_ids),
+                proposition.evidence.quote,
             )
             if signature in proposition_signatures:
                 issues.append(
@@ -266,19 +264,15 @@ class ClinicalPropositionValidator:
 
             if proposition.attribution is not None:
                 attribution = proposition.attribution
-                _validate_span(
-                    unit.text,
-                    attribution.source_span.text,
-                    attribution.source_span.start_char,
-                    attribution.source_span.end_char,
+                _validate_evidence_reference(
+                    attribution.evidence,
+                    propositions.evidence_blocks,
                     issues,
                     owner_code="attribution",
                     proposition_id=proposition_id,
                 )
-                evidence_ranges.append(
-                    (attribution.source_span.start_char, attribution.source_span.end_char)
-                )
-                if attribution.actor_text not in attribution.source_span.text:
+                referenced_evidence_ids.update(attribution.evidence.evidence_ids)
+                if attribution.actor_text not in attribution.evidence.quote:
                     issues.append(
                         _issue(
                             "actor_outside_attribution_span",
@@ -289,7 +283,7 @@ class ClinicalPropositionValidator:
                     )
             elif (
                 proposition.proposition_type == PropositionType.DIAGNOSIS_ASSERTION
-                and any(cue in proposition.source_span.text for cue in _ATTRIBUTION_CUES)
+                and any(cue in proposition.evidence.quote for cue in _ATTRIBUTION_CUES)
             ):
                 issues.append(
                     _issue(
@@ -300,42 +294,28 @@ class ClinicalPropositionValidator:
                     )
                 )
 
-            previous_modifier_start = -1
             owner_modifier_signatures: set[tuple] = set()
             for modifier in proposition.modifiers:
                 _validate_modifier(
                     modifier,
-                    unit.text,
+                    propositions.evidence_blocks,
                     modifier_ids,
                     issues,
                     proposition_id=proposition_id,
                 )
-                evidence_ranges.append(
-                    (modifier.source_span.start_char, modifier.source_span.end_char)
-                )
-                if modifier.source_span.start_char < previous_modifier_start:
-                    issues.append(
-                        _issue(
-                            "modifiers_out_of_source_order",
-                            ValidationSeverity.WARNING,
-                            "Proposition modifiers are not ordered by their source spans.",
-                            proposition_id=proposition_id,
-                            modifier_id=modifier.modifier_id,
-                        )
-                    )
-                previous_modifier_start = modifier.source_span.start_char
-                shared_modifier_spans[
+                referenced_evidence_ids.update(modifier.evidence.evidence_ids)
+                shared_modifier_evidence[
                     (
-                        modifier.source_span.start_char,
-                        modifier.source_span.end_char,
+                        tuple(modifier.evidence.evidence_ids),
+                        modifier.evidence.quote,
                         modifier.value_text,
                     )
                 ].append(proposition_id)
                 modifier_signature = (
                     modifier.modifier_type,
                     modifier.value_text,
-                    modifier.source_span.start_char,
-                    modifier.source_span.end_char,
+                    tuple(modifier.evidence.evidence_ids),
+                    modifier.evidence.quote,
                 )
                 if modifier_signature in owner_modifier_signatures:
                     issues.append(
@@ -348,39 +328,22 @@ class ClinicalPropositionValidator:
                         )
                     )
                 owner_modifier_signatures.add(modifier_signature)
-                if _crosses_sentence_boundary(
-                    unit.text,
-                    proposition.source_span.start_char,
-                    proposition.source_span.end_char,
-                    modifier.source_span.start_char,
-                    modifier.source_span.end_char,
-                ):
+                if not set(modifier.evidence.evidence_ids) & set(proposition.evidence.evidence_ids):
                     issues.append(
                         _issue(
-                            "modifier_crosses_sentence_boundary",
-                            ValidationSeverity.WARNING,
-                            "Modifier and owning proposition are separated by a sentence boundary.",
+                            "modifier_evidence_disconnected",
+                            ValidationSeverity.ERROR,
+                            "Modifier and owning proposition do not share an evidence block.",
                             proposition_id=proposition_id,
                             modifier_id=modifier.modifier_id,
                         )
                     )
 
-        proposition_modifier_signatures = set(shared_modifier_spans)
+        proposition_modifier_signatures = set(shared_modifier_evidence)
         event_modifier_signatures: set[tuple] = set()
-        previous_event_modifier_start = -1
         for modifier in propositions.event_modifiers:
-            _validate_modifier(modifier, unit.text, modifier_ids, issues)
-            evidence_ranges.append((modifier.source_span.start_char, modifier.source_span.end_char))
-            if modifier.source_span.start_char < previous_event_modifier_start:
-                issues.append(
-                    _issue(
-                        "event_modifiers_out_of_source_order",
-                        ValidationSeverity.WARNING,
-                        "Event modifiers are not ordered by their source spans.",
-                        modifier_id=modifier.modifier_id,
-                    )
-                )
-            previous_event_modifier_start = modifier.source_span.start_char
+            _validate_modifier(modifier, propositions.evidence_blocks, modifier_ids, issues)
+            referenced_evidence_ids.update(modifier.evidence.evidence_ids)
             if modifier.modifier_type in _LOCAL_MODIFIER_TYPES:
                 issues.append(
                     _issue(
@@ -391,8 +354,8 @@ class ClinicalPropositionValidator:
                     )
                 )
             modifier_signature = (
-                modifier.source_span.start_char,
-                modifier.source_span.end_char,
+                tuple(modifier.evidence.evidence_ids),
+                modifier.evidence.quote,
                 modifier.value_text,
             )
             if modifier_signature in event_modifier_signatures:
@@ -415,7 +378,7 @@ class ClinicalPropositionValidator:
                     )
                 )
 
-        for (_, _, value_text), owners in shared_modifier_spans.items():
+        for (_, _, value_text), owners in shared_modifier_evidence.items():
             if len(set(owners)) > 1:
                 issues.append(
                     _issue(
@@ -449,7 +412,13 @@ class ClinicalPropositionValidator:
             attributed_proposition_count=sum(
                 proposition.attribution is not None for proposition in propositions.propositions
             ),
-            evidence_coverage=_evidence_coverage(len(unit.text), evidence_ranges),
+            evidence_block_count=len(propositions.evidence_blocks),
+            referenced_evidence_block_count=len(referenced_evidence_ids & set(evidence_by_id)),
+            evidence_block_coverage=(
+                round(len(referenced_evidence_ids & set(evidence_by_id)) / len(evidence_by_id), 4)
+                if evidence_by_id
+                else 0.0
+            ),
         )
         return GraphUnitPropositionValidation(
             graph_unit_id=unit.graph_unit_id,
@@ -490,7 +459,7 @@ def _require_same_ids(expected: set[str], actual: set[str], label: str) -> None:
 
 def _validate_modifier(
     modifier,
-    unit_text: str,
+    evidence_blocks: list[EvidenceBlock],
     seen_ids: set[str],
     issues: list[PropositionValidationIssue],
     proposition_id: str | None = None,
@@ -506,11 +475,9 @@ def _validate_modifier(
             )
         )
     seen_ids.add(modifier.modifier_id)
-    _validate_span(
-        unit_text,
-        modifier.source_span.text,
-        modifier.source_span.start_char,
-        modifier.source_span.end_char,
+    _validate_evidence_reference(
+        modifier.evidence,
+        evidence_blocks,
         issues,
         owner_code="modifier",
         proposition_id=proposition_id,
@@ -518,64 +485,65 @@ def _validate_modifier(
     )
 
 
-def _validate_span(
-    unit_text: str,
-    span_text: str,
-    start_char: int,
-    end_char: int,
+def _validate_evidence_reference(
+    evidence: EvidenceReference,
+    evidence_blocks: list[EvidenceBlock],
     issues: list[PropositionValidationIssue],
     *,
     owner_code: str,
     proposition_id: str | None = None,
     modifier_id: str | None = None,
 ) -> None:
-    if end_char > len(unit_text):
+    evidence_by_id = {block.evidence_id: block for block in evidence_blocks}
+    if len(set(evidence.evidence_ids)) != len(evidence.evidence_ids):
         issues.append(
             _issue(
-                f"{owner_code}_span_out_of_bounds",
+                f"{owner_code}_duplicate_evidence_id",
                 ValidationSeverity.ERROR,
-                f"Evidence span ends at {end_char}, beyond unit length {len(unit_text)}.",
+                "Evidence reference contains duplicate evidence IDs.",
                 proposition_id=proposition_id,
                 modifier_id=modifier_id,
             )
         )
         return
-    if unit_text[start_char:end_char] != span_text:
+    missing = [evidence_id for evidence_id in evidence.evidence_ids if evidence_id not in evidence_by_id]
+    if missing:
         issues.append(
             _issue(
-                f"{owner_code}_span_mismatch",
+                f"{owner_code}_unknown_evidence_id",
                 ValidationSeverity.ERROR,
-                "Evidence span offsets do not resolve to the recorded source text.",
+                f"Evidence reference contains unknown evidence IDs: {missing}.",
                 proposition_id=proposition_id,
                 modifier_id=modifier_id,
             )
         )
-
-
-def _crosses_sentence_boundary(
-    text: str,
-    first_start: int,
-    first_end: int,
-    second_start: int,
-    second_end: int,
-) -> bool:
-    if first_end <= second_start:
-        gap_start, gap_end = first_end, second_start
-    elif second_end <= first_start:
-        gap_start, gap_end = second_end, first_start
-    else:
-        return False
-    return any(marker in text[gap_start:gap_end] for marker in "。！？\n")
-
-
-def _evidence_coverage(unit_length: int, ranges: list[tuple[int, int]]) -> float:
-    if unit_length == 0:
-        return 0.0
-    covered = [False] * unit_length
-    for start, end in ranges:
-        for index in range(max(0, start), min(unit_length, end)):
-            covered[index] = True
-    return round(sum(covered) / unit_length, 4)
+        return
+    positions_by_id = {
+        block.evidence_id: index for index, block in enumerate(evidence_blocks)
+    }
+    positions = [positions_by_id[evidence_id] for evidence_id in evidence.evidence_ids]
+    if positions != list(range(positions[0], positions[-1] + 1)):
+        issues.append(
+            _issue(
+                f"{owner_code}_noncontiguous_evidence",
+                ValidationSeverity.ERROR,
+                "Evidence IDs must reference contiguous blocks in source order.",
+                proposition_id=proposition_id,
+                modifier_id=modifier_id,
+            )
+        )
+        return
+    referenced_text = "".join(evidence_by_id[evidence_id].text for evidence_id in evidence.evidence_ids)
+    if evidence.quote not in referenced_text:
+        issues.append(
+            _issue(
+                f"{owner_code}_quote_not_found",
+                ValidationSeverity.ERROR,
+                "Evidence quote is not an exact continuous substring of its evidence blocks.",
+                proposition_id=proposition_id,
+                modifier_id=modifier_id,
+            )
+        )
 
 
 def _issue(

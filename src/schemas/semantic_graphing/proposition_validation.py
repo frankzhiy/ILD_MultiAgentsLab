@@ -24,7 +24,7 @@ class PropositionValidationIssue(BaseModel):
 
 
 class PropositionValidationMetrics(BaseModel):
-    """Useful unit-level counts and evidence coverage for manual review."""
+    """Useful unit-level counts for manual review."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -32,7 +32,9 @@ class PropositionValidationMetrics(BaseModel):
     event_modifier_count: int = Field(ge=0)
     proposition_modifier_count: int = Field(ge=0)
     attributed_proposition_count: int = Field(ge=0)
-    evidence_coverage: float = Field(ge=0.0, le=1.0)
+    evidence_block_count: int = Field(ge=0)
+    referenced_evidence_block_count: int = Field(ge=0)
+    evidence_block_coverage: float = Field(ge=0.0, le=1.0)
 
 
 class GraphUnitPropositionValidation(BaseModel):

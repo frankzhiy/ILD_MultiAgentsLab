@@ -103,7 +103,6 @@ def build_run_signature(config: dict[str, Any]) -> dict[str, Any]:
 def require_complete_output_offsets(
     classification: DocumentClassification,
     graph_units: DocumentGraphUnits,
-    clinical_propositions: DocumentClinicalPropositions,
 ) -> None:
     for segment in classification.segments:
         if segment.start_char is None or segment.end_char is None:
@@ -118,24 +117,6 @@ def require_complete_output_offsets(
             )
             if any(value is None for value in offsets):
                 raise ValueError(f"Final output is missing offsets for {unit.graph_unit_id}")
-    for segment in clinical_propositions.segments:
-        for unit in segment.units:
-            for modifier in unit.event_modifiers:
-                _require_final_span(modifier.source_span, modifier.modifier_id)
-            for proposition in unit.propositions:
-                _require_final_span(proposition.source_span, proposition.proposition_id)
-                if proposition.attribution is not None:
-                    _require_final_span(
-                        proposition.attribution.source_span,
-                        f"{proposition.proposition_id}.attribution",
-                    )
-                for modifier in proposition.modifiers:
-                    _require_final_span(modifier.source_span, modifier.modifier_id)
-
-
-def _require_final_span(span: Any, owner: str) -> None:
-    if span.start_char is None or span.end_char is None:
-        raise ValueError(f"Final output is missing evidence offsets for {owner}")
 
 
 def exception_diagnostics(exc: BaseException) -> dict[str, Any]:
@@ -524,7 +505,6 @@ def main() -> int:
         require_complete_output_offsets(
             result.classification,
             graph_units,
-            clinical_propositions,
         )
     except Exception as exc:
         diagnostics = exception_diagnostics(exc)
@@ -590,6 +570,10 @@ def main() -> int:
     print(
         "Clinical modifiers: "
         f"{sum(len(unit.event_modifiers) + sum(len(prop.modifiers) for prop in unit.propositions) for item in clinical_propositions.segments for unit in item.units)}"
+    )
+    print(
+        "Evidence blocks: "
+        f"{sum(len(unit.evidence_blocks) for item in clinical_propositions.segments for unit in item.units)}"
     )
     print(
         "Graph-ready units: "

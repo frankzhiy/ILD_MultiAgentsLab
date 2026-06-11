@@ -1,8 +1,8 @@
 """Extract evidence-grounded clinical propositions from one graph unit."""
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,60 +10,27 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.semantic_graphing import (
-    AttributionType,
     ClinicalModifier,
-    EvidenceSpan,
+    ClinicalProposition,
+    EvidenceBlock,
     GraphUnit,
     GraphUnitClinicalPropositions,
     GraphUnitPrimaryFrame,
-    ModifierType,
     PrimaryFrame,
-    PropositionType,
     render_clinical_proposition_catalog,
 )
-from src.schemas.semantic_graphing.graph_unit import GraphUnitCertainty, GraphUnitStatus
 from src.utils.config import load_text, render_template
 
 
-class UnlocatedEvidenceSpan(BaseModel):
+class ExtractedGraphUnitClinicalPropositions(BaseModel):
+    """LLM-owned fields; evidence blocks are generated and attached by the program."""
+
     model_config = ConfigDict(extra="forbid")
-    text: str = Field(min_length=1)
 
-
-class UnlocatedClinicalAttribution(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    attribution_type: AttributionType
-    actor_text: str = Field(min_length=1)
-    source_span: UnlocatedEvidenceSpan
-
-
-class UnlocatedClinicalModifier(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    modifier_id: str = Field(pattern=r"^mod_\d{3,}$")
-    modifier_type: ModifierType
-    value_text: str = Field(min_length=1)
-    source_span: UnlocatedEvidenceSpan
-
-
-class UnlocatedClinicalProposition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    proposition_id: str = Field(pattern=r"^prop_\d{3,}$")
-    proposition_type: PropositionType
-    concept_text: str = Field(min_length=1)
-    status: GraphUnitStatus = "unknown"
-    certainty: GraphUnitCertainty = "unknown"
-    attribution: UnlocatedClinicalAttribution | None = None
-    modifiers: list[UnlocatedClinicalModifier] = Field(default_factory=list)
-    source_span: UnlocatedEvidenceSpan
-    rationale: str = Field(min_length=1)
-
-
-class UnlocatedGraphUnitClinicalPropositions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     graph_unit_id: str
     primary_frame: PrimaryFrame
-    event_modifiers: list[UnlocatedClinicalModifier] = Field(default_factory=list)
-    propositions: list[UnlocatedClinicalProposition] = Field(min_length=1)
+    event_modifiers: list[ClinicalModifier] = Field(default_factory=list)
+    propositions: list[ClinicalProposition] = Field(min_length=1)
     notes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -102,39 +69,40 @@ class ClinicalPropositionExtractor:
         primary_frame: GraphUnitPrimaryFrame,
         chunk_cache_dir: str | Path | None = None,
     ) -> tuple[GraphUnitClinicalPropositions, dict]:
+        evidence_blocks = build_evidence_blocks(unit)
         chunks = (
-            split_dense_unit_text(unit.text, self.max_chunk_chars)
+            split_dense_unit_evidence_blocks(evidence_blocks, self.max_chunk_chars)
             if self.enable_chunking
-            else [(0, unit.text)]
+            else [evidence_blocks]
         )
         if len(chunks) == 1:
-            return self._extract_chunk(unit, primary_frame)
+            return self._extract_chunk(unit, primary_frame, evidence_blocks)
 
         chunk_results = []
         chunk_traces = []
-        for chunk_index, (chunk_start, chunk_text) in enumerate(chunks, start=1):
+        for chunk_index, chunk_blocks in enumerate(chunks, start=1):
             cached = _read_chunk_cache(chunk_cache_dir, unit.graph_unit_id, chunk_index)
             if cached is not None:
                 result, trace = cached
                 chunk_results.append(result)
                 chunk_traces.append(trace)
                 continue
+            chunk_text = "".join(block.text for block in chunk_blocks)
             chunk_unit = unit.model_copy(update={"text": chunk_text})
-            result, trace = self._extract_chunk(chunk_unit, primary_frame)
-            shifted = _shift_result_spans(result, chunk_start)
+            result, trace = self._extract_chunk(chunk_unit, primary_frame, chunk_blocks)
             chunk_trace = {
                 "chunk_index": chunk_index,
-                "start_char": chunk_start,
                 "text_length": len(chunk_text),
+                "evidence_ids": [block.evidence_id for block in chunk_blocks],
                 "trace": trace,
             }
-            chunk_results.append(shifted)
+            chunk_results.append(result)
             chunk_traces.append(chunk_trace)
             _write_chunk_cache(
                 chunk_cache_dir,
                 unit.graph_unit_id,
                 chunk_index,
-                shifted,
+                result,
                 chunk_trace,
             )
 
@@ -148,6 +116,7 @@ class ClinicalPropositionExtractor:
         self,
         unit: GraphUnit,
         primary_frame: GraphUnitPrimaryFrame,
+        evidence_blocks: list[EvidenceBlock],
     ) -> tuple[GraphUnitClinicalPropositions, dict]:
         prompt = render_template(
             self.prompt_template,
@@ -156,10 +125,15 @@ class ClinicalPropositionExtractor:
                 "primary_frame": str(primary_frame.primary_frame),
                 "clinical_proposition_catalog": self.clinical_proposition_catalog,
                 "unit_text": unit.text,
+                "evidence_blocks": json.dumps(
+                    [block.model_dump() for block in evidence_blocks],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
             },
         )
         return self.generator.generate(
-            schema_model=UnlocatedGraphUnitClinicalPropositions,
+            schema_model=ExtractedGraphUnitClinicalPropositions,
             schema_name="graph_unit_clinical_propositions",
             system_prompt=(
                 "你是严谨的 ILD clinical proposition extraction agent，"
@@ -167,73 +141,77 @@ class ClinicalPropositionExtractor:
             ),
             user_prompt=prompt,
             extra_validation=lambda result: validate_clinical_propositions(
-                normalize_clinical_proposition_spans(result, unit),
+                _attach_evidence_blocks(result, evidence_blocks),
                 unit,
                 primary_frame,
             ),
         )
 
 
-def split_dense_unit_text(text: str, max_chunk_chars: int) -> list[tuple[int, str]]:
-    """Split only at strong discourse boundaries so modifier ownership is not weakened."""
+def split_dense_unit_text(text: str, max_chunk_chars: int) -> list[str]:
+    """Compatibility helper returning evidence-aligned dense-unit chunks."""
 
+    unit = GraphUnit.model_construct(graph_unit_id="unit", text=text)
+    return [
+        "".join(block.text for block in blocks)
+        for blocks in split_dense_unit_evidence_blocks(build_evidence_blocks(unit), max_chunk_chars)
+    ]
+
+
+def build_evidence_blocks(unit: GraphUnit) -> list[EvidenceBlock]:
+    """Deterministically split a graph unit into ordered, globally unique evidence blocks."""
+
+    parts = [
+        match.group(0)
+        for match in re.finditer(r".*?(?:[。！？；;\n]+|$)", unit.text, flags=re.DOTALL)
+        if match.group(0)
+    ]
+    blocks: list[str] = []
+    for part in parts:
+        if part.strip() or not blocks:
+            blocks.append(part)
+        else:
+            blocks[-1] += part
+    if not blocks:
+        raise ValueError(f"Cannot create evidence blocks for empty graph unit {unit.graph_unit_id}")
+    return [
+        EvidenceBlock(evidence_id=f"{unit.graph_unit_id}_ev_{index:03d}", text=text)
+        for index, text in enumerate(blocks, start=1)
+    ]
+
+
+def split_dense_unit_evidence_blocks(
+    evidence_blocks: list[EvidenceBlock],
+    max_chunk_chars: int,
+) -> list[list[EvidenceBlock]]:
+    """Group whole evidence blocks into chunks without weakening evidence references."""
+
+    text = "".join(block.text for block in evidence_blocks)
     if len(text) <= max_chunk_chars or len(re.findall(r"[,，;；]", text)) < 8:
-        return [(0, text)]
+        return [evidence_blocks]
 
-    chunks: list[tuple[int, str]] = []
-    start = 0
-    while len(text) - start > max_chunk_chars:
-        window_end = start + max_chunk_chars
-        boundaries = [
-            match.end()
-            for match in re.finditer(r"[。；;\n]", text[start:window_end])
-            if match.end() >= max_chunk_chars // 2
-        ]
-        if not boundaries:
-            return [(0, text)]
-        end = start + boundaries[-1]
-        chunks.append((start, text[start:end]))
-        start = end
-    if start < len(text):
-        chunks.append((start, text[start:]))
+    chunks: list[list[EvidenceBlock]] = []
+    current: list[EvidenceBlock] = []
+    current_length = 0
+    for block in evidence_blocks:
+        if current and current_length + len(block.text) > max_chunk_chars:
+            chunks.append(current)
+            current = []
+            current_length = 0
+        current.append(block)
+        current_length += len(block.text)
+    if current:
+        chunks.append(current)
     return chunks
 
 
-def _shift_result_spans(
-    result: GraphUnitClinicalPropositions,
-    offset: int,
+def _attach_evidence_blocks(
+    result: ExtractedGraphUnitClinicalPropositions,
+    evidence_blocks: list[EvidenceBlock],
 ) -> GraphUnitClinicalPropositions:
-    def shift_span(span: EvidenceSpan) -> EvidenceSpan:
-        if span.start_char is None or span.end_char is None:
-            raise ValueError("Cannot shift an evidence span before offsets are computed")
-        return span.model_copy(
-            update={"start_char": span.start_char + offset, "end_char": span.end_char + offset}
-        )
-
-    def shift_modifier(modifier: ClinicalModifier) -> ClinicalModifier:
-        return modifier.model_copy(update={"source_span": shift_span(modifier.source_span)})
-
-    propositions = []
-    for proposition in result.propositions:
-        attribution = proposition.attribution
-        if attribution is not None:
-            attribution = attribution.model_copy(
-                update={"source_span": shift_span(attribution.source_span)}
-            )
-        propositions.append(
-            proposition.model_copy(
-                update={
-                    "source_span": shift_span(proposition.source_span),
-                    "modifiers": [shift_modifier(item) for item in proposition.modifiers],
-                    "attribution": attribution,
-                }
-            )
-        )
-    return result.model_copy(
-        update={
-            "event_modifiers": [shift_modifier(item) for item in result.event_modifiers],
-            "propositions": propositions,
-        }
+    return GraphUnitClinicalPropositions(
+        **result.model_dump(),
+        evidence_blocks=evidence_blocks,
     )
 
 
@@ -271,6 +249,7 @@ def _merge_chunk_results(
     return GraphUnitClinicalPropositions(
         graph_unit_id=graph_unit_id,
         primary_frame=primary_frame.primary_frame,
+        evidence_blocks=[block for result in results for block in result.evidence_blocks],
         event_modifiers=event_modifiers,
         propositions=propositions,
         notes=[note for result in results for note in result.notes],
@@ -309,107 +288,46 @@ def _write_chunk_cache(
     )
 
 
-def normalize_clinical_proposition_spans(
-    result: UnlocatedGraphUnitClinicalPropositions | GraphUnitClinicalPropositions,
-    unit: GraphUnit,
-) -> GraphUnitClinicalPropositions:
-    """Compute all evidence offsets from exact source text instead of trusting the model."""
-
-    data = result.model_dump()
-    proposition_cursor = 0
-    for proposition in data["propositions"]:
-        proposition["source_span"] = _locate_span_data(
-            proposition["source_span"]["text"],
-            unit.text,
-            cursor=proposition_cursor,
-            owner=proposition["proposition_id"],
-        )
-        proposition_cursor = proposition["source_span"]["end_char"]
-        for modifier in proposition["modifiers"]:
-            modifier["source_span"] = _locate_span_data(
-                modifier["source_span"]["text"],
-                unit.text,
-                cursor=proposition["source_span"]["start_char"],
-                end=proposition["source_span"]["end_char"],
-                owner=modifier["modifier_id"],
-            )
-        attribution = proposition["attribution"]
-        if attribution is not None:
-            attribution["source_span"] = _locate_span_data(
-                attribution["source_span"]["text"],
-                unit.text,
-                cursor=proposition["source_span"]["start_char"],
-                end=proposition["source_span"]["end_char"],
-                owner=f"{proposition['proposition_id']}.attribution",
-            )
-
-    for modifier in data["event_modifiers"]:
-        modifier["source_span"] = _locate_span_data(
-            modifier["source_span"]["text"],
-            unit.text,
-            owner=modifier["modifier_id"],
-        )
-    return GraphUnitClinicalPropositions.model_validate(data)
-
-
-def _locate_span_data(
-    span_text: str,
-    source_text: str,
-    *,
-    cursor: int = 0,
-    end: int | None = None,
+def _validate_evidence_reference(
+    evidence,
+    evidence_blocks: list[EvidenceBlock],
     owner: str,
-) -> EvidenceSpan:
-    boundary = len(source_text) if end is None else end
-    start = source_text.find(span_text, cursor, boundary)
-    if start == -1:
-        start = source_text.find(span_text)
-    if start != -1:
-        return {"text": span_text, "start_char": start, "end_char": start + len(span_text)}
-
+) -> None:
+    blocks_by_id = {block.evidence_id: block for block in evidence_blocks}
+    missing = [evidence_id for evidence_id in evidence.evidence_ids if evidence_id not in blocks_by_id]
+    if missing:
+        raise ValueError(f"Evidence for {owner} references unknown evidence_ids: {missing}")
+    if len(set(evidence.evidence_ids)) != len(evidence.evidence_ids):
+        raise ValueError(f"Evidence for {owner} contains duplicate evidence_ids")
+    positions_by_id = {
+        block.evidence_id: index for index, block in enumerate(evidence_blocks)
+    }
+    positions = [positions_by_id[evidence_id] for evidence_id in evidence.evidence_ids]
+    if positions != list(range(positions[0], positions[-1] + 1)):
+        raise ValueError(f"Evidence for {owner} must reference contiguous blocks in source order")
+    referenced_text = "".join(blocks_by_id[evidence_id].text for evidence_id in evidence.evidence_ids)
+    if evidence.quote in referenced_text:
+        return
     if owner.endswith(".attribution"):
         proposition_id = owner.removesuffix(".attribution")
         raise ValueError(
             f"Attribution for {proposition_id} is not explicitly grounded in the current "
-            f"graph unit: source_span.text {span_text!r} is not an exact continuous substring. "
+            f"evidence blocks: quote {evidence.quote!r} is not an exact continuous substring. "
             "Attribution represents an explicitly stated information source, not an implicit "
             "proposition subject; set attribution to null when the source is only implicit."
         )
     if owner.startswith("prop_"):
         raise ValueError(
-            f"Proposition evidence for {owner} cannot be located: source_span.text "
-            f"{span_text!r} is not an exact continuous substring of the current graph unit. "
+            f"Proposition evidence for {owner} cannot be located: quote "
+            f"{evidence.quote!r} is not an exact continuous substring of its evidence blocks. "
             "concept_text may be a normalized or coordination-expanded clinical statement, but "
-            "source_span.text must quote the complete continuous source evidence that supports "
+            "evidence.quote must quote the complete continuous source evidence that supports "
             "it. Select that verbatim evidence span instead of copying concept_text."
         )
     raise ValueError(
-        f"Evidence for {owner} cannot be located: source_span.text {span_text!r} is not an exact "
-        "continuous substring of the current graph unit. Select the exact continuous source "
-        "text that expresses this item."
+        f"Evidence for {owner} cannot be located: quote {evidence.quote!r} is not an exact "
+        "continuous substring of its evidence blocks. Select the exact source quote."
     )
-
-
-def require_complete_clinical_proposition_offsets(
-    result: GraphUnitClinicalPropositions,
-) -> GraphUnitClinicalPropositions:
-    for modifier in result.event_modifiers:
-        _require_span_offsets(modifier.source_span, modifier.modifier_id)
-    for proposition in result.propositions:
-        _require_span_offsets(proposition.source_span, proposition.proposition_id)
-        if proposition.attribution is not None:
-            _require_span_offsets(
-                proposition.attribution.source_span,
-                f"{proposition.proposition_id}.attribution",
-            )
-        for modifier in proposition.modifiers:
-            _require_span_offsets(modifier.source_span, modifier.modifier_id)
-    return result
-
-
-def _require_span_offsets(span: EvidenceSpan, owner: str) -> None:
-    if span.start_char is None or span.end_char is None:
-        raise ValueError(f"Program-computed evidence offsets are missing for {owner}")
 
 
 def validate_clinical_propositions(
@@ -417,7 +335,7 @@ def validate_clinical_propositions(
     unit: GraphUnit,
     primary_frame: GraphUnitPrimaryFrame,
 ) -> GraphUnitClinicalPropositions:
-    """Validate identity, evidence spans, and ownership within one unit."""
+    """Validate identity, evidence references, and ownership within one unit."""
 
     if result.graph_unit_id != unit.graph_unit_id:
         raise ValueError(
@@ -429,57 +347,56 @@ def validate_clinical_propositions(
             f"Clinical-proposition primary_frame {result.primary_frame} does not match "
             f"{primary_frame.primary_frame}"
         )
+    expected_blocks = build_evidence_blocks(unit)
+    if result.evidence_blocks != expected_blocks:
+        raise ValueError(
+            "Clinical-proposition evidence_blocks do not match deterministic graph-unit blocks"
+        )
 
     proposition_ids: set[str] = set()
     modifier_ids: set[str] = set()
     for modifier in result.event_modifiers:
-        _validate_modifier(modifier, unit.text, modifier_ids)
+        _validate_modifier(modifier, result.evidence_blocks, modifier_ids)
 
     for proposition in result.propositions:
         if proposition.proposition_id in proposition_ids:
             raise ValueError(f"Duplicate proposition_id: {proposition.proposition_id}")
         proposition_ids.add(proposition.proposition_id)
-        _validate_span(proposition.source_span, unit.text, proposition.proposition_id)
+        _validate_evidence_reference(
+            proposition.evidence,
+            result.evidence_blocks,
+            proposition.proposition_id,
+        )
         if proposition.attribution is not None:
-            _validate_span(
-                proposition.attribution.source_span,
-                unit.text,
+            _validate_evidence_reference(
+                proposition.attribution.evidence,
+                result.evidence_blocks,
                 f"{proposition.proposition_id}.attribution",
             )
-            if proposition.attribution.actor_text not in proposition.attribution.source_span.text:
+            if proposition.attribution.actor_text not in proposition.attribution.evidence.quote:
                 raise ValueError(
                     f"Attribution for {proposition.proposition_id} is invalid: actor_text must "
-                    "occur inside its attribution source_span. Attribution represents an "
+                    "occur inside its evidence quote. Attribution represents an "
                     "explicitly stated information source, not an implicit proposition subject; "
                     "set attribution to null when the source is only implicit."
                 )
         for modifier in proposition.modifiers:
-            _validate_modifier(modifier, unit.text, modifier_ids)
+            _validate_modifier(modifier, result.evidence_blocks, modifier_ids)
+            if not set(modifier.evidence.evidence_ids) & set(proposition.evidence.evidence_ids):
+                raise ValueError(
+                    f"Modifier {modifier.modifier_id} must share at least one evidence block "
+                    f"with owning proposition {proposition.proposition_id}"
+                )
 
-    return require_complete_clinical_proposition_offsets(result)
+    return result
 
 
 def _validate_modifier(
     modifier: ClinicalModifier,
-    unit_text: str,
+    evidence_blocks: list[EvidenceBlock],
     seen_ids: set[str],
 ) -> None:
     if modifier.modifier_id in seen_ids:
         raise ValueError(f"Duplicate modifier_id: {modifier.modifier_id}")
     seen_ids.add(modifier.modifier_id)
-    _validate_span(modifier.source_span, unit_text, modifier.modifier_id)
-
-
-def _validate_span(span: EvidenceSpan, unit_text: str, owner: str) -> None:
-    if span.start_char is None or span.end_char is None:
-        raise ValueError(f"Evidence span offsets were not computed for {owner}")
-    if span.end_char > len(unit_text):
-        raise ValueError(
-            f"Evidence span for {owner} ends at {span.end_char}, beyond unit length {len(unit_text)}"
-        )
-    actual = unit_text[span.start_char : span.end_char]
-    if actual != span.text:
-        raise ValueError(
-            f"Evidence span mismatch for {owner}: offsets resolve to {actual!r}, "
-            f"but span text is {span.text!r}"
-        )
+    _validate_evidence_reference(modifier.evidence, evidence_blocks, modifier.modifier_id)

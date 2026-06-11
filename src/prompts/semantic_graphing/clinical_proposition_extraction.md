@@ -11,7 +11,7 @@
 
 抽取原则：
 - 完整覆盖原文明示的临床信息，不遗漏具有诊断、病程或证据定位价值的陈述。
-- propositions 按其 source_span 在 graph unit 原文中的出现顺序排列。
+- propositions 按其 evidence 在 graph unit 原文中的出现顺序排列。
 - 将并列且可独立判断状态的临床概念分别抽取为 proposition。
 - 将属性归入它实际修饰的 proposition，禁止把局部属性错误放入 event_modifiers。
 - 每个 modifier 证据只能拥有一个归属层级：
@@ -31,14 +31,16 @@
 - 中文并列省略中的共享谓词或状态应展开到每个独立 proposition。例如“呼吸储备功能、肺容量及气道阻力正常”应分别表达为“呼吸储备功能正常”“肺容量正常”“气道阻力正常”。
 - rationale 只说明边界或 modifier 归属，保持在一句短语内。
 
-原文证据位置：
-- 每个 proposition、modifier 和 attribution 都必须提供 `source_span.text`。
-- `concept_text` 表达可独立引用的临床命题，允许对原文中的并列省略进行语义展开；`source_span.text` 表达支持该命题的原文证据，两者不要求逐字相同。
-- `source_span.text` 必须逐字引用当前 graph unit 原文中的完整连续子串；不要把语义展开或规范化后的 `concept_text` 直接复制为 `source_span.text`。
-- 字符位置由程序计算。
-- proposition 的 source_span 应覆盖表达该临床陈述的最小充分连续原文。
-- 当 proposition 展开了并列省略、导致展开后的 `concept_text` 不是原文连续子串时，`source_span.text` 必须引用包含该概念及共享谓词或状态的完整连续原文；多个 proposition 可以共享或重叠同一段原文证据。
-- modifier 的 source_span 应仅覆盖表达该修饰信息的连续原文。
+原文证据引用：
+- 程序已经将 graph unit 原文确定性切分为 evidence blocks；你不得创建、修改或输出 evidence blocks。
+- 每个 proposition、modifier 和 attribution 都必须提供 `evidence.evidence_ids` 和 `evidence.quote`。
+- `evidence_ids` 必须从下方 evidence blocks 中选择，按原文顺序排列，且只能引用连续 blocks。
+- `quote` 必须是所引用 evidence blocks 合并文本中的完整连续原文子串。
+- `concept_text` 表达可独立引用的临床命题，允许对原文中的并列省略进行语义展开；`evidence.quote` 表达支持该命题的原文证据，两者不要求逐字相同。
+- 不要把语义展开或规范化后的 `concept_text` 直接复制为 `evidence.quote`。
+- proposition 的 quote 应覆盖表达该临床陈述的最小充分连续原文。
+- 当 proposition 展开了并列省略、导致展开后的 `concept_text` 不是原文连续子串时，`quote` 必须引用包含该概念及共享谓词或状态的完整连续原文；多个 proposition 可以共享同一 evidence block 或 quote。
+- modifier 的 quote 应仅覆盖表达该修饰信息的连续原文，并至少与所属 proposition 共享一个 evidence_id。
 
 ID 规则：
 - proposition_id 在当前 unit 内唯一，使用 `prop_001`、`prop_002` 等形式。
@@ -53,6 +55,9 @@ ID 规则：
 
 graph unit 原文：
 {{ unit_text }}
+
+程序生成的 evidence blocks：
+{{ evidence_blocks }}
 
 只返回严格 JSON，字段结构必须符合程序 schema。必须包含：
 - graph_unit_id
@@ -74,7 +79,10 @@ graph unit 原文：
       "modifier_id": "mod_001",
       "modifier_type": "time",
       "value_text": "原文修饰值",
-      "source_span": {"text": "原文修饰值"}
+      "evidence": {
+        "evidence_ids": ["{{ graph_unit_id }}_ev_001"],
+        "quote": "原文修饰值"
+      }
     }
   ],
   "propositions": [
@@ -86,7 +94,10 @@ graph unit 原文：
       "certainty": "high",
       "attribution": null,
       "modifiers": [],
-      "source_span": {"text": "原文最小充分证据"},
+      "evidence": {
+        "evidence_ids": ["{{ graph_unit_id }}_ev_001"],
+        "quote": "原文最小充分证据"
+      },
       "rationale": "简短说明 proposition 边界和 modifier 归属"
     }
   ],
@@ -98,5 +109,8 @@ graph unit 原文：
 {
   "attribution_type": "clinician",
   "actor_text": "原文责任主体",
-  "source_span": {"text": "原文责任主体"}
+  "evidence": {
+    "evidence_ids": ["{{ graph_unit_id }}_ev_001"],
+    "quote": "原文责任主体"
+  }
 }
