@@ -1,7 +1,34 @@
+from typing import Any
+
+from pydantic import BaseModel, Field
+
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
-from src.schemas.semantic_graphing import ClassifiedSegment, DocumentClassification
+from src.schemas.semantic_graphing import (
+    ClassifiedSegment,
+    DiscourseUnitType,
+    DocumentClassification,
+    SourceType,
+)
 from src.utils.config import load_text, render_template
+
+
+class UnlocatedClassifiedSegment(BaseModel):
+    segment_id: str
+    text: str
+    unit_type: DiscourseUnitType
+    contained_source_types: list[SourceType] = Field(default_factory=list)
+    clinical_frame: str
+    temporal_anchor: str | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UnlocatedDocumentClassification(BaseModel):
+    segments: list[UnlocatedClassifiedSegment]
+    detected_contained_source_types: list[SourceType] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class DocumentClassifier:
@@ -12,6 +39,8 @@ class DocumentClassifier:
         *,
         temperature: float,
         max_tokens: int,
+        max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.0,
     ) -> None:
         self.llm = llm
         self.prompt_template = load_text(prompt_path)
@@ -21,13 +50,15 @@ class DocumentClassifier:
             llm,
             temperature=temperature,
             max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
             response_format_mode="json_object",
         )
 
     def classify(self, input_text: str) -> tuple[DocumentClassification, dict]:
         prompt = render_template(self.prompt_template, {"input_text": input_text})
         return self.generator.generate(
-            schema_model=DocumentClassification,
+            schema_model=UnlocatedDocumentClassification,
             schema_name="document_classification",
             system_prompt="你为临床科研数据处理返回符合 schema 的严格 JSON。",
             user_prompt=prompt,
@@ -36,7 +67,7 @@ class DocumentClassifier:
 
 
 def normalize_and_validate_spans(
-    classification: DocumentClassification,
+    classification: UnlocatedDocumentClassification,
     input_text: str,
 ) -> DocumentClassification:
     cursor = 0
@@ -55,8 +86,9 @@ def normalize_and_validate_spans(
 
         end = start + len(text)
         normalized_segments.append(
-            segment.model_copy(
-                update={
+            ClassifiedSegment.model_validate(
+                {
+                    **segment.model_dump(),
                     "text": text,
                     "start_char": start,
                     "end_char": end,
@@ -85,9 +117,18 @@ def normalize_and_validate_spans(
                 detected_contained.append(source_type)
                 seen_contained.add(source_type)
 
-    return classification.model_copy(
-        update={
+    normalized = DocumentClassification(
+        **{
+            **classification.model_dump(exclude={"segments", "detected_contained_source_types"}),
             "segments": normalized_segments,
             "detected_contained_source_types": detected_contained,
-        }
+        },
     )
+    require_complete_classification_offsets(normalized)
+    return normalized
+
+
+def require_complete_classification_offsets(classification: DocumentClassification) -> None:
+    for segment in classification.segments:
+        if segment.start_char is None or segment.end_char is None:
+            raise ValueError(f"Program-computed offsets are missing for {segment.segment_id}")

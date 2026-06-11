@@ -18,6 +18,8 @@ class PrimaryFrameSelector:
         *,
         temperature: float,
         max_tokens: int,
+        max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.0,
     ) -> None:
         self.prompt_template = load_text(prompt_path)
         self.primary_frame_catalog = render_primary_frame_catalog()
@@ -25,6 +27,8 @@ class PrimaryFrameSelector:
             llm,
             temperature=temperature,
             max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
             response_format_mode="json_object",
         )
 

@@ -5,8 +5,10 @@ from typing import Any
 
 from src.agents.semantic_graphing.agent import ClassificationRunResult
 from src.schemas.semantic_graphing import (
+    DocumentClinicalPropositions,
     DocumentGraphUnits,
     DocumentPrimaryFrames,
+    DocumentPropositionValidation,
 )
 
 
@@ -112,6 +114,8 @@ def render_report(
     timing: dict[str, Any],
     output_path: str | Path,
     primary_frames: DocumentPrimaryFrames | None = None,
+    clinical_propositions: DocumentClinicalPropositions | None = None,
+    proposition_validation: DocumentPropositionValidation | None = None,
 ) -> Path:
     """Render a single HTML report covering the full run pipeline."""
     html = _render_html(
@@ -121,6 +125,8 @@ def render_report(
         raw_text=raw_text,
         timing=timing,
         primary_frames=primary_frames,
+        clinical_propositions=clinical_propositions,
+        proposition_validation=proposition_validation,
     )
     path = Path(output_path)
     path.write_text(html, encoding="utf-8")
@@ -135,6 +141,8 @@ def _render_html(
     raw_text: str,
     timing: dict[str, Any],
     primary_frames: DocumentPrimaryFrames | None = None,
+    clinical_propositions: DocumentClinicalPropositions | None = None,
+    proposition_validation: DocumentPropositionValidation | None = None,
 ) -> str:
     classification = result.classification
     segments = classification.segments
@@ -161,6 +169,24 @@ def _render_html(
             for unit in seg.units:
                 primary_frame_by_unit[unit.graph_unit_id] = unit
                 primary_frame_counts[str(unit.primary_frame)] += 1
+
+    propositions_by_unit: dict[str, Any] = {}
+    proposition_count = 0
+    modifier_count = 0
+    if clinical_propositions is not None:
+        for seg in clinical_propositions.segments:
+            for unit in seg.units:
+                propositions_by_unit[unit.graph_unit_id] = unit
+                proposition_count += len(unit.propositions)
+                modifier_count += len(unit.event_modifiers) + sum(
+                    len(proposition.modifiers) for proposition in unit.propositions
+                )
+
+    validation_by_unit: dict[str, Any] = {}
+    if proposition_validation is not None:
+        for seg in proposition_validation.segments:
+            for unit in seg.units:
+                validation_by_unit[unit.graph_unit_id] = unit
 
     total_elapsed = timing.get("total_elapsed_seconds")
     elapsed_text = f"{total_elapsed:.2f}s" if isinstance(total_elapsed, int | float) else "N/A"
@@ -206,6 +232,22 @@ def _render_html(
     .frame-list {{ list-style: none; margin: 0; padding: 0; }}
     .frame-list li {{ display: flex; gap: 8px; align-items: flex-start; margin: 5px 0; }}
     .frame-rationale {{ font-size: 12px; color: #475569; line-height: 1.5; }}
+    .propositions {{ margin-top: 12px; }}
+    .proposition {{ margin: 8px 0; padding: 9px 11px; border-left: 3px solid #60a5fa;
+                    background: #eff6ff; border-radius: 4px; }}
+    .proposition-head {{ font-size: 13px; font-weight: 650; color: #1e3a8a; }}
+    .proposition-meta {{ font-size: 11px; color: #475569; margin-top: 2px; }}
+    .modifier-list {{ margin: 5px 0 0; padding-left: 18px; font-size: 12px; color: #334155; }}
+    .event-modifiers {{ margin-top: 8px; padding: 8px 10px; background: #f3e8ff;
+                        border-radius: 4px; font-size: 12px; }}
+    .validation {{ margin-top: 10px; padding: 9px 11px; border-radius: 5px; font-size: 12px; }}
+    .validation-ready {{ background: #ecfdf5; border: 1px solid #86efac; }}
+    .validation-error {{ background: #fef2f2; border: 1px solid #fca5a5; }}
+    .validation-issues {{ margin: 6px 0 0; padding-left: 18px; }}
+    .validation-issues li {{ margin: 3px 0; }}
+    .severity-error {{ color: #b91c1c; }}
+    .severity-warning {{ color: #a16207; }}
+    .severity-info {{ color: #1d4ed8; }}
     .highlight-box {{ white-space: pre-wrap; word-break: break-word;
                       font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
                       background: #ffffff; padding: 14px; border: 1px solid #cbd5e1;
@@ -255,6 +297,9 @@ def _render_html(
       <span class="stat-badge">graph unit {total_units}</span>
       <span class="stat-badge">contained source type {len(detected_contained)}</span>
       <span class="stat-badge">primary frame {sum(primary_frame_counts.values())}</span>
+      <span class="stat-badge">proposition {proposition_count}</span>
+      <span class="stat-badge">modifier {modifier_count}</span>
+      {_render_validation_summary_badges(proposition_validation)}
       <span class="stat-badge">总耗时 {escape(elapsed_text)}</span>
     </div>
 
@@ -263,8 +308,14 @@ def _render_html(
     <div class="highlight-box">{highlighted_text}</div>
 
     <h2>🔍 Segment 详细分析</h2>
-    <p class="note">每个segment包含：段落分类、内部的graph units（临床事件核心）及其单一 primary frame</p>
-    {_render_unified_segments(graph_units, segment_by_id, primary_frame_by_unit)}
+    <p class="note">每个segment包含：graph units、单一 primary frame，以及有原文证据和明确修饰归属的 clinical propositions</p>
+    {_render_unified_segments(
+        graph_units,
+        segment_by_id,
+        primary_frame_by_unit,
+        propositions_by_unit,
+        validation_by_unit,
+    )}
 
     <h2>📊 统计信息</h2>
     {_render_statistics_summary(primary_frame_counts, source_counts, specialty_counts)}
@@ -278,9 +329,13 @@ def _render_unified_segments(
     graph_units: DocumentGraphUnits,
     segment_by_id: dict,
     primary_frame_by_unit: dict[str, Any] | None = None,
+    propositions_by_unit: dict[str, Any] | None = None,
+    validation_by_unit: dict[str, Any] | None = None,
 ) -> str:
     """Render each segment once with its graph units and primary-frame selections."""
     primary_frame_by_unit = primary_frame_by_unit or {}
+    propositions_by_unit = propositions_by_unit or {}
+    validation_by_unit = validation_by_unit or {}
     cards = []
     
     for index, segment_units in enumerate(graph_units.segments):
@@ -349,6 +404,13 @@ def _render_unified_segments(
                         f"<div class='frame-rationale'>{escape(selection.rationale)}</div>"
                         f"{warning}"
                     )
+
+                proposition_block = _render_clinical_propositions(
+                    propositions_by_unit.get(unit.graph_unit_id)
+                )
+                validation_block = _render_proposition_validation(
+                    validation_by_unit.get(unit.graph_unit_id)
+                )
                 
                 unit_blocks.append(
                     "<div class='unit'>"
@@ -356,6 +418,8 @@ def _render_unified_segments(
                     f"<div class='unit-meta'>{source_badge}{specialty_badges}{status_badge}{certainty_badge}</div>"
                     f"{primary_frame_block}"
                     f"<pre style='background:#f8fafc;padding:8px;border-radius:4px;font-size:13px;'>{escape(unit.text)}</pre>"
+                    f"{proposition_block}"
+                    f"{validation_block}"
                     "</div>"
                 )
         else:
@@ -373,6 +437,100 @@ def _render_unified_segments(
         )
     
     return "".join(cards)
+
+
+def _render_clinical_propositions(unit_propositions: Any | None) -> str:
+    if unit_propositions is None:
+        return ""
+
+    event_modifiers = ""
+    if unit_propositions.event_modifiers:
+        items = "".join(
+            f"<li><strong>{escape(str(modifier.modifier_type))}</strong>: "
+            f"{escape(modifier.value_text)} "
+            f"<code>[{modifier.source_span.start_char}:{modifier.source_span.end_char}]</code></li>"
+            for modifier in unit_propositions.event_modifiers
+        )
+        event_modifiers = (
+            "<div class='event-modifiers'><strong>Event modifiers</strong>"
+            f"<ul class='modifier-list'>{items}</ul></div>"
+        )
+
+    proposition_items = []
+    for proposition in unit_propositions.propositions:
+        modifiers = ""
+        if proposition.modifiers:
+            modifier_items = "".join(
+                f"<li><strong>{escape(str(modifier.modifier_type))}</strong>: "
+                f"{escape(modifier.value_text)} "
+                f"<code>[{modifier.source_span.start_char}:{modifier.source_span.end_char}]</code></li>"
+                for modifier in proposition.modifiers
+            )
+            modifiers = f"<ul class='modifier-list'>{modifier_items}</ul>"
+        attribution = (
+            f" · attribution: {escape(proposition.attribution.actor_text)}"
+            if proposition.attribution is not None
+            else ""
+        )
+        proposition_items.append(
+            "<div class='proposition'>"
+            f"<div class='proposition-head'>{escape(proposition.concept_text)}</div>"
+            f"<div class='proposition-meta'>{escape(str(proposition.proposition_type))} · "
+            f"status: {escape(proposition.status)} · certainty: {escape(proposition.certainty)}"
+            f"{attribution} · "
+            f"span: [{proposition.source_span.start_char}:{proposition.source_span.end_char}]</div>"
+            f"{modifiers}</div>"
+        )
+
+    return (
+        "<div class='propositions'><strong>Clinical propositions</strong>"
+        f"{event_modifiers}{''.join(proposition_items)}</div>"
+    )
+
+
+def _render_validation_summary_badges(
+    validation: DocumentPropositionValidation | None,
+) -> str:
+    if validation is None:
+        return ""
+    summary = validation.summary
+    return (
+        f'<span class="stat-badge">graph-ready '
+        f"{summary.graph_ready_unit_count}/{summary.unit_count}</span>"
+        f'<span class="stat-badge">validation errors {summary.error_count}</span>'
+        f'<span class="stat-badge">validation warnings {summary.warning_count}</span>'
+    )
+
+
+def _render_proposition_validation(unit_validation: Any | None) -> str:
+    if unit_validation is None:
+        return ""
+
+    state_class = "validation-ready" if unit_validation.is_graph_ready else "validation-error"
+    state_label = "Graph ready" if unit_validation.is_graph_ready else "Has validation errors"
+    metrics = unit_validation.metrics
+    issues = ""
+    if unit_validation.issues:
+        issue_items = "".join(
+            f"<li class='severity-{escape(str(issue.severity))}'>"
+            f"<strong>{escape(str(issue.severity))} · {escape(issue.code)}</strong>: "
+            f"{escape(issue.message)}"
+            f"{' · proposition ' + escape(issue.proposition_id) if issue.proposition_id else ''}"
+            f"{' · modifier ' + escape(issue.modifier_id) if issue.modifier_id else ''}"
+            "</li>"
+            for issue in unit_validation.issues
+        )
+        issues = f"<ul class='validation-issues'>{issue_items}</ul>"
+
+    return (
+        f"<div class='validation {state_class}'><strong>{state_label}</strong>"
+        f" · evidence coverage {metrics.evidence_coverage:.1%}"
+        f" · propositions {metrics.proposition_count}"
+        f" · event modifiers {metrics.event_modifier_count}"
+        f" · proposition modifiers {metrics.proposition_modifier_count}"
+        f" · attributed propositions {metrics.attributed_proposition_count}"
+        f"{issues}</div>"
+    )
 
 
 def _render_statistics_summary(

@@ -57,8 +57,14 @@ class ClassifiedSegment(BaseModel):
     clinical_frame: str = Field(
         description="Clinical narrative frame, such as symptom_recurrence_episode."
     )
-    start_char: int = Field(ge=0, description="0-based start character offset in the raw input.")
-    end_char: int = Field(ge=0, description="0-based exclusive end character offset in the raw input.")
+    start_char: int = Field(
+        ge=0,
+        description="Program-computed 0-based start character offset in the raw input.",
+    )
+    end_char: int = Field(
+        ge=0,
+        description="Program-computed 0-based exclusive end character offset in the raw input.",
+    )
     temporal_anchor: str | None = Field(
         default=None,
         description="Explicit temporal anchor if present, such as 8年前, 2月前, current, or null.",

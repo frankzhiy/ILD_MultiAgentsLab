@@ -1,3 +1,4 @@
+import time
 from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -15,12 +16,14 @@ class StructuredGenerationError(RuntimeError):
 
 
 def json_schema_response_format(model: type[BaseModel], name: str) -> dict:
+    schema = model.model_json_schema()
+    _remove_program_computed_offsets(schema)
     return {
         "type": "json_schema",
         "json_schema": {
             "name": name,
             "strict": True,
-            "schema": model.model_json_schema(),
+            "schema": schema,
         },
     }
 
@@ -32,13 +35,17 @@ class StructuredLLMGenerator:
         *,
         temperature: float,
         max_tokens: int,
-        max_attempts: int = 3,
+        max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.0,
         response_format_mode: str = "json_object",
     ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self.llm = llm
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_attempts = max_attempts
+        self.retry_backoff_seconds = retry_backoff_seconds
         self.response_format_mode = response_format_mode
 
     def generate(
@@ -59,6 +66,7 @@ class StructuredLLMGenerator:
 
         last_error = None
         for attempt_index in range(1, self.max_attempts + 1):
+            attempt_started = time.perf_counter()
             try:
                 response = self.llm.complete(
                     messages,
@@ -67,7 +75,11 @@ class StructuredLLMGenerator:
                     response_format=response_format,
                 )
             except RuntimeError as exc:
-                if response_format and response_format.get("type") == "json_schema":
+                if (
+                    response_format
+                    and response_format.get("type") == "json_schema"
+                    and not _is_retryable_transport_error(exc)
+                ):
                     response_format = {"type": "json_object"}
                     last_error = exc
                     attempts.append(
@@ -75,6 +87,7 @@ class StructuredLLMGenerator:
                             "attempt": attempt_index,
                             "transport_error": str(exc),
                             "fallback": "json_object",
+                            "duration_seconds": round(time.perf_counter() - attempt_started, 3),
                         }
                     )
                     continue
@@ -85,8 +98,12 @@ class StructuredLLMGenerator:
                             response_format.get("type") if response_format else None
                         ),
                         "transport_error": str(exc),
+                        "duration_seconds": round(time.perf_counter() - attempt_started, 3),
                     }
                 )
+                if _is_retryable_transport_error(exc) and attempt_index < self.max_attempts:
+                    time.sleep(self.retry_backoff_seconds * attempt_index)
+                    continue
                 raise StructuredGenerationError(
                     f"Structured LLM request failed on attempt {attempt_index}: {exc}",
                     attempts=attempts,
@@ -96,7 +113,19 @@ class StructuredLLMGenerator:
                 "response_format": response_format.get("type") if response_format else None,
                 "raw_response": response.raw,
                 "content": response.content,
+                "duration_seconds": round(time.perf_counter() - attempt_started, 3),
             }
+            if not response.content.strip() and _finish_reason(response.raw) == "length":
+                attempt_record["validated"] = False
+                attempt_record["validation_error"] = (
+                    "Model exhausted its output budget before producing response content."
+                )
+                attempts.append(attempt_record)
+                raise StructuredGenerationError(
+                    "Structured LLM generation stopped because the model exhausted its output "
+                    "budget before producing response content.",
+                    attempts=attempts,
+                )
             try:
                 parsed = parse_llm_json(response.content)
                 validated = schema_model.model_validate(parsed)
@@ -154,3 +183,34 @@ def _summarize_attempt(attempt: dict[str, Any]) -> str:
         f"#{attempt['attempt']} content_length={content_length}, "
         f"finish_reason={finish_reason!r}, error={attempt.get('validation_error')}"
     )
+
+
+def _finish_reason(raw: dict[str, Any]) -> str | None:
+    choices = raw.get("choices") or []
+    return choices[0].get("finish_reason") if choices else None
+
+
+def _is_retryable_transport_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in ("http 429", "http 503", "timed out", "timeout", "temporarily unavailable")
+    )
+
+
+def _remove_program_computed_offsets(value: Any) -> None:
+    if isinstance(value, dict):
+        properties = value.get("properties")
+        if isinstance(properties, dict) and "text" in properties:
+            properties.pop("start_char", None)
+            properties.pop("end_char", None)
+            required = value.get("required")
+            if isinstance(required, list):
+                value["required"] = [
+                    item for item in required if item not in {"start_char", "end_char"}
+                ]
+        for item in value.values():
+            _remove_program_computed_offsets(item)
+    elif isinstance(value, list):
+        for item in value:
+            _remove_program_computed_offsets(item)

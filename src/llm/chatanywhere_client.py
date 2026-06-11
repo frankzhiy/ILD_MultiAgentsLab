@@ -3,7 +3,7 @@ import os
 import socket
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from src.llm.base import LLMClient, LLMMessage, LLMResponse
@@ -16,6 +16,9 @@ class ChatAnywhereClient(LLMClient):
     base_url: str
     timeout_seconds: int = 300
     response_format_json: bool = True
+
+    def with_model(self, model: str) -> "ChatAnywhereClient":
+        return replace(self, model=model)
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "ChatAnywhereClient":

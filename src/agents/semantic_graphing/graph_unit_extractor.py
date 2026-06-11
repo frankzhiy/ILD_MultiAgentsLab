@@ -12,6 +12,8 @@ class SegmentGraphUnitExtractor:
         *,
         temperature: float,
         max_tokens: int,
+        max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.0,
     ) -> None:
         self.llm = llm
         self.prompt_template = load_text(prompt_path)
@@ -21,6 +23,8 @@ class SegmentGraphUnitExtractor:
             llm,
             temperature=temperature,
             max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
             response_format_mode="json_object",
         )
 
@@ -94,8 +98,8 @@ def normalize_and_validate_graph_units(
                     "text": text,
                     "segment_start_char": start,
                     "segment_end_char": end,
-                    "start_char": segment.start_char + start,
-                    "end_char": segment.start_char + end,
+                    "start_char": None if segment.start_char is None else segment.start_char + start,
+                    "end_char": None if segment.start_char is None else segment.start_char + end,
                 }
             )
         )
@@ -116,4 +120,18 @@ def normalize_and_validate_graph_units(
                 f"{previous.graph_unit_id}, {current.graph_unit_id}"
             )
 
-    return result.model_copy(update={"graph_units": normalized_units})
+    normalized = result.model_copy(update={"graph_units": normalized_units})
+    require_complete_graph_unit_offsets(normalized)
+    return normalized
+
+
+def require_complete_graph_unit_offsets(result: SegmentGraphUnits) -> None:
+    for unit in result.graph_units:
+        offsets = (
+            unit.start_char,
+            unit.end_char,
+            unit.segment_start_char,
+            unit.segment_end_char,
+        )
+        if any(value is None for value in offsets):
+            raise ValueError(f"Program-computed offsets are missing for {unit.graph_unit_id}")
