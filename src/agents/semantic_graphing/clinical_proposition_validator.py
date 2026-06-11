@@ -68,6 +68,9 @@ _EXPECTED_PROPOSITION_TYPES: dict[PrimaryFrame, set[PropositionType]] = {
         PropositionType.DEMOGRAPHIC,
         PropositionType.EXPOSURE,
         PropositionType.BACKGROUND_CONDITION,
+        PropositionType.FINDING,
+        PropositionType.PROCEDURE,
+        PropositionType.INFORMATION_AVAILABILITY,
     },
 }
 

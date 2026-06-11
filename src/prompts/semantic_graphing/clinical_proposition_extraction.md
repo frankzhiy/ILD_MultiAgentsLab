@@ -14,6 +14,11 @@
 - propositions 按其 source_span 在 graph unit 原文中的出现顺序排列。
 - 将并列且可独立判断状态的临床概念分别抽取为 proposition。
 - 将属性归入它实际修饰的 proposition，禁止把局部属性错误放入 event_modifiers。
+- 每个 modifier 证据只能拥有一个归属层级：
+  - 修饰整个 primary-frame 事件核时，放入 `event_modifiers`。
+  - 仅修饰某一 proposition 时，放入该 proposition 的 `modifiers`。
+  - 当 modifier 同时看似可以修饰事件核及其核心 proposition 时，优先归入
+    `event_modifiers`，不得在 proposition 中重复。
 - 起病时间、整个事件的时间锚、整个事件的诱因或场景等，可作为 event_modifiers。
 - duration、frequency、severity、quantity、intensity、value、range、trend、color、consistency、quality、anatomical_site、dose、route、schedule、response 等局部属性，应归入对应 proposition。
 - 阳性、阴性、可能、历史、计划、已执行、未执行和未知状态必须区分。
