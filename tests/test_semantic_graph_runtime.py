@@ -8,8 +8,10 @@ from pydantic import BaseModel, ValidationError
 import src.agents.semantic_graphing.agent as agent_module
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent
 from src.agents.semantic_graphing.document_classifier import DocumentClassifier
-from src.llm.base import LLMResponse
+from src.llm.base import LLMMessage, LLMResponse
 from src.llm.chatanywhere_client import ChatAnywhereClient
+from src.llm.deepseek_client import DeepSeekClient
+from src.llm.factory import build_llm_client
 from src.llm.structured import StructuredGenerationError, StructuredLLMGenerator
 from src.schemas.semantic_graphing import (
     ClassifiedSegment,
@@ -34,6 +36,17 @@ from scripts.run.run_semantic_graph_agent import build_run_signature, require_co
 
 class ResultSchema(BaseModel):
     value: str
+
+
+class FakeHTTPResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def read(self):
+        return b'{"choices":[{"message":{"content":"{}"}}]}'
 
 
 class EmptyResponseLLM:
@@ -105,23 +118,90 @@ class FakeClinicalPropositionExtractor:
         return result, {}
 
 
-def test_chatanywhere_model_and_endpoint_come_from_config(monkeypatch):
-    monkeypatch.setenv("TEST_CHATANYWHERE_KEY", "secret")
-    monkeypatch.setenv("CHATANYWHERE_MODEL", "ignored-model")
-    monkeypatch.setenv("CHATANYWHERE_BASE_URL", "https://ignored.example")
+def test_deepseek_settings_come_from_config(monkeypatch):
+    monkeypatch.setenv("TEST_DEEPSEEK_KEY", "secret")
 
-    client = ChatAnywhereClient.from_config(
+    client = DeepSeekClient.from_config(
         {
-            "api_key_env": "TEST_CHATANYWHERE_KEY",
+            "api_key_env": "TEST_DEEPSEEK_KEY",
             "model": "yaml-model",
             "base_url": "https://yaml.example/v1",
             "timeout_seconds": 42,
+            "thinking": "disabled",
         }
     )
 
     assert client.model == "yaml-model"
     assert client.base_url == "https://yaml.example/v1"
     assert client.timeout_seconds == 42
+    assert client.thinking == "disabled"
+
+
+def test_deepseek_rejects_invalid_thinking_config(monkeypatch):
+    monkeypatch.setenv("TEST_DEEPSEEK_KEY", "secret")
+
+    with pytest.raises(ValueError, match="thinking"):
+        DeepSeekClient.from_config(
+            {
+                "api_key_env": "TEST_DEEPSEEK_KEY",
+                "model": "deepseek-v4-pro",
+                "base_url": "https://api.deepseek.com",
+                "thinking": "off",
+            }
+        )
+
+
+def test_deepseek_sends_configured_thinking_mode(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data)
+        captured["timeout"] = timeout
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("src.llm.deepseek_client.urllib.request.urlopen", fake_urlopen)
+    client = DeepSeekClient(
+        api_key="secret",
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com",
+        timeout_seconds=42,
+        thinking="disabled",
+    )
+
+    client.complete(
+        [LLMMessage(role="user", content="test")],
+        temperature=0,
+        max_tokens=100,
+    )
+
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert captured["timeout"] == 42
+
+
+def test_provider_selects_deepseek_or_chatanywhere(monkeypatch):
+    monkeypatch.setenv("TEST_PROVIDER_KEY", "secret")
+    base_config = {
+        "api_key_env": "TEST_PROVIDER_KEY",
+        "model": "model",
+        "base_url": "https://example.test/v1",
+    }
+
+    assert isinstance(build_llm_client({"provider": "deepseek", **base_config}), DeepSeekClient)
+    assert isinstance(
+        build_llm_client({"provider": "chatanywhere", **base_config}),
+        ChatAnywhereClient,
+    )
+    assert build_llm_client({"provider": "deepseek", **base_config}).supports_json_schema is False
+    assert (
+        build_llm_client({"provider": "chatanywhere", **base_config}).supports_json_schema is True
+    )
+
+
+def test_provider_rejects_unknown_value():
+    with pytest.raises(ValueError, match="provider"):
+        build_llm_client({"provider": "unknown"})
 
 
 def test_structured_empty_length_response_stops_without_repeating():
@@ -163,7 +243,7 @@ def test_agent_config_uses_stage_models_and_attempt_limits(tmp_path):
         ),
         encoding="utf-8",
     )
-    base_client = ChatAnywhereClient(
+    base_client = DeepSeekClient(
         api_key="secret",
         model="fallback",
         base_url="https://example.test/v1",
@@ -175,9 +255,23 @@ def test_agent_config_uses_stage_models_and_attempt_limits(tmp_path):
     assert agent.graph_unit_extractor.llm.model == "gpt-4.1-mini"
     assert agent.primary_frame_selector.generator.llm.model == "gpt-4.1-nano"
     assert agent.clinical_proposition_extractor.generator.llm.model == "gpt-4.1-mini"
+    assert agent.clinical_proposition_extractor.generator.response_format_mode == "json_object"
     assert agent.classifier.generator.max_attempts == 1
     assert agent.graph_unit_extractor.generator.max_attempts == 2
     assert agent.clinical_proposition_extractor.enable_chunking is False
+
+    chatanywhere_agent = SemanticGraphingAgent.from_config(
+        config_path,
+        ChatAnywhereClient(
+            api_key="secret",
+            model="fallback",
+            base_url="https://example.test/v1",
+        ),
+    )
+    assert (
+        chatanywhere_agent.clinical_proposition_extractor.generator.response_format_mode
+        == "json_schema"
+    )
 
 
 def test_classifier_program_computes_offsets_without_asking_model_to_count():

@@ -91,7 +91,9 @@ class ClinicalPropositionExtractor:
             max_tokens=max_tokens,
             max_attempts=max_attempts,
             retry_backoff_seconds=retry_backoff_seconds,
-            response_format_mode="json_schema",
+            response_format_mode=(
+                "json_schema" if getattr(llm, "supports_json_schema", False) else "json_object"
+            ),
         )
 
     def extract_unit(
@@ -365,103 +367,27 @@ def _locate_span_data(
     if start != -1:
         return {"text": span_text, "start_char": start, "end_char": start + len(span_text)}
 
-    reconstructed = _locate_coordinated_evidence(span_text, source_text, cursor, boundary)
-    if reconstructed is None and (cursor != 0 or boundary != len(source_text)):
-        reconstructed = _locate_coordinated_evidence(
-            span_text,
-            source_text,
-            0,
-            len(source_text),
+    if owner.endswith(".attribution"):
+        proposition_id = owner.removesuffix(".attribution")
+        raise ValueError(
+            f"Attribution for {proposition_id} is not explicitly grounded in the current "
+            f"graph unit: source_span.text {span_text!r} is not an exact continuous substring. "
+            "Attribution represents an explicitly stated information source, not an implicit "
+            "proposition subject; set attribution to null when the source is only implicit."
         )
-    if reconstructed is None:
-        raise ValueError(f"Evidence text for {owner} cannot be grounded in the source: {span_text!r}")
-    start, reconstructed_end = reconstructed
-    return {
-        "text": source_text[start:reconstructed_end],
-        "start_char": start,
-        "end_char": reconstructed_end,
-    }
-
-
-def _longest_anchor(
-    text: str,
-    source: str,
-    start: int,
-    end: int,
-    *,
-    from_right: bool,
-    min_len: int = 2,
-) -> str:
-    """Return the longest prefix/suffix of *text* (length >= min_len) found in source[start:end]."""
-    for length in range(len(text), min_len - 1, -1):
-        candidate = text[-length:] if from_right else text[:length]
-        if source.find(candidate, start, end) != -1:
-            return candidate
-    return ""
-
-
-def _locate_coordinated_evidence(
-    expanded_text: str,
-    source_text: str,
-    start: int,
-    end: int,
-) -> tuple[int, int] | None:
-    """Ground a semantically expanded coordinated statement in its verbatim source span.
-
-    Handles two common Chinese ellipsis / coordination patterns:
-
-    A) Shared prefix  — "无发热寒战" → "无发热" / "无寒战"
-       head anchor = "无"  (1 char, relaxed),  tail anchor = "寒战" (2 chars)
-
-    B) Shared suffix  — "呼吸储备功能、肺容量及气道阻力正常" → "肺容量正常"
-       head anchor = "肺容量" (3 chars),  tail anchor = "正常" (2 chars)
-
-    Strategy: extract the longest verbatim prefix (*head*) and the longest verbatim
-    suffix (*tail*) of expanded_text that each appear in source_text[start:end].
-    Then scan all (head_pos, tail_pos) pairs that are close together and cross no
-    sentence boundary, and return the shortest such span.
-    """
-    _SENT_BOUNDARY = re.compile(r"[。；;\n]")
-    _MAX_GAP = 60
-
-    # Try strict anchors (both >= 2 chars) first; fall back to relaxing one to 1 char.
-    head = _longest_anchor(expanded_text, source_text, start, end, from_right=False, min_len=2)
-    tail = _longest_anchor(expanded_text, source_text, start, end, from_right=True,  min_len=2)
-
-    if not head:
-        head = _longest_anchor(expanded_text, source_text, start, end, from_right=False, min_len=1)
-    if not tail:
-        tail = _longest_anchor(expanded_text, source_text, start, end, from_right=True,  min_len=1)
-
-    if not head or not tail:
-        return None
-    if head == tail:
-        return None
-    if len(head) + len(tail) > len(expanded_text):
-        return None
-    # Require at least one anchor to be >= 2 chars to avoid single-char false positives.
-    if len(head) < 2 and len(tail) < 2:
-        return None
-
-    # Pick the (head_pos, tail_pos) pair that yields the *shortest* grounded span.
-    best: tuple[int, int] | None = None
-    head_pos = source_text.find(head, start, end)
-    while head_pos != -1:
-        search_from = head_pos + len(head)
-        tail_pos = source_text.find(tail, search_from, end)
-        while tail_pos != -1:
-            gap = source_text[search_from:tail_pos]
-            span_len = tail_pos + len(tail) - head_pos
-            if (
-                len(gap) <= _MAX_GAP
-                and not _SENT_BOUNDARY.search(gap)
-                and (best is None or span_len < best[1] - best[0])
-            ):
-                best = (head_pos, tail_pos + len(tail))
-            tail_pos = source_text.find(tail, tail_pos + 1, end)
-        head_pos = source_text.find(head, head_pos + 1, end)
-
-    return best
+    if owner.startswith("prop_"):
+        raise ValueError(
+            f"Proposition evidence for {owner} cannot be located: source_span.text "
+            f"{span_text!r} is not an exact continuous substring of the current graph unit. "
+            "concept_text may be a normalized or coordination-expanded clinical statement, but "
+            "source_span.text must quote the complete continuous source evidence that supports "
+            "it. Select that verbatim evidence span instead of copying concept_text."
+        )
+    raise ValueError(
+        f"Evidence for {owner} cannot be located: source_span.text {span_text!r} is not an exact "
+        "continuous substring of the current graph unit. Select the exact continuous source "
+        "text that expresses this item."
+    )
 
 
 def require_complete_clinical_proposition_offsets(
@@ -522,8 +448,10 @@ def validate_clinical_propositions(
             )
             if proposition.attribution.actor_text not in proposition.attribution.source_span.text:
                 raise ValueError(
-                    f"actor_text for {proposition.proposition_id} must occur inside its "
-                    "attribution source_span"
+                    f"Attribution for {proposition.proposition_id} is invalid: actor_text must "
+                    "occur inside its attribution source_span. Attribution represents an "
+                    "explicitly stated information source, not an implicit proposition subject; "
+                    "set attribution to null when the source is only implicit."
                 )
         for modifier in proposition.modifiers:
             _validate_modifier(modifier, unit.text, modifier_ids)

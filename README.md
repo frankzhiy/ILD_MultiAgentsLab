@@ -20,22 +20,34 @@ trace inspection, and future multi-agent diagnostic reasoning.
 
 ## Manual LLM Run
 
-Set your ChatAnywhere credentials:
+Set credentials for the providers you use:
 
 ```bash
+export DEEPSEEK_API_KEY="..."
 export CHATANYWHERE_API_KEY="..."
 ```
 
-Set the model, ChatAnywhere base URL, and timeout in
+Set `provider`, model, base URL, API key environment variable, and timeout in
 `configs/agents/semantic_graphing/agent.yaml`.
 
-The semantic graph stages use separate models by default:
+The default provider is DeepSeek using the official `deepseek-v4-pro` model. Set `thinking` to
+`enabled` or `disabled` to control DeepSeek reasoning for every stage. To switch back to
+ChatAnywhere, set `provider: chatanywhere`, its base URL and API key environment variable, and the
+models available from ChatAnywhere.
 
-- `gpt-4.1-mini` for discourse segmentation, graph-unit extraction, and clinical propositions
-- `gpt-4.1-nano` only for the closed-set primary-frame selection task
+```yaml
+provider: chatanywhere
+model: gpt-4.1-mini
+classification_model: gpt-4.1-mini
+graph_unit_model: gpt-4.1-mini
+primary_frame_model: gpt-4.1-nano
+clinical_proposition_model: gpt-4.1-mini
+base_url: https://api.chatanywhere.tech/v1
+api_key_env: CHATANYWHERE_API_KEY
+```
 
-The same config also controls `max_concurrency`, `max_attempts`, per-stage token limits, and
-clinical-proposition chunk size.
+The same config also controls stage-specific models, `max_concurrency`, `max_attempts`, per-stage
+token limits, and clinical-proposition chunk size.
 
 The current manual script runs clinical discourse segmentation, graph-unit extraction,
 primary-frame selection, and clinical-proposition extraction.

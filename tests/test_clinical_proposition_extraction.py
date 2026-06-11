@@ -9,7 +9,6 @@ from src.agents.semantic_graphing.clinical_proposition_extractor import (
     split_dense_unit_text,
     validate_clinical_propositions,
 )
-from src.agents.semantic_graphing.clinical_proposition_validator import ClinicalPropositionValidator
 from src.llm.base import LLMResponse
 from src.schemas.semantic_graphing import (
     ClinicalModifier,
@@ -36,6 +35,17 @@ class CapturingLLM:
         self.messages = messages
         self.response_format = response_format
         return LLMResponse(content=json.dumps(self.response, ensure_ascii=False), raw={})
+
+
+class SequencedLLM:
+    def __init__(self, responses: list[dict]):
+        self.responses = responses
+        self.messages_by_attempt = []
+
+    def complete(self, messages, *, temperature, max_tokens, response_format=None):
+        self.messages_by_attempt.append(messages)
+        response = self.responses[len(self.messages_by_attempt) - 1]
+        return LLMResponse(content=json.dumps(response, ensure_ascii=False), raw={})
 
 
 def span(text: str, value: str, start: int = 0) -> EvidenceSpan:
@@ -209,11 +219,131 @@ def test_extractor_uses_schema_response_and_validates_nested_modifier_ownership(
     assert '"value_text"' in llm.messages[1].content
     assert '"actor_text"' in llm.messages[1].content
     assert '"attribution": null' in llm.messages[1].content
+    assert "attribution 表示当前 graph unit 原文明示的陈述来源" in llm.messages[1].content
+    assert "不得仅因其主体是患者而填写 patient attribution" in llm.messages[1].content
+    assert "来源仅在上级 segment 或其他 graph unit 出现时，必须输出 null" in llm.messages[1].content
+    assert "两者不要求逐字相同" in llm.messages[1].content
+    assert "不要把语义展开或规范化后的 `concept_text` 直接复制" in llm.messages[1].content
     assert result.propositions[0].modifiers[0].value_text == "活动后"
     assert result.propositions[0].source_span.start_char == 0
     assert result.propositions[0].source_span.end_char == 7
     assert result.propositions[0].modifiers[1].source_span.start_char == 5
     assert result.propositions[0].modifiers[1].source_span.end_char == 7
+
+
+def test_ungrounded_attribution_error_explains_implicit_subjects_use_null():
+    text = "吸烟30余年。"
+    response = {
+        "graph_unit_id": "seg_001_gu_001",
+        "primary_frame": "background_context",
+        "event_modifiers": [],
+        "propositions": [
+            {
+                "proposition_id": "prop_001",
+                "proposition_type": "exposure",
+                "concept_text": "吸烟",
+                "status": "historical",
+                "certainty": "high",
+                "attribution": {
+                    "attribution_type": "patient",
+                    "actor_text": "患者",
+                    "source_span": {"text": "患者"},
+                },
+                "modifiers": [],
+                "source_span": {"text": "吸烟30余年"},
+                "rationale": "test",
+            }
+        ],
+        "notes": [],
+        "metadata": {},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="not explicitly grounded.*not an implicit proposition subject.*attribution to null",
+    ):
+        normalize_clinical_proposition_spans(
+            UnlocatedGraphUnitClinicalPropositions.model_validate(response),
+            make_unit(text),
+        )
+
+
+def test_actor_outside_attribution_span_error_explains_implicit_subjects_use_null():
+    text = "患者吸烟30余年。"
+    response = {
+        "graph_unit_id": "seg_001_gu_001",
+        "primary_frame": "background_context",
+        "event_modifiers": [],
+        "propositions": [
+            {
+                "proposition_id": "prop_001",
+                "proposition_type": "exposure",
+                "concept_text": "吸烟",
+                "status": "historical",
+                "certainty": "high",
+                "attribution": {
+                    "attribution_type": "patient",
+                    "actor_text": "患者",
+                    "source_span": {"text": "吸烟30余年"},
+                },
+                "modifiers": [],
+                "source_span": {"text": "患者吸烟30余年"},
+                "rationale": "test",
+            }
+        ],
+        "notes": [],
+        "metadata": {},
+    }
+    normalized = normalize_clinical_proposition_spans(
+        UnlocatedGraphUnitClinicalPropositions.model_validate(response),
+        make_unit(text),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="actor_text must occur.*not an implicit proposition subject.*attribution to null",
+    ):
+        validate_clinical_propositions(normalized, make_unit(text), make_frame())
+
+
+def test_nonverbatim_modifier_evidence_is_rejected_without_semantic_reconstruction():
+    text = "活动后气短。"
+    response = {
+        "graph_unit_id": "seg_001_gu_001",
+        "primary_frame": "background_context",
+        "event_modifiers": [],
+        "propositions": [
+            {
+                "proposition_id": "prop_001",
+                "proposition_type": "symptom",
+                "concept_text": "气短",
+                "status": "present",
+                "certainty": "high",
+                "attribution": None,
+                "modifiers": [
+                    {
+                        "modifier_id": "mod_001",
+                        "modifier_type": "context",
+                        "value_text": "活动时",
+                        "source_span": {"text": "活动时"},
+                    }
+                ],
+                "source_span": {"text": "活动后气短"},
+                "rationale": "test",
+            }
+        ],
+        "notes": [],
+        "metadata": {},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Evidence for mod_001 cannot be located.*exact continuous source text",
+    ):
+        normalize_clinical_proposition_spans(
+            UnlocatedGraphUnitClinicalPropositions.model_validate(response),
+            make_unit(text),
+        )
 
 
 def test_program_computes_incorrect_model_offsets():
@@ -242,12 +372,12 @@ def test_program_computes_incorrect_model_offsets():
     assert normalized.propositions[0].source_span.end_char == text.index("CEA") + len("CEA 5.73ng/mL")
 
 
-def test_program_grounds_semantically_expanded_coordinated_propositions():
+def test_extractor_retries_nonverbatim_proposition_evidence_with_actionable_guidance():
     text = (
         "术前完善肺功能；呼吸储备功能、肺容量及气道阻力正常，"
         "常规超声心动图六项：二尖瓣、三尖瓣返流。"
     )
-    response = {
+    invalid_response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
         "event_modifiers": [],
@@ -278,27 +408,38 @@ def test_program_grounds_semantically_expanded_coordinated_propositions():
         "notes": [],
         "metadata": {},
     }
-
-    normalized = normalize_clinical_proposition_spans(
-        UnlocatedGraphUnitClinicalPropositions.model_validate(response),
-        make_unit(text),
-    )
-    validated = validate_clinical_propositions(normalized, make_unit(text), make_frame())
-    quality_result = ClinicalPropositionValidator().validate_unit(
-        make_unit(text),
-        make_frame(),
-        validated,
-    )
-
-    assert validated.propositions[0].source_span.text == "呼吸储备功能、肺容量及气道阻力正常"
-    assert validated.propositions[1].source_span.text == "二尖瓣、三尖瓣返流"
-    assert all(
-        text[item.source_span.start_char : item.source_span.end_char] == item.source_span.text
-        for item in validated.propositions
-    )
-    assert "concept_outside_proposition_span" not in {
-        issue.code for issue in quality_result.issues
+    corrected_response = {
+        **invalid_response,
+        "propositions": [
+            {
+                **invalid_response["propositions"][0],
+                "source_span": {"text": "呼吸储备功能、肺容量及气道阻力正常"},
+            },
+            {
+                **invalid_response["propositions"][1],
+                "source_span": {"text": "二尖瓣、三尖瓣返流"},
+            },
+        ],
     }
+    llm = SequencedLLM([invalid_response, corrected_response])
+    extractor = ClinicalPropositionExtractor(
+        llm,
+        "src/prompts/semantic_graphing/clinical_proposition_extraction.md",
+        temperature=0,
+        max_tokens=1000,
+    )
+
+    result, trace = extractor.extract_unit(make_unit(text), make_frame())
+
+    retry_prompt = llm.messages_by_attempt[1][1].content
+    assert "concept_text may be a normalized or coordination-expanded clinical statement" in retry_prompt
+    assert "source_span.text must quote the complete continuous source evidence" in retry_prompt
+    assert "Select that verbatim evidence span instead of copying concept_text" in retry_prompt
+    assert len(trace["attempts"]) == 2
+    assert trace["attempts"][0]["validated"] is False
+    assert trace["attempts"][1]["validated"] is True
+    assert result.propositions[0].source_span.text == "呼吸储备功能、肺容量及气道阻力正常"
+    assert result.propositions[1].source_span.text == "二尖瓣、三尖瓣返流"
 
 
 def test_dense_unit_text_is_split_into_exact_contiguous_chunks():

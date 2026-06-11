@@ -30,7 +30,7 @@ from src.agents.semantic_graphing.agent import (  # noqa: E402
     ClassificationRunResult,
     SemanticGraphingAgent,
 )
-from src.llm.chatanywhere_client import ChatAnywhereClient  # noqa: E402
+from src.llm.factory import build_llm_client  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.reporting.html_report import render_report  # noqa: E402
 from src.schemas.semantic_graphing import (  # noqa: E402
@@ -381,7 +381,7 @@ def main() -> int:
 
     config = load_yaml(args.config)
     case_id = args.case_id or input_path.stem
-    llm = ChatAnywhereClient.from_config(config)
+    llm = build_llm_client(config)
     agent = SemanticGraphingAgent.from_config(args.config, llm)
     stage_models = {
         stage: config.get(f"{stage}_model", llm.model)

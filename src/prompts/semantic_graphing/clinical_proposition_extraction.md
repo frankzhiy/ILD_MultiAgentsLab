@@ -20,12 +20,16 @@
 - 诊断判断必须抽取为 `diagnosis_assertion`，并保留原文明示的判断来源；不得直接改写为患者确定患病的事实。
 - “信息不详”“未见检查单”等信息可用 `information_availability` 表达；不得解释成检查正常或未实施。
 - 不建立原文没有明确支持的因果关系，不补充医学常识。
+- attribution 表示当前 graph unit 原文明示的陈述来源、判断来源或报告来源，不表示 proposition 的语义主体。
+- 病例中的症状、暴露和既往史默认以患者为语义主体；不得仅因其主体是患者而填写 patient attribution。
+- 只有当前 graph unit 原文明示信息来源时，attribution 才能非 null；来源仅在上级 segment 或其他 graph unit 出现时，必须输出 null。
 - 中文并列省略中的共享谓词或状态应展开到每个独立 proposition。例如“呼吸储备功能、肺容量及气道阻力正常”应分别表达为“呼吸储备功能正常”“肺容量正常”“气道阻力正常”。
 - rationale 只说明边界或 modifier 归属，保持在一句短语内。
 
 原文证据位置：
 - 每个 proposition、modifier 和 attribution 都必须提供 `source_span.text`。
-- `source_span.text` 必须是当前 graph unit 原文中的连续子串。
+- `concept_text` 表达可独立引用的临床命题，允许对原文中的并列省略进行语义展开；`source_span.text` 表达支持该命题的原文证据，两者不要求逐字相同。
+- `source_span.text` 必须逐字引用当前 graph unit 原文中的完整连续子串；不要把语义展开或规范化后的 `concept_text` 直接复制为 `source_span.text`。
 - 字符位置由程序计算。
 - proposition 的 source_span 应覆盖表达该临床陈述的最小充分连续原文。
 - 当 proposition 展开了并列省略、导致展开后的 `concept_text` 不是原文连续子串时，`source_span.text` 必须引用包含该概念及共享谓词或状态的完整连续原文；多个 proposition 可以共享或重叠同一段原文证据。

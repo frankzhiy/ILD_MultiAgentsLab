@@ -10,20 +10,21 @@ from src.llm.base import LLMClient, LLMMessage, LLMResponse
 
 
 @dataclass
-class ChatAnywhereClient(LLMClient):
+class DeepSeekClient(LLMClient):
     api_key: str
     model: str
     base_url: str
     timeout_seconds: int = 300
     response_format_json: bool = True
-    supports_json_schema: bool = True
+    thinking: str | None = None
+    supports_json_schema: bool = False
 
-    def with_model(self, model: str) -> "ChatAnywhereClient":
+    def with_model(self, model: str) -> "DeepSeekClient":
         return replace(self, model=model)
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "ChatAnywhereClient":
-        api_key_env = str(config.get("api_key_env", "CHATANYWHERE_API_KEY"))
+    def from_config(cls, config: dict[str, Any]) -> "DeepSeekClient":
+        api_key_env = str(config.get("api_key_env", "DEEPSEEK_API_KEY"))
         api_key = os.environ.get(api_key_env)
         if not api_key:
             raise RuntimeError(f"{api_key_env} is required for real LLM runs.")
@@ -31,11 +32,17 @@ class ChatAnywhereClient(LLMClient):
             raise ValueError("Agent config must define model.")
         if not config.get("base_url"):
             raise ValueError("Agent config must define base_url.")
+
+        thinking = config.get("thinking")
+        if thinking is not None and thinking not in {"enabled", "disabled"}:
+            raise ValueError("Agent config thinking must be 'enabled' or 'disabled'.")
+
         return cls(
             api_key=api_key,
             model=str(config["model"]),
             base_url=str(config["base_url"]),
             timeout_seconds=int(config.get("timeout_seconds", 300)),
+            thinking=thinking,
         )
 
     def complete(
@@ -53,6 +60,8 @@ class ChatAnywhereClient(LLMClient):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self.thinking is not None:
+            payload["thinking"] = {"type": self.thinking}
         if response_format:
             payload["response_format"] = response_format
         elif self.response_format_json:
@@ -74,33 +83,33 @@ class ChatAnywhereClient(LLMClient):
                 response_text = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"ChatAnywhere HTTP {exc.code}: {body}") from exc
+            raise RuntimeError(f"DeepSeek HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"ChatAnywhere request failed: {exc}") from exc
+            raise RuntimeError(f"DeepSeek request failed: {exc}") from exc
         except TimeoutError as exc:
             raise RuntimeError(
-                f"ChatAnywhere request timed out after {self.timeout_seconds}s"
+                f"DeepSeek request timed out after {self.timeout_seconds}s"
             ) from exc
         except socket.timeout as exc:
             raise RuntimeError(
-                f"ChatAnywhere request timed out after {self.timeout_seconds}s"
+                f"DeepSeek request timed out after {self.timeout_seconds}s"
             ) from exc
 
         try:
             raw = json.loads(response_text)
         except json.JSONDecodeError as exc:
             raise RuntimeError(
-                "ChatAnywhere returned a non-JSON response: "
+                "DeepSeek returned a non-JSON response: "
                 f"{response_text[:1000]!r}"
             ) from exc
 
         try:
             content = raw["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(f"Unexpected ChatAnywhere response shape: {raw}") from exc
+            raise RuntimeError(f"Unexpected DeepSeek response shape: {raw}") from exc
         if not isinstance(content, str):
             raise RuntimeError(
-                f"ChatAnywhere returned non-string message content: {content!r}; "
+                f"DeepSeek returned non-string message content: {content!r}; "
                 f"response={raw}"
             )
         return LLMResponse(content=content, raw=raw)
