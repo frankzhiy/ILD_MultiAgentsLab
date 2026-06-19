@@ -12,21 +12,24 @@ from src.agents.semantic_graphing.clinical_proposition_validator import (
 )
 from src.agents.semantic_graphing.document_classifier import DocumentClassifier
 from src.agents.semantic_graphing.graph_unit_extractor import SegmentGraphUnitExtractor
+from src.agents.semantic_graphing.local_graph_builder import LocalGraphBuilder
 from src.agents.semantic_graphing.primary_frame_selector import PrimaryFrameSelector
 
 from src.llm.base import LLMClient
-from src.schemas.semantic_graphing import (
-    DocumentClassification,
+from src.schemas.semantic_graphing.clinical_proposition import (
     DocumentClinicalPropositions,
-    DocumentGraphUnits,
-    DocumentPrimaryFrames,
-    DocumentPropositionValidation,
     GraphUnitClinicalPropositions,
-    GraphUnitPrimaryFrame,
     SegmentClinicalPropositions,
-    SegmentGraphUnits,
+)
+from src.schemas.semantic_graphing.document import DocumentClassification
+from src.schemas.semantic_graphing.graph_unit import DocumentGraphUnits, SegmentGraphUnits
+from src.schemas.semantic_graphing.local_graph import DocumentLocalGraphs
+from src.schemas.semantic_graphing.primary_frame import (
+    DocumentPrimaryFrames,
+    GraphUnitPrimaryFrame,
     SegmentPrimaryFrames,
 )
+from src.schemas.semantic_graphing.proposition_validation import DocumentPropositionValidation
 from src.utils.config import load_yaml
 
 
@@ -46,6 +49,7 @@ class SemanticGraphingAgent:
         primary_frame_selector: PrimaryFrameSelector,
         clinical_proposition_extractor: ClinicalPropositionExtractor,
         clinical_proposition_validator: ClinicalPropositionValidator | None = None,
+        local_graph_builder: LocalGraphBuilder | None = None,
         max_concurrency: int | None = None,
     ) -> None:
         if max_concurrency is not None and max_concurrency < 1:
@@ -58,6 +62,7 @@ class SemanticGraphingAgent:
         self.clinical_proposition_validator = (
             clinical_proposition_validator or ClinicalPropositionValidator()
         )
+        self.local_graph_builder = local_graph_builder or LocalGraphBuilder()
 
     @classmethod
     def from_config(cls, config_path: str | Path, llm: LLMClient) -> "SemanticGraphingAgent":
@@ -67,14 +72,9 @@ class SemanticGraphingAgent:
         max_attempts = int(config.get("max_attempts", 2))
         retry_backoff_seconds = float(config.get("retry_backoff_seconds", 2))
 
-        def stage_llm(stage: str) -> LLMClient:
-            model = str(config.get(f"{stage}_model", config.get("model", "")))
-            with_model = getattr(llm, "with_model", None)
-            return with_model(model) if model and callable(with_model) else llm
-
         return cls(
             classifier=DocumentClassifier(
-                stage_llm("classification"),
+                llm,
                 config["classification_prompt"],
                 temperature=temperature,
                 max_tokens=int(config.get("classification_max_tokens", max_tokens)),
@@ -82,7 +82,7 @@ class SemanticGraphingAgent:
                 retry_backoff_seconds=retry_backoff_seconds,
             ),
             graph_unit_extractor=SegmentGraphUnitExtractor(
-                stage_llm("graph_unit"),
+                llm,
                 config.get(
                     "graph_unit_prompt",
                     "src/prompts/semantic_graphing/graph_unit_extraction.md",
@@ -93,7 +93,7 @@ class SemanticGraphingAgent:
                 retry_backoff_seconds=retry_backoff_seconds,
             ),
             primary_frame_selector=PrimaryFrameSelector(
-                stage_llm("primary_frame"),
+                llm,
                 config.get(
                     "primary_frame_prompt",
                     "src/prompts/semantic_graphing/primary_frame_selection.md",
@@ -104,7 +104,7 @@ class SemanticGraphingAgent:
                 retry_backoff_seconds=retry_backoff_seconds,
             ),
             clinical_proposition_extractor=ClinicalPropositionExtractor(
-                stage_llm("clinical_proposition"),
+                llm,
                 config.get(
                     "clinical_proposition_prompt",
                     "src/prompts/semantic_graphing/clinical_proposition_extraction.md",
@@ -117,6 +117,7 @@ class SemanticGraphingAgent:
                 enable_chunking=bool(config.get("clinical_proposition_enable_chunking", False)),
             ),
             clinical_proposition_validator=ClinicalPropositionValidator(),
+            local_graph_builder=LocalGraphBuilder(),
             max_concurrency=(
                 int(config["max_concurrency"]) if config.get("max_concurrency") is not None else None
             ),
@@ -548,6 +549,35 @@ class SemanticGraphingAgent:
             info_count=validation.summary.info_count,
         )
         return validation
+
+    def build_local_graphs(
+        self,
+        graph_units: DocumentGraphUnits,
+        primary_frames: DocumentPrimaryFrames,
+        clinical_propositions: DocumentClinicalPropositions,
+        proposition_validation: DocumentPropositionValidation,
+        *,
+        progress: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> DocumentLocalGraphs:
+        def report(event: str, **payload: Any) -> None:
+            if progress:
+                progress(event, payload)
+
+        report("local_graph_build_started")
+        local_graphs = self.local_graph_builder.build_document(
+            graph_units,
+            primary_frames,
+            clinical_propositions,
+            proposition_validation,
+        )
+        report(
+            "local_graph_build_completed",
+            built_graph_count=local_graphs.summary.built_graph_count,
+            blocked_graph_count=local_graphs.summary.blocked_graph_count,
+            node_count=local_graphs.summary.node_count,
+            edge_count=local_graphs.summary.edge_count,
+        )
+        return local_graphs
 
 
 def _read_task_cache(

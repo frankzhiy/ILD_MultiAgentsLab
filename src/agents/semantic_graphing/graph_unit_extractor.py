@@ -1,6 +1,7 @@
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
-from src.schemas.semantic_graphing import ClassifiedSegment, SegmentGraphUnits
+from src.schemas.semantic_graphing.document import ClassifiedSegment
+from src.schemas.semantic_graphing.graph_unit import SegmentGraphUnits
 from src.utils.config import load_text, render_template
 
 

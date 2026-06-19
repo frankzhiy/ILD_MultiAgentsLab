@@ -4,12 +4,11 @@ from pydantic import ValidationError
 from src.agents.semantic_graphing.primary_frame_selector import (
     validate_primary_frame_selection,
 )
-from src.schemas.semantic_graphing import (
-    GraphUnit,
+from src.schemas.semantic_graphing.document import SourceType
+from src.schemas.semantic_graphing.graph_unit import GraphUnit, MdtSpecialty
+from src.schemas.semantic_graphing.primary_frame import (
     GraphUnitPrimaryFrame,
-    MdtSpecialty,
     PrimaryFrame,
-    SourceType,
     render_primary_frame_catalog,
 )
 

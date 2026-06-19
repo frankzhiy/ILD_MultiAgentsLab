@@ -13,24 +13,30 @@ from src.llm.chatanywhere_client import ChatAnywhereClient
 from src.llm.deepseek_client import DeepSeekClient
 from src.llm.factory import build_llm_client
 from src.llm.structured import StructuredGenerationError, StructuredLLMGenerator
-from src.schemas.semantic_graphing import (
-    ClassifiedSegment,
+from src.schemas.semantic_graphing.clinical_proposition import (
     ClinicalProposition,
-    DiscourseUnitType,
-    DocumentClassification,
     DocumentClinicalPropositions,
-    DocumentGraphUnits,
     EvidenceBlock,
     EvidenceReference,
-    GraphUnit,
-    GraphUnitPrimaryFrame,
     GraphUnitClinicalPropositions,
-    MdtSpecialty,
-    PrimaryFrame,
     PropositionType,
-    SegmentGraphUnits,
     SegmentClinicalPropositions,
+)
+from src.schemas.semantic_graphing.document import (
+    ClassifiedSegment,
+    DiscourseUnitType,
+    DocumentClassification,
     SourceType,
+)
+from src.schemas.semantic_graphing.graph_unit import (
+    DocumentGraphUnits,
+    GraphUnit,
+    MdtSpecialty,
+    SegmentGraphUnits,
+)
+from src.schemas.semantic_graphing.primary_frame import (
+    GraphUnitPrimaryFrame,
+    PrimaryFrame,
 )
 from scripts.run.run_semantic_graph_agent import build_run_signature, require_complete_output_offsets
 
@@ -227,16 +233,12 @@ def test_structured_empty_length_response_stops_without_repeating():
     assert "exhausted its output budget" in str(raised.value)
 
 
-def test_agent_config_uses_stage_models_and_attempt_limits(tmp_path):
+def test_agent_config_uses_shared_model_and_attempt_limits(tmp_path):
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(
         "\n".join(
             [
                 "model: fallback",
-                "classification_model: gpt-4.1-mini",
-                "graph_unit_model: gpt-4.1-mini",
-                "primary_frame_model: gpt-4.1-nano",
-                "clinical_proposition_model: gpt-4.1-mini",
                 "classification_prompt: src/prompts/semantic_graphing/document_classification.md",
                 "max_attempts: 2",
                 "classification_max_attempts: 1",
@@ -252,10 +254,10 @@ def test_agent_config_uses_stage_models_and_attempt_limits(tmp_path):
 
     agent = SemanticGraphingAgent.from_config(config_path, base_client)
 
-    assert agent.classifier.llm.model == "gpt-4.1-mini"
-    assert agent.graph_unit_extractor.llm.model == "gpt-4.1-mini"
-    assert agent.primary_frame_selector.generator.llm.model == "gpt-4.1-nano"
-    assert agent.clinical_proposition_extractor.generator.llm.model == "gpt-4.1-mini"
+    assert agent.classifier.llm.model == "fallback"
+    assert agent.graph_unit_extractor.llm.model == "fallback"
+    assert agent.primary_frame_selector.generator.llm.model == "fallback"
+    assert agent.clinical_proposition_extractor.generator.llm.model == "fallback"
     assert agent.clinical_proposition_extractor.generator.response_format_mode == "json_object"
     assert agent.classifier.generator.max_attempts == 1
     assert agent.graph_unit_extractor.generator.max_attempts == 2

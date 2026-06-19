@@ -2,8 +2,8 @@
 
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
-from src.schemas.semantic_graphing import (
-    GraphUnit,
+from src.schemas.semantic_graphing.graph_unit import GraphUnit
+from src.schemas.semantic_graphing.primary_frame import (
     GraphUnitPrimaryFrame,
     render_primary_frame_catalog,
 )

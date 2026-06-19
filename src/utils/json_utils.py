@@ -24,7 +24,3 @@ def parse_llm_json(text: str) -> Any:
             raise
         return json.loads(stripped[start : end + 1])
 
-
-def to_pretty_json(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, indent=2)
-

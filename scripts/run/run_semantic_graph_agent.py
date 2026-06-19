@@ -33,10 +33,12 @@ from src.agents.semantic_graphing.agent import (  # noqa: E402
 from src.llm.factory import build_llm_client  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.reporting.html_report import render_report  # noqa: E402
-from src.schemas.semantic_graphing import (  # noqa: E402
-    DocumentClassification,
+from src.schemas.semantic_graphing.clinical_proposition import (  # noqa: E402
     DocumentClinicalPropositions,
-    DocumentGraphUnits,
+)
+from src.schemas.semantic_graphing.document import DocumentClassification  # noqa: E402
+from src.schemas.semantic_graphing.graph_unit import DocumentGraphUnits  # noqa: E402
+from src.schemas.semantic_graphing.primary_frame import (  # noqa: E402
     DocumentPrimaryFrames,
 )
 from src.utils.config import load_yaml  # noqa: E402
@@ -248,6 +250,8 @@ class ProgressReporter:
             )
         if step == "clinical_proposition_validation":
             return "正在进行：clinical proposition validation"
+        if step == "local_graph_build":
+            return "正在进行：构建 unit local graphs"
         if step == "write_outputs":
             return "正在进行：写入结果文件和 HTML 报告"
         return f"正在进行：{step}"
@@ -272,6 +276,8 @@ class ProgressReporter:
             )
         if step == "clinical_proposition_validation":
             return "开始 clinical proposition validation..."
+        if step == "local_graph_build":
+            return "开始确定性构建 unit local graphs..."
         if step == "write_outputs":
             return "开始写入结果文件和 HTML 报告..."
         return f"开始 {step}..."
@@ -310,6 +316,13 @@ class ProgressReporter:
                 f"{payload.get('error_count')} errors，"
                 f"{payload.get('warning_count')} warnings，{duration_text}"
             )
+        if step == "local_graph_build":
+            return (
+                f"完成 local graph build：{payload.get('built_graph_count')} built，"
+                f"{payload.get('blocked_graph_count')} blocked，"
+                f"{payload.get('node_count')} nodes，{payload.get('edge_count')} edges，"
+                f"{duration_text}"
+            )
         if step == "write_outputs":
             return f"完成结果写入，{duration_text}"
         return f"完成 {step}，{duration_text}"
@@ -327,6 +340,7 @@ def main() -> int:
             "Run Step 2 and Step 3 of the ILD semantic graphing workflow: "
             "clinical discourse segmentation, graph-unit extraction, primary-frame selection, "
             "clinical-proposition extraction, and proposition validation."
+            " The run also builds deterministic unit local graphs."
         )
     )
     parser.add_argument(
@@ -364,10 +378,7 @@ def main() -> int:
     case_id = args.case_id or input_path.stem
     llm = build_llm_client(config)
     agent = SemanticGraphingAgent.from_config(args.config, llm)
-    stage_models = {
-        stage: config.get(f"{stage}_model", llm.model)
-        for stage in ("classification", "graph_unit", "primary_frame", "clinical_proposition")
-    }
+    model = getattr(llm, "model", config.get("model"))
 
     input_text = input_path.read_text(encoding="utf-8")
     run_signature = build_run_signature(config)
@@ -398,19 +409,17 @@ def main() -> int:
     reporter = ProgressReporter()
     reporter.log(f"输入文件：{input_path}")
     reporter.log(f"输出目录：{run_dir}")
-    reporter.log(
-        "阶段模型：" + ", ".join(f"{stage}={model}" for stage, model in stage_models.items())
-    )
+    reporter.log(f"模型：{model}")
     reporter.log(
         "当前阶段：Step 2 discourse segmentation + Step 3 primary frame selection "
         "+ clinical proposition extraction + proposition validation；"
         "产出 discourse segments + graph units + primary frames + clinical propositions "
-        "+ proposition validation。"
+        "+ proposition validation + local graphs。"
     )
 
     trace_path = run_dir / "trace.json"
     trace = read_json(trace_path) if trace_path.exists() else {"case_id": case_id}
-    trace["models"] = stage_models
+    trace["model"] = model
     trace["runtime_config"] = {
         "max_concurrency": config.get("max_concurrency"),
         "max_attempts": config.get("max_attempts"),
@@ -502,6 +511,13 @@ def main() -> int:
             clinical_propositions,
             progress=reporter.event,
         )
+        local_graphs = agent.build_local_graphs(
+            graph_units,
+            primary_frames,
+            clinical_propositions,
+            proposition_validation,
+            progress=reporter.event,
+        )
         require_complete_output_offsets(
             result.classification,
             graph_units,
@@ -521,7 +537,7 @@ def main() -> int:
             {
                 "case_id": case_id,
                 "input_path": str(input_path),
-                "models": stage_models,
+                "model": model,
                 **diagnostics,
             },
         )
@@ -536,6 +552,7 @@ def main() -> int:
         run_dir / "proposition_validation.json",
         proposition_validation.model_dump(),
     )
+    write_json(run_dir / "local_graphs.json", local_graphs.model_dump())
     write_json(trace_path, trace)
     timing_before_report = reporter.summary()
     report_path = render_report(
@@ -548,6 +565,7 @@ def main() -> int:
         primary_frames=primary_frames,
         clinical_propositions=clinical_propositions,
         proposition_validation=proposition_validation,
+        local_graphs=local_graphs,
     )
     reporter.event(
         "write_outputs_completed",
@@ -582,6 +600,10 @@ def main() -> int:
     )
     print(f"Validation errors: {proposition_validation.summary.error_count}")
     print(f"Validation warnings: {proposition_validation.summary.warning_count}")
+    print(f"Local graphs built: {local_graphs.summary.built_graph_count}")
+    print(f"Local graphs blocked: {local_graphs.summary.blocked_graph_count}")
+    print(f"Local graph nodes: {local_graphs.summary.node_count}")
+    print(f"Local graph edges: {local_graphs.summary.edge_count}")
     print(
         "Boundary warnings: "
         f"{sum(unit.boundary_warning is not None for item in primary_frames.segments for unit in item.units)}"

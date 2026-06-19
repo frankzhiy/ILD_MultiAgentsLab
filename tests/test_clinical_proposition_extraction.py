@@ -11,18 +11,19 @@ from src.agents.semantic_graphing.clinical_proposition_extractor import (
 )
 from src.agents.semantic_graphing.clinical_proposition_validator import ClinicalPropositionValidator
 from src.llm.base import LLMResponse
-from src.schemas.semantic_graphing import (
+from src.schemas.semantic_graphing.clinical_proposition import (
     ClinicalModifier,
     ClinicalProposition,
     EvidenceReference,
-    GraphUnit,
     GraphUnitClinicalPropositions,
-    GraphUnitPrimaryFrame,
-    MdtSpecialty,
     ModifierType,
-    PrimaryFrame,
     PropositionType,
-    SourceType,
+)
+from src.schemas.semantic_graphing.document import SourceType
+from src.schemas.semantic_graphing.graph_unit import GraphUnit, MdtSpecialty
+from src.schemas.semantic_graphing.primary_frame import (
+    GraphUnitPrimaryFrame,
+    PrimaryFrame,
 )
 
 
@@ -315,7 +316,7 @@ def test_actor_outside_attribution_span_error_explains_implicit_subjects_use_nul
         validate_clinical_propositions(result, make_unit(text), make_frame())
 
 
-def test_nonverbatim_modifier_evidence_is_rejected_without_semantic_reconstruction():
+def test_nonverbatim_modifier_evidence_becomes_validation_warning():
     text = "活动后气短。"
     response = {
         "graph_unit_id": "seg_001_gu_001",
@@ -345,15 +346,17 @@ def test_nonverbatim_modifier_evidence_is_rejected_without_semantic_reconstructi
         "metadata": {},
     }
 
-    with pytest.raises(
-        ValueError,
-        match="Evidence for mod_001 cannot be located.*exact continuous substring",
-    ):
-        validate_clinical_propositions(
-            result_from(response, text),
-            make_unit(text),
-            make_frame(),
-        )
+    result = validate_clinical_propositions(
+        result_from(response, text),
+        make_unit(text),
+        make_frame(),
+    )
+    validation = ClinicalPropositionValidator().validate_unit(make_unit(text), make_frame(), result)
+
+    assert validation.is_graph_ready is True
+    issues = [(issue.code, str(issue.severity)) for issue in validation.issues]
+    assert ("modifier_quote_not_found", "warning") in issues
+    assert "error" not in [severity for _, severity in issues]
 
 
 def test_extractor_retries_nonverbatim_proposition_evidence_with_actionable_guidance():

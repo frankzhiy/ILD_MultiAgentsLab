@@ -3,20 +3,23 @@
 from collections import Counter, defaultdict
 
 from src.agents.semantic_graphing.clinical_proposition_extractor import build_evidence_blocks
-from src.schemas.semantic_graphing import (
+from src.schemas.semantic_graphing.clinical_proposition import (
     DocumentClinicalPropositions,
-    DocumentGraphUnits,
-    DocumentPrimaryFrames,
-    DocumentPropositionValidation,
     EvidenceBlock,
     EvidenceReference,
-    GraphUnit,
     GraphUnitClinicalPropositions,
-    GraphUnitPrimaryFrame,
-    GraphUnitPropositionValidation,
     ModifierType,
-    PrimaryFrame,
     PropositionType,
+)
+from src.schemas.semantic_graphing.graph_unit import DocumentGraphUnits, GraphUnit
+from src.schemas.semantic_graphing.primary_frame import (
+    DocumentPrimaryFrames,
+    GraphUnitPrimaryFrame,
+    PrimaryFrame,
+)
+from src.schemas.semantic_graphing.proposition_validation import (
+    DocumentPropositionValidation,
+    GraphUnitPropositionValidation,
     PropositionValidationIssue,
     PropositionValidationMetrics,
     PropositionValidationSummary,
@@ -538,7 +541,11 @@ def _validate_evidence_reference(
         issues.append(
             _issue(
                 f"{owner_code}_quote_not_found",
-                ValidationSeverity.ERROR,
+                (
+                    ValidationSeverity.WARNING
+                    if owner_code == "modifier"
+                    else ValidationSeverity.ERROR
+                ),
                 "Evidence quote is not an exact continuous substring of its evidence blocks.",
                 proposition_id=proposition_id,
                 modifier_id=modifier_id,

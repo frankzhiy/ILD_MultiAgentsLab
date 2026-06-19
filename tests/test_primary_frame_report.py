@@ -1,27 +1,33 @@
 from src.agents.semantic_graphing.agent import ClassificationRunResult
 from src.reporting.html_report import render_report
-from src.schemas.semantic_graphing import (
-    ClassifiedSegment,
+from src.schemas.semantic_graphing.clinical_proposition import (
     ClinicalModifier,
     ClinicalProposition,
-    DiscourseUnitType,
-    DocumentClassification,
     DocumentClinicalPropositions,
-    DocumentGraphUnits,
-    DocumentPrimaryFrames,
     EvidenceBlock,
     EvidenceReference,
-    GraphUnit,
     GraphUnitClinicalPropositions,
-    GraphUnitPrimaryFrame,
-    MdtSpecialty,
     ModifierType,
-    PrimaryFrame,
     PropositionType,
     SegmentClinicalPropositions,
-    SegmentGraphUnits,
-    SegmentPrimaryFrames,
+)
+from src.schemas.semantic_graphing.document import (
+    ClassifiedSegment,
+    DiscourseUnitType,
+    DocumentClassification,
     SourceType,
+)
+from src.schemas.semantic_graphing.graph_unit import (
+    DocumentGraphUnits,
+    GraphUnit,
+    MdtSpecialty,
+    SegmentGraphUnits,
+)
+from src.schemas.semantic_graphing.primary_frame import (
+    DocumentPrimaryFrames,
+    GraphUnitPrimaryFrame,
+    PrimaryFrame,
+    SegmentPrimaryFrames,
 )
 
 

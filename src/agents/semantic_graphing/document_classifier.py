@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
-from src.schemas.semantic_graphing import (
+from src.schemas.semantic_graphing.document import (
     ClassifiedSegment,
     DiscourseUnitType,
     DocumentClassification,

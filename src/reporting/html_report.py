@@ -1,13 +1,17 @@
 from collections import Counter
 from html import escape
+import json
 from pathlib import Path
 from typing import Any
 
 from src.agents.semantic_graphing.agent import ClassificationRunResult
-from src.schemas.semantic_graphing import (
+from src.schemas.semantic_graphing.clinical_proposition import (
     DocumentClinicalPropositions,
-    DocumentGraphUnits,
-    DocumentPrimaryFrames,
+)
+from src.schemas.semantic_graphing.graph_unit import DocumentGraphUnits
+from src.schemas.semantic_graphing.local_graph import DocumentLocalGraphs
+from src.schemas.semantic_graphing.primary_frame import DocumentPrimaryFrames
+from src.schemas.semantic_graphing.proposition_validation import (
     DocumentPropositionValidation,
 )
 
@@ -116,6 +120,7 @@ def render_report(
     primary_frames: DocumentPrimaryFrames | None = None,
     clinical_propositions: DocumentClinicalPropositions | None = None,
     proposition_validation: DocumentPropositionValidation | None = None,
+    local_graphs: DocumentLocalGraphs | None = None,
 ) -> Path:
     """Render a single HTML report covering the full run pipeline."""
     html = _render_html(
@@ -127,6 +132,7 @@ def render_report(
         primary_frames=primary_frames,
         clinical_propositions=clinical_propositions,
         proposition_validation=proposition_validation,
+        local_graphs=local_graphs,
     )
     path = Path(output_path)
     path.write_text(html, encoding="utf-8")
@@ -143,6 +149,7 @@ def _render_html(
     primary_frames: DocumentPrimaryFrames | None = None,
     clinical_propositions: DocumentClinicalPropositions | None = None,
     proposition_validation: DocumentPropositionValidation | None = None,
+    local_graphs: DocumentLocalGraphs | None = None,
 ) -> str:
     classification = result.classification
     segments = classification.segments
@@ -188,6 +195,12 @@ def _render_html(
             for unit in seg.units:
                 validation_by_unit[unit.graph_unit_id] = unit
 
+    local_graph_by_unit: dict[str, Any] = {}
+    if local_graphs is not None:
+        for seg in local_graphs.segments:
+            for unit in seg.units:
+                local_graph_by_unit[unit.graph_unit_id] = unit
+
     total_elapsed = timing.get("total_elapsed_seconds")
     elapsed_text = f"{total_elapsed:.2f}s" if isinstance(total_elapsed, int | float) else "N/A"
     highlighted_text = _render_highlighted_raw_text(raw_text, segments)
@@ -197,10 +210,11 @@ def _render_html(
 <head>
   <meta charset="utf-8">
   <title>{escape(result.case_id)} 语义图谱报告</title>
+  <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
   <style>
     body {{ margin: 32px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             line-height: 1.7; color: #1f2937; background: #f8fafc; }}
-    main {{ max-width: 1200px; margin: 0 auto; }}
+    main {{ max-width: 1500px; margin: 0 auto; }}
     h1 {{ margin-bottom: 8px; font-size: 28px; color: #0f172a; }}
     h2 {{ margin-top: 40px; font-size: 20px; border-bottom: 2px solid #94a3b8; padding-bottom: 8px; color: #334155; }}
     h3 {{ margin: 18px 0 10px; font-size: 16px; color: #475569; font-weight: 600; }}
@@ -268,22 +282,47 @@ def _render_html(
                                  font-size: 11px; color: #64748b; transition: transform 0.15s; }}
     details[open] > summary::before {{ transform: rotate(90deg); }}
     details .body {{ padding: 0 14px 12px; }}
-    .graph-view {{ border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; margin: 14px 0; }}
-    .graph-toolbar {{ display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-                      background: #f8fafc; border-bottom: 1px solid #e2e8f0; }}
-    .graph-toolbar button {{ padding: 4px 12px; border: 1px solid #94a3b8; border-radius: 4px;
-                             background: #fff; cursor: pointer; font-size: 12px; }}
-    .graph-toolbar button:hover {{ background: #e2e8f0; }}
-    .cy-graph {{ height: 480px; background: #fafafa; }}
+    .graph-view {{ border: 1px solid #dbe3ef; border-radius: 14px; overflow: hidden; margin: 16px 0;
+                   background: #fff; box-shadow: 0 10px 28px rgba(15,23,42,0.08); }}
+    .graph-toolbar {{ display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 9px 14px;
+                      background: linear-gradient(135deg, #f8fafc, #eef4ff);
+                      border-bottom: 1px solid #dbe3ef; }}
+    .graph-toolbar strong {{ color: #172554; font-size: 13px; letter-spacing: 0.01em; }}
+    .graph-toolbar .graph-counts {{ margin-right: auto; color: #64748b; font-size: 11px; }}
+    .graph-toolbar button {{ padding: 5px 11px; border: 1px solid #cbd5e1; border-radius: 999px;
+                             background: rgba(255,255,255,0.9); color: #334155; cursor: pointer;
+                             font-size: 11px; transition: all 0.15s ease; }}
+    .graph-toolbar button:hover {{ background: #fff; border-color: #818cf8; color: #3730a3;
+                                   box-shadow: 0 2px 8px rgba(79,70,229,0.14); }}
+    .graph-reader {{ display: grid; grid-template-columns: minmax(0, 2.35fr) minmax(300px, 1fr); }}
+    .cy-graph {{ height: 680px; border-right: 1px solid #dbe3ef;
+                 background-color: #f8fafc;
+                 background-image: radial-gradient(#cbd5e1 0.7px, transparent 0.7px);
+                 background-size: 18px 18px; }}
     .cy-graph.is-empty {{ display: flex; align-items: center; justify-content: center;
                           color: #94a3b8; font-size: 14px; padding: 24px; }}
-    .graph-legend {{ display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
-                     background: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 11px; color: #475569; }}
-    .graph-legend i {{ display: inline-block; width: 12px; height: 12px; border-radius: 3px;
-                       vertical-align: middle; margin-right: 3px; }}
+    .graph-detail {{ padding: 18px; background: linear-gradient(180deg, #fff, #f8fafc);
+                     min-height: 160px; font-size: 12px; }}
+    .graph-detail h5 {{ margin: 0 0 12px; font-size: 15px; line-height: 1.4; color: #0f172a; }}
+    .graph-detail-row {{ margin: 7px 0; color: #475569; }}
+    .graph-detail-row strong {{ color: #1e293b; }}
+    .graph-evidence {{ margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0; }}
+    .evidence-block {{ margin: 7px 0; padding: 8px; border-radius: 4px; background: #f8fafc;
+                       border: 1px solid #e2e8f0; white-space: pre-wrap; }}
+    .evidence-block.is-referenced {{ border-color: #f59e0b; background: #fffbeb; }}
+    mark {{ background: #fde68a; padding: 1px 2px; border-radius: 2px; }}
+    .graph-blocked {{ padding: 14px; margin: 12px 0; border: 1px solid #fca5a5;
+                      background: #fef2f2; border-radius: 6px; color: #991b1b; }}
+    .graph-legend {{ display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 9px 14px;
+                     background: #fff; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; }}
+    .graph-legend span {{ display: inline-flex; align-items: center; }}
+    .graph-legend i {{ display: inline-block; width: 10px; height: 10px; border-radius: 999px;
+                       margin-right: 5px; box-shadow: inset 0 0 0 1px rgba(15,23,42,0.12); }}
     @media (max-width: 900px) {{
       body {{ margin: 18px; }}
       .pipeline {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .graph-reader {{ grid-template-columns: 1fr; }}
+      .cy-graph {{ height: 580px; border-right: 0; border-bottom: 1px solid #e2e8f0; }}
     }}
   </style>
 </head>
@@ -300,6 +339,7 @@ def _render_html(
       <span class="stat-badge">proposition {proposition_count}</span>
       <span class="stat-badge">modifier {modifier_count}</span>
       {_render_validation_summary_badges(proposition_validation)}
+      {_render_local_graph_summary_badges(local_graphs)}
       <span class="stat-badge">总耗时 {escape(elapsed_text)}</span>
     </div>
 
@@ -315,11 +355,13 @@ def _render_html(
         primary_frame_by_unit,
         propositions_by_unit,
         validation_by_unit,
+        local_graph_by_unit,
     )}
 
     <h2>📊 统计信息</h2>
     {_render_statistics_summary(primary_frame_counts, source_counts, specialty_counts)}
   </main>
+  {_render_cytoscape_script()}
 </body>
 </html>
 """
@@ -331,11 +373,13 @@ def _render_unified_segments(
     primary_frame_by_unit: dict[str, Any] | None = None,
     propositions_by_unit: dict[str, Any] | None = None,
     validation_by_unit: dict[str, Any] | None = None,
+    local_graph_by_unit: dict[str, Any] | None = None,
 ) -> str:
     """Render each segment once with its graph units and primary-frame selections."""
     primary_frame_by_unit = primary_frame_by_unit or {}
     propositions_by_unit = propositions_by_unit or {}
     validation_by_unit = validation_by_unit or {}
+    local_graph_by_unit = local_graph_by_unit or {}
     cards = []
     
     for index, segment_units in enumerate(graph_units.segments):
@@ -411,6 +455,9 @@ def _render_unified_segments(
                 validation_block = _render_proposition_validation(
                     validation_by_unit.get(unit.graph_unit_id)
                 )
+                local_graph_block = _render_local_graph(
+                    local_graph_by_unit.get(unit.graph_unit_id)
+                )
                 
                 unit_blocks.append(
                     "<div class='unit'>"
@@ -420,6 +467,7 @@ def _render_unified_segments(
                     f"<pre style='background:#f8fafc;padding:8px;border-radius:4px;font-size:13px;'>{escape(unit.text)}</pre>"
                     f"{proposition_block}"
                     f"{validation_block}"
+                    f"{local_graph_block}"
                     "</div>"
                 )
         else:
@@ -512,6 +560,258 @@ def _render_validation_summary_badges(
         f'<span class="stat-badge">validation errors {summary.error_count}</span>'
         f'<span class="stat-badge">validation warnings {summary.warning_count}</span>'
     )
+
+
+def _render_local_graph_summary_badges(local_graphs: DocumentLocalGraphs | None) -> str:
+    if local_graphs is None:
+        return ""
+    summary = local_graphs.summary
+    return (
+        f'<span class="stat-badge">local graphs {summary.built_graph_count} built</span>'
+        f'<span class="stat-badge">local graphs {summary.blocked_graph_count} blocked</span>'
+        f'<span class="stat-badge">graph nodes {summary.node_count}</span>'
+        f'<span class="stat-badge">graph edges {summary.edge_count}</span>'
+    )
+
+
+def _render_local_graph(local_graph: Any | None) -> str:
+    if local_graph is None:
+        return ""
+    if str(local_graph.build_status) != "built":
+        issues = "".join(
+            f"<li><strong>{escape(issue.code)}</strong>: {escape(issue.message)}</li>"
+            for issue in local_graph.build_issues
+        )
+        return (
+            "<div class='graph-blocked'><strong>Local graph not rendered for this unit.</strong>"
+            f"<ul class='validation-issues'>{issues}</ul></div>"
+        )
+
+    safe_id = local_graph.graph_unit_id.replace("_", "-")
+    graph_data = json.dumps(local_graph.model_dump(mode="json"), ensure_ascii=False).replace(
+        "</", "<\\/"
+    )
+    legend = (
+        "<span><i style='background:#334155'></i>Graph unit</span>"
+        "<span><i style='background:#f59e0b'></i>Event</span>"
+        "<span><i style='background:#60a5fa'></i>Proposition</span>"
+        "<span><i style='background:#c084fc'></i>Modifier</span>"
+        "<span><i style='background:#34d399'></i>Source actor</span>"
+        "<span>虚线边框 = absent / not performed</span>"
+    )
+    return (
+        "<div class='graph-view'>"
+        "<div class='graph-toolbar'><strong>Local evidence graph</strong>"
+        f"<span class='graph-counts'>{len(local_graph.nodes)} nodes · {len(local_graph.edges)} relations</span>"
+        f"<button type='button' data-graph-action='fit' data-graph-target='{escape(safe_id)}'>"
+        "适应画布</button>"
+        f"<button type='button' data-graph-action='reset' data-graph-target='{escape(safe_id)}'>"
+        "重置选择</button></div>"
+        "<div class='graph-reader'>"
+        f"<div class='cy-graph' id='cy-{escape(safe_id)}'></div>"
+        f"<aside class='graph-detail' id='detail-{escape(safe_id)}'>"
+        "<h5>节点详情</h5><p>点击节点查看语义、状态和原文证据。</p></aside>"
+        "</div>"
+        f"<div class='graph-legend'>{legend}</div>"
+        f"<script type='application/json' id='graph-data-{escape(safe_id)}'>{graph_data}</script>"
+        "</div>"
+    )
+
+
+def _render_cytoscape_script() -> str:
+    return """<script>
+(() => {
+  const escapeHtml = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+
+  const highlightQuote = (text, quote) => {
+    const safeText = escapeHtml(text);
+    if (!quote) return safeText;
+    const index = text.indexOf(quote);
+    if (index < 0) return safeText;
+    return escapeHtml(text.slice(0, index)) + "<mark>" + escapeHtml(quote) + "</mark>" +
+      escapeHtml(text.slice(index + quote.length));
+  };
+
+  const renderDetail = (detail, node, graph) => {
+    const data = node.data();
+    const evidence = data.evidence || { evidence_ids: [], quote: "" };
+    const referenced = new Set(evidence.evidence_ids || []);
+    const blocks = graph.evidence_blocks.map((block) =>
+      `<div class="evidence-block ${referenced.has(block.evidence_id) ? "is-referenced" : ""}">` +
+      `<code>${escapeHtml(block.evidence_id)}</code><br>` +
+      highlightQuote(block.text, referenced.has(block.evidence_id) ? evidence.quote : "") +
+      `</div>`).join("");
+    const detailLabel = data.node_type === "event"
+      ? (frameLabels[data.label] || data.label)
+      : data.label;
+    detail.innerHTML =
+      `<h5>${escapeHtml(detailLabel)}</h5>` +
+      `<div class="graph-detail-row"><strong>节点类型：</strong>${escapeHtml(data.node_type)}</div>` +
+      `<div class="graph-detail-row"><strong>语义类型：</strong>${escapeHtml(data.semantic_type)}</div>` +
+      (data.status ? `<div class="graph-detail-row"><strong>状态：</strong>${escapeHtml(data.status)}</div>` : "") +
+      (data.certainty ? `<div class="graph-detail-row"><strong>确定性：</strong>${escapeHtml(data.certainty)}</div>` : "") +
+      `<div class="graph-detail-row"><strong>证据原文：</strong>${escapeHtml(evidence.quote)}</div>` +
+      `<div class="graph-evidence"><strong>证据块</strong>${blocks}</div>`;
+  };
+
+  const nodeLabels = {
+    graph_unit: "GRAPH UNIT",
+    event: "EVENT",
+    proposition: "PROPOSITION",
+    modifier: "MODIFIER",
+    source_actor: "SOURCE"
+  };
+  const edgeLabels = {
+    organizes_as: "组织为",
+    contains_proposition: "包含陈述",
+    has_event_modifier: "事件修饰",
+    has_modifier: "修饰",
+    attributed_to: "来源"
+  };
+  const frameLabels = {
+    symptom_episode: "症状病程事件",
+    encounter: "诊疗接触事件",
+    standalone_examination: "独立检查事件",
+    clinical_assessment: "独立临床判断事件",
+    treatment_course: "独立治疗过程",
+    background_context: "背景上下文"
+  };
+  const layoutOptions = (graph, animate = false) => ({
+    name: "breadthfirst",
+    directed: true,
+    roots: [graph.root_node_id],
+    spacingFactor: graph.nodes.length > 16 ? 1.08 : 1.22,
+    padding: 36,
+    animate
+  });
+  const fitGraph = (cy) => {
+    cy.fit(undefined, 36);
+    if (cy.zoom() < 0.58) {
+      cy.zoom(0.58);
+      cy.center(cy.nodes('[node_type = "event"]'));
+    }
+  };
+
+  const style = [
+    { selector: "node", style: {
+      "label": "data(display_label)", "text-wrap": "wrap", "text-max-width": 150,
+      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif", "font-size": 11,
+      "font-weight": 600, "line-height": 1.25, "color": "#1e3a5f",
+      "background-color": "#eff6ff", "border-width": 1.5, "border-color": "#93c5fd",
+      "shape": "round-rectangle", "width": 172, "height": 58,
+      "text-valign": "center", "text-halign": "center", "overlay-opacity": 0,
+      "shadow-blur": 10, "shadow-color": "#64748b", "shadow-opacity": 0.15,
+      "shadow-offset-x": 0, "shadow-offset-y": 3
+    }},
+    { selector: 'node[node_type = "graph_unit"]', style: {
+      "background-color": "#172554", "border-color": "#172554", "color": "#fff",
+      "width": 190, "height": 64, "font-size": 12,
+      "shadow-color": "#172554", "shadow-opacity": 0.28
+    }},
+    { selector: 'node[node_type = "event"]', style: {
+      "background-color": "#fff7ed", "border-color": "#fb923c", "color": "#9a3412",
+      "width": 190, "height": 64, "font-size": 12, "border-width": 2.5,
+      "shadow-color": "#f97316", "shadow-opacity": 0.19
+    }},
+    { selector: 'node[node_type = "modifier"]', style: {
+      "background-color": "#faf5ff", "border-color": "#d8b4fe", "color": "#6b21a8",
+      "width": 142, "height": 46, "font-size": 10, "border-style": "dashed",
+      "shadow-opacity": 0.08
+    }},
+    { selector: 'node[node_type = "source_actor"]', style: {
+      "background-color": "#ecfdf5", "border-color": "#6ee7b7", "color": "#065f46",
+      "width": 142, "height": 46, "font-size": 10, "shadow-opacity": 0.08
+    }},
+    { selector: 'node[status = "absent"], node[status = "not_performed"]', style: {
+      "border-style": "dashed", "border-width": 2.5, "background-color": "#f8fafc",
+      "border-color": "#94a3b8", "color": "#64748b"
+    }},
+    { selector: 'node[status = "possible"], node[status = "planned"]', style: {
+      "border-style": "double", "border-width": 3
+    }},
+    { selector: "edge", style: {
+      "curve-style": "round-taxi", "taxi-direction": "downward", "taxi-radius": 10,
+      "target-arrow-shape": "triangle", "arrow-scale": 0.7,
+      "line-color": "#cbd5e1", "target-arrow-color": "#94a3b8", "width": 1.4,
+      "label": "data(display_label)", "font-size": 8, "font-weight": 500, "color": "#64748b",
+      "text-background-color": "#f8fafc", "text-background-opacity": 1,
+      "text-background-padding": 3, "text-background-shape": "roundrectangle",
+      "overlay-opacity": 0
+    }},
+    { selector: 'edge[edge_type = "organizes_as"]', style: {
+      "line-color": "#64748b", "target-arrow-color": "#475569", "width": 2
+    }},
+    { selector: 'edge[edge_type = "has_modifier"], edge[edge_type = "has_event_modifier"]', style: {
+      "line-color": "#d8b4fe", "target-arrow-color": "#c084fc", "line-style": "dashed"
+    }},
+    { selector: 'edge[edge_type = "attributed_to"]', style: {
+      "line-color": "#6ee7b7", "target-arrow-color": "#34d399", "line-style": "dashed"
+    }},
+    { selector: ".faded", style: { "opacity": 0.1, "text-opacity": 0.1 }},
+    { selector: ".focused", style: {
+      "border-width": 3, "border-color": "#4f46e5", "line-color": "#6366f1",
+      "target-arrow-color": "#4f46e5", "shadow-color": "#4f46e5",
+      "shadow-opacity": 0.3, "z-index": 999
+    }}
+  ];
+
+  document.querySelectorAll('script[id^="graph-data-"]').forEach((dataElement) => {
+    const suffix = dataElement.id.replace("graph-data-", "");
+    const container = document.getElementById(`cy-${suffix}`);
+    const detail = document.getElementById(`detail-${suffix}`);
+    const graph = JSON.parse(dataElement.textContent);
+    if (!window.cytoscape) {
+      container.classList.add("is-empty");
+      container.textContent = "Cytoscape 未能加载，图数据仍保存在 local_graphs.json。";
+      return;
+    }
+    const elements = [
+      ...graph.nodes.map((node) => ({ data: {
+        ...node, id: node.node_id,
+        display_label: `${nodeLabels[node.node_type] || node.node_type}\\n${
+          node.node_type === "event" ? (frameLabels[node.label] || node.label) : node.label
+        }`,
+      }})),
+      ...graph.edges.map((edge) => ({ data: {
+        ...edge, id: edge.edge_id, source: edge.source_node_id, target: edge.target_node_id,
+        display_label: edgeLabels[edge.edge_type] || edge.edge_type,
+      }})),
+    ];
+    const cy = cytoscape({
+      container, elements, style,
+      layout: layoutOptions(graph),
+      minZoom: 0.2, maxZoom: 2.5, userZoomingEnabled: false
+    });
+    container._cy = cy;
+    cy.on("tap", "node", (event) => {
+      cy.elements().addClass("faded").removeClass("focused");
+      const neighborhood = event.target.closedNeighborhood();
+      neighborhood.removeClass("faded").addClass("focused");
+      renderDetail(detail, event.target, graph);
+    });
+    cy.on("tap", (event) => {
+      if (event.target === cy) cy.elements().removeClass("faded focused");
+    });
+    fitGraph(cy);
+  });
+
+  document.querySelectorAll("[data-graph-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const container = document.getElementById(`cy-${button.dataset.graphTarget}`);
+      const cy = container && container._cy;
+      if (!cy) return;
+      cy.elements().removeClass("faded focused");
+      if (button.dataset.graphAction === "fit") fitGraph(cy);
+      if (button.dataset.graphAction === "reset") cy.layout(layoutOptions(
+        JSON.parse(document.getElementById(`graph-data-${button.dataset.graphTarget}`).textContent),
+        true
+      )).run();
+    });
+  });
+})();
+</script>"""
 
 
 def _render_proposition_validation(unit_validation: Any | None) -> str:

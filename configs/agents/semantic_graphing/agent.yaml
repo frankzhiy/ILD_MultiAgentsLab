@@ -1,11 +1,5 @@
-agent_name: modality_aware_ild_semantic_graph_agent
-version: 0.1.0
 provider: deepseek
 model: deepseek-v4-pro
-classification_model: deepseek-v4-pro
-graph_unit_model: deepseek-v4-pro
-primary_frame_model: deepseek-v4-pro
-clinical_proposition_model: deepseek-v4-pro
 base_url: https://api.deepseek.com
 api_key_env: DEEPSEEK_API_KEY
 thinking: disabled
@@ -26,7 +20,6 @@ clinical_proposition_max_tokens: 16000
 # Keep disabled until chunked vs whole-unit extraction passes a quality benchmark.
 clinical_proposition_enable_chunking: false
 clinical_proposition_max_chunk_chars: 300
-strict_json: true
 classification_prompt: src/prompts/semantic_graphing/document_classification.md
 graph_unit_prompt: src/prompts/semantic_graphing/graph_unit_extraction.md
 primary_frame_prompt: src/prompts/semantic_graphing/primary_frame_selection.md
