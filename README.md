@@ -38,9 +38,10 @@ model available from ChatAnywhere.
 
 ```yaml
 provider: chatanywhere
-model: gpt-4.1-mini
+model: gpt-5.5
 base_url: https://api.chatanywhere.tech/v1
 api_key_env: CHATANYWHERE_API_KEY
+reasoning_effort: low
 ```
 
 The same config also controls `max_concurrency`, `max_attempts`, per-stage token limits, and

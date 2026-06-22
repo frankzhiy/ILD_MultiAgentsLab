@@ -58,25 +58,35 @@ def load_env_file(path: Path = ROOT / ".env") -> None:
             os.environ[key] = value
 
 
-def choose_input_file(data_dir: str = "data/raw_cases") -> Path:
-    candidates = sorted(path for path in Path(data_dir).glob("*.txt") if not path.name.startswith("."))
+def input_files(data_dir: str = "data/raw_cases") -> list[Path]:
+    candidates = sorted(
+        path for path in Path(data_dir).glob("*.txt") if not path.name.startswith(".")
+    )
     if not candidates:
         raise FileNotFoundError(f"No .txt files found under {Path(data_dir).resolve()}")
+    return candidates
+
+
+def choose_input_files(data_dir: str = "data/raw_cases") -> list[Path]:
+    candidates = input_files(data_dir)
 
     print("\n可用的原始病例文件：")
+    print("  [0] 运行全部文件")
     for index, path in enumerate(candidates, start=1):
         print(f"  [{index}] {path.name}")
     print()
 
     while True:
         try:
-            choice = input(f"请输入序号 [1-{len(candidates)}]：").strip()
+            choice = input(f"请输入序号 [0-{len(candidates)}]：").strip()
         except (EOFError, KeyboardInterrupt) as exc:
             raise SystemExit("\n已中止。") from exc
         if choice.isdigit():
             index = int(choice)
+            if index == 0:
+                return candidates
             if 1 <= index <= len(candidates):
-                return candidates[index - 1]
+                return [candidates[index - 1]]
         print("  ✗ 无效输入，请输入列表中的序号。\n")
 
 
@@ -86,6 +96,10 @@ def write_json(path: Path, data: object) -> None:
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def output_file(run_dir: Path, input_path: Path, filename: str) -> Path:
+    return run_dir / f"{input_path.stem}_{filename}"
 
 
 def build_run_signature(config: dict[str, Any]) -> dict[str, Any]:
@@ -334,77 +348,42 @@ class ProgressReporter:
         }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run Step 2 and Step 3 of the ILD semantic graphing workflow: "
-            "clinical discourse segmentation, graph-unit extraction, primary-frame selection, "
-            "clinical-proposition extraction, and proposition validation."
-            " The run also builds deterministic unit local graphs."
-        )
-    )
-    parser.add_argument(
-        "--input",
-        default=None,
-        help=(
-            "Path to a free-text ILD case file. If omitted, choose from txt files under "
-            "data/raw_cases/."
-        ),
-    )
-    parser.add_argument("--case-id", default=None, help="Case identifier for outputs.")
-    parser.add_argument(
-        "--config",
-        default="configs/agents/semantic_graphing/agent.yaml",
-        help="Agent config YAML.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="outputs/runs",
-        help="Directory where timestamped run folders are created.",
-    )
-    parser.add_argument(
-        "--resume-run",
-        default=None,
-        help="Resume an interrupted run from its existing output directory.",
-    )
-    args = parser.parse_args()
-    load_env_file()
-
-    input_path = Path(args.input) if args.input else choose_input_file()
+def run_input(
+    input_path: Path,
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    agent: SemanticGraphingAgent,
+    model: Any,
+    run_signature: dict[str, Any],
+) -> int:
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
-    config = load_yaml(args.config)
     case_id = args.case_id or input_path.stem
-    llm = build_llm_client(config)
-    agent = SemanticGraphingAgent.from_config(args.config, llm)
-    model = getattr(llm, "model", config.get("model"))
-
     input_text = input_path.read_text(encoding="utf-8")
-    run_signature = build_run_signature(config)
     if args.resume_run:
         run_dir = Path(args.resume_run)
         if not run_dir.is_dir():
             raise FileNotFoundError(f"Resume run directory not found: {run_dir}")
-        signature_path = run_dir / "run_signature.json"
+        signature_path = output_file(run_dir, input_path, "run_signature.json")
         if not signature_path.exists():
             raise ValueError(
-                "Cannot safely resume this legacy run because it has no run_signature.json."
+                "Cannot safely resume this run because it has no matching run signature file."
             )
         if read_json(signature_path) != run_signature:
             raise ValueError(
                 "Cannot resume because the current model, config, or prompts differ from the "
                 "interrupted run."
             )
-        saved_input_path = run_dir / "input.txt"
+        saved_input_path = output_file(run_dir, input_path, "input.txt")
         if saved_input_path.exists() and saved_input_path.read_text(encoding="utf-8") != input_text:
             raise ValueError(f"Resume run input does not match {input_path}")
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = Path(args.output_dir) / f"{timestamp}_{case_id}_step2_step3"
         run_dir.mkdir(parents=True, exist_ok=False)
-        write_json(run_dir / "run_signature.json", run_signature)
-    (run_dir / "input.txt").write_text(input_text, encoding="utf-8")
+        write_json(output_file(run_dir, input_path, "run_signature.json"), run_signature)
+    output_file(run_dir, input_path, "input.txt").write_text(input_text, encoding="utf-8")
 
     reporter = ProgressReporter()
     reporter.log(f"输入文件：{input_path}")
@@ -417,7 +396,7 @@ def main() -> int:
         "+ proposition validation + local graphs。"
     )
 
-    trace_path = run_dir / "trace.json"
+    trace_path = output_file(run_dir, input_path, "trace.json")
     trace = read_json(trace_path) if trace_path.exists() else {"case_id": case_id}
     trace["model"] = model
     trace["runtime_config"] = {
@@ -434,7 +413,7 @@ def main() -> int:
     write_json(trace_path, trace)
 
     try:
-        classification_path = run_dir / "discourse_segments.json"
+        classification_path = output_file(run_dir, input_path, "discourse_segments.json")
         if classification_path.exists():
             classification = DocumentClassification.model_validate_json(
                 classification_path.read_text(encoding="utf-8")
@@ -454,7 +433,7 @@ def main() -> int:
             trace.update(result.trace)
             write_json(trace_path, trace)
 
-        graph_units_path = run_dir / "graph_units.json"
+        graph_units_path = output_file(run_dir, input_path, "graph_units.json")
         if graph_units_path.exists():
             graph_units = DocumentGraphUnits.model_validate_json(
                 graph_units_path.read_text(encoding="utf-8")
@@ -470,7 +449,7 @@ def main() -> int:
             trace["graph_unit_extraction"] = graph_unit_trace
             write_json(trace_path, trace)
 
-        primary_frames_path = run_dir / "primary_frames.json"
+        primary_frames_path = output_file(run_dir, input_path, "primary_frames.json")
         if primary_frames_path.exists():
             primary_frames = DocumentPrimaryFrames.model_validate_json(
                 primary_frames_path.read_text(encoding="utf-8")
@@ -486,7 +465,11 @@ def main() -> int:
             trace["primary_frame_selection"] = primary_frame_trace
             write_json(trace_path, trace)
 
-        clinical_propositions_path = run_dir / "clinical_propositions.json"
+        clinical_propositions_path = output_file(
+            run_dir,
+            input_path,
+            "clinical_propositions.json",
+        )
         if clinical_propositions_path.exists():
             clinical_propositions = DocumentClinicalPropositions.model_validate_json(
                 clinical_propositions_path.read_text(encoding="utf-8")
@@ -532,8 +515,9 @@ def main() -> int:
             },
         )
         write_json(trace_path, trace)
+        error_path = output_file(run_dir, input_path, "error.json")
         write_json(
-            run_dir / "error.json",
+            error_path,
             {
                 "case_id": case_id,
                 "input_path": str(input_path),
@@ -541,18 +525,18 @@ def main() -> int:
                 **diagnostics,
             },
         )
-        write_json(run_dir / "timing.json", reporter.summary())
+        write_json(output_file(run_dir, input_path, "timing.json"), reporter.summary())
         print(f"Run directory: {run_dir.resolve()}")
         print(f"Error: {exc}")
-        print(f"Detailed diagnostics: {(run_dir / 'error.json').resolve()}")
+        print(f"Detailed diagnostics: {error_path.resolve()}")
         return 1
 
     reporter.event("write_outputs_started", {})
     write_json(
-        run_dir / "proposition_validation.json",
+        output_file(run_dir, input_path, "proposition_validation.json"),
         proposition_validation.model_dump(),
     )
-    write_json(run_dir / "local_graphs.json", local_graphs.model_dump())
+    write_json(output_file(run_dir, input_path, "local_graphs.json"), local_graphs.model_dump())
     write_json(trace_path, trace)
     timing_before_report = reporter.summary()
     report_path = render_report(
@@ -561,7 +545,7 @@ def main() -> int:
         source_filename=input_path.name,
         raw_text=input_text,
         timing=timing_before_report,
-        output_path=run_dir / "report.html",
+        output_path=output_file(run_dir, input_path, "report.html"),
         primary_frames=primary_frames,
         clinical_propositions=clinical_propositions,
         proposition_validation=proposition_validation,
@@ -574,7 +558,7 @@ def main() -> int:
         },
     )
     timing_summary = reporter.summary()
-    write_json(run_dir / "timing.json", timing_summary)
+    write_json(output_file(run_dir, input_path, "timing.json"), timing_summary)
 
     print(f"Run directory: {run_dir.resolve()}")
     print(f"HTML report: {report_path.resolve()}")
@@ -617,6 +601,77 @@ def main() -> int:
         f"{ProgressReporter._format_seconds(timing_summary['total_elapsed_seconds'])}"
     )
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run Step 2 and Step 3 of the ILD semantic graphing workflow: "
+            "clinical discourse segmentation, graph-unit extraction, primary-frame selection, "
+            "clinical-proposition extraction, and proposition validation."
+            " The run also builds deterministic unit local graphs."
+        )
+    )
+    parser.add_argument(
+        "--input",
+        default=None,
+        help=(
+            "Path to a free-text ILD case file. If omitted, choose from txt files under "
+            "data/raw_cases/."
+        ),
+    )
+    parser.add_argument("--case-id", default=None, help="Case identifier for outputs.")
+    parser.add_argument(
+        "--config",
+        default="configs/agents/semantic_graphing/agent.yaml",
+        help="Agent config YAML.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="outputs/runs",
+        help="Directory where timestamped run folders are created.",
+    )
+    parser.add_argument(
+        "--resume-run",
+        default=None,
+        help="Resume an interrupted run from its existing output directory.",
+    )
+    args = parser.parse_args()
+    load_env_file()
+
+    input_paths = [Path(args.input)] if args.input else choose_input_files()
+    for input_path in input_paths:
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+    if len(input_paths) > 1 and args.case_id:
+        raise ValueError("--case-id cannot be used when running all input files.")
+    if len(input_paths) > 1 and args.resume_run:
+        raise ValueError("--resume-run can only resume one input file at a time.")
+
+    config = load_yaml(args.config)
+    llm = build_llm_client(config)
+    agent = SemanticGraphingAgent.from_config(args.config, llm)
+    model = getattr(llm, "model", config.get("model"))
+    run_signature = build_run_signature(config)
+
+    if len(input_paths) == 1:
+        return run_input(input_paths[0], args, config, agent, model, run_signature)
+
+    results: list[tuple[Path, int]] = []
+    for index, input_path in enumerate(input_paths, start=1):
+        print(f"\n=== Running {index}/{len(input_paths)}: {input_path.name} ===")
+        try:
+            code = run_input(input_path, args, config, agent, model, run_signature)
+        except Exception as exc:
+            print(f"Run failed before diagnostics for {input_path}: {exc}")
+            code = 1
+        results.append((input_path, code))
+
+    print("\nBatch summary:")
+    for input_path, code in results:
+        status = "OK" if code == 0 else "FAILED"
+        print(f"  {status}: {input_path.name}")
+    return 1 if any(code != 0 for _, code in results) else 0
 
 
 if __name__ == "__main__":

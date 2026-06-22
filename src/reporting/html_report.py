@@ -782,7 +782,7 @@ def _render_cytoscape_script() -> str:
     const cy = cytoscape({
       container, elements, style,
       layout: layoutOptions(graph),
-      minZoom: 0.2, maxZoom: 2.5, userZoomingEnabled: false
+      minZoom: 0.2, maxZoom: 2.5, userZoomingEnabled: true
     });
     container._cy = cy;
     cy.on("tap", "node", (event) => {

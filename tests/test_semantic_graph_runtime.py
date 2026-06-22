@@ -38,7 +38,12 @@ from src.schemas.semantic_graphing.primary_frame import (
     GraphUnitPrimaryFrame,
     PrimaryFrame,
 )
-from scripts.run.run_semantic_graph_agent import build_run_signature, require_complete_output_offsets
+from scripts.run.run_semantic_graph_agent import (
+    build_run_signature,
+    choose_input_files,
+    output_file,
+    require_complete_output_offsets,
+)
 
 
 class ResultSchema(BaseModel):
@@ -125,6 +130,23 @@ class FakeClinicalPropositionExtractor:
         return result, {}
 
 
+def test_choose_input_files_can_select_all(tmp_path, monkeypatch):
+    (tmp_path / "b.txt").write_text("b", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    (tmp_path / ".hidden.txt").write_text("hidden", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda _: "0")
+
+    selected = choose_input_files(str(tmp_path))
+
+    assert [path.name for path in selected] == ["a.txt", "b.txt"]
+
+
+def test_output_file_prefixes_input_stem(tmp_path):
+    assert output_file(tmp_path, Path("case_001.txt"), "report.html") == (
+        tmp_path / "case_001_report.html"
+    )
+
+
 def test_deepseek_settings_come_from_config(monkeypatch):
     monkeypatch.setenv("TEST_DEEPSEEK_KEY", "secret")
 
@@ -185,6 +207,63 @@ def test_deepseek_sends_configured_thinking_mode(monkeypatch):
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
     assert captured["payload"]["thinking"] == {"type": "disabled"}
     assert captured["timeout"] == 42
+
+
+def test_chatanywhere_settings_come_from_config(monkeypatch):
+    monkeypatch.setenv("TEST_CHATANYWHERE_KEY", "secret")
+
+    client = ChatAnywhereClient.from_config(
+        {
+            "api_key_env": "TEST_CHATANYWHERE_KEY",
+            "model": "gpt-5.5",
+            "base_url": "https://api.chatanywhere.tech/v1",
+            "timeout_seconds": 42,
+            "reasoning_effort": "low",
+        }
+    )
+
+    assert client.model == "gpt-5.5"
+    assert client.base_url == "https://api.chatanywhere.tech/v1"
+    assert client.timeout_seconds == 42
+    assert client.reasoning_effort == "low"
+
+
+def test_chatanywhere_rejects_invalid_reasoning_effort(monkeypatch):
+    monkeypatch.setenv("TEST_CHATANYWHERE_KEY", "secret")
+
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        ChatAnywhereClient.from_config(
+            {
+                "api_key_env": "TEST_CHATANYWHERE_KEY",
+                "model": "gpt-5.5",
+                "base_url": "https://api.chatanywhere.tech/v1",
+                "reasoning_effort": "disabled",
+            }
+        )
+
+
+def test_chatanywhere_sends_configured_reasoning_effort(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("src.llm.chatanywhere_client.urllib.request.urlopen", fake_urlopen)
+    client = ChatAnywhereClient(
+        api_key="secret",
+        model="gpt-5.5",
+        base_url="https://api.chatanywhere.tech/v1",
+        reasoning_effort="low",
+    )
+
+    client.complete(
+        [LLMMessage(role="user", content="test")],
+        temperature=0,
+        max_tokens=100,
+    )
+
+    assert captured["payload"]["reasoning_effort"] == "low"
 
 
 def test_provider_selects_deepseek_or_chatanywhere(monkeypatch):

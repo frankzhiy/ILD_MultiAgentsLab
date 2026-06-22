@@ -16,6 +16,7 @@ class ChatAnywhereClient(LLMClient):
     base_url: str
     timeout_seconds: int = 300
     response_format_json: bool = True
+    reasoning_effort: str | None = None
     supports_json_schema: bool = True
 
     @classmethod
@@ -28,11 +29,24 @@ class ChatAnywhereClient(LLMClient):
             raise ValueError("Agent config must define model.")
         if not config.get("base_url"):
             raise ValueError("Agent config must define base_url.")
+
+        reasoning_effort = config.get("reasoning_effort")
+        if reasoning_effort is not None and reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        }:
+            raise ValueError(
+                "Agent config reasoning_effort must be 'low', 'medium', 'high', or 'xhigh'."
+            )
+
         return cls(
             api_key=api_key,
             model=str(config["model"]),
             base_url=str(config["base_url"]),
             timeout_seconds=int(config.get("timeout_seconds", 300)),
+            reasoning_effort=reasoning_effort,
         )
 
     def complete(
@@ -54,6 +68,8 @@ class ChatAnywhereClient(LLMClient):
             payload["response_format"] = response_format
         elif self.response_format_json:
             payload["response_format"] = {"type": "json_object"}
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
 
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
