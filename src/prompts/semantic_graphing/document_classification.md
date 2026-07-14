@@ -53,11 +53,14 @@
 - present_illness
 - past_medical_history
 - exposure_history
+- family_history
 - medication_history
 - general_condition
 - physical_exam
 - imaging_findings
 - laboratory_findings
+- ctd_related_findings
+- bronchoscopy_findings
 - pulmonary_function_findings
 - pathology_findings
 - treatment
@@ -70,22 +73,25 @@
 
 字段说明：
 - unit_type：这个 span 为什么成为一个 segment。
-- contained_source_types：segment 内部包含哪些医学信息类型；这些类型不触发切分。
+- contained_source_types：segment 内部包含哪些标准化病例展示类别；这些类别不触发切分。
 - clinical_frame：更具体的临床叙事框架，例如 symptom_onset_episode、symptom_recurrence_episode、diagnostic_care_episode、standalone_report、general_condition_summary。
 - temporal_anchor：原文中的时间锚点，例如 8年前、1年前、2月前、目前；没有则为 null。
 - text：必须是输入原文中的连续子串。字符位置由程序计算。
 
-source type 判定补充（source_type 是叙事角色，描述这段文字在病例故事里讲什么，不是数据模态）：
-- demographics：年龄、性别、患者身份等基础人口学信息。
+source type 判定补充（source_type 是标准化病例展示类别，描述这段文字应归入病例展示的哪一栏）：
+- demographics：性别、年龄、体重等人口学特征。
 - chief_complaint：主诉、入院主因、就诊主因等高度压缩的就诊原因。
-- present_illness：现病史、症状出现/复发/加重、病程推进叙事。
-- past_medical_history：既往史、基础疾病、合并症。
-- exposure_history：吸烟、职业、养鸟、霉菌、粉尘等暴露史。
+- present_illness：现病史、病程、呼吸系统症状、进展速度、CTD 相关症状。
+- past_medical_history：既往疾病、合并症及相关用药情况。
+- exposure_history：职业、潜在致敏原暴露、吸烟史等暴露史。
+- family_history：家族成员是否有肺纤维化。
 - medication_history：长期或既往用药史（不依附于某次具体就诊处置）。
 - general_condition：病程中的一般状态总结，例如神志、精神、饮食睡眠、大小便、体重变化。
-- physical_exam：体格检查和生命体征，例如体温、脉搏、血压、SpO2、肺部听诊、下肢水肿。
+- physical_exam：生命体征、SpO2、胸部查体体征、浅表淋巴结肿大、CTD 相关体征。
 - imaging_findings：影像检查发现的叙述，例如 HRCT、胸片、CT 的所见。
-- laboratory_findings：实验室检查发现的叙述，例如血常规、自身抗体、KL-6、血气。
+- laboratory_findings：常规检验、血气分析、sACE、KL-6 等实验室检验；自身抗体和干眼症相关检查归入 ctd_related_findings。
+- ctd_related_findings：免疫球蛋白、补体、RF、ANA、ENA 谱、Anti-CCP、ANCA、MSA、IgG4、Schirmer 试验、角膜荧光染色等 CTD 相关检查。
+- bronchoscopy_findings：支气管镜下表现、BALF 细胞计数分类、细胞学、流式细胞分析和病原学。
 - pulmonary_function_findings：肺功能检查发现的叙述，例如 FVC、DLCO、通气/弥散结果。
 - pathology_findings：病理检查发现的叙述，例如活检、TBLC、外科肺活检形态学。
 - treatment：治疗经过或处置方案。

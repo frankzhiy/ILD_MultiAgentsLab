@@ -408,6 +408,65 @@ def test_classifier_program_computes_offsets_without_asking_model_to_count():
     assert classification.segments[1].end_char == len(text)
 
 
+def test_classifier_accepts_standardized_ild_presentation_categories():
+    text = "父亲患肺纤维化。ANA阳性。BALF淋巴细胞比例升高。"
+    llm = StaticResponseLLM(
+        {
+            "segments": [
+                {
+                    "segment_id": "seg_001",
+                    "text": "父亲患肺纤维化。",
+                    "unit_type": "past_medical_history",
+                    "contained_source_types": ["family_history"],
+                    "clinical_frame": "family_history",
+                    "temporal_anchor": None,
+                    "confidence": 1,
+                    "rationale": "test",
+                    "metadata": {},
+                },
+                {
+                    "segment_id": "seg_002",
+                    "text": "ANA阳性。",
+                    "unit_type": "standalone_lab_panel",
+                    "contained_source_types": ["ctd_related_findings"],
+                    "clinical_frame": "standalone_report",
+                    "temporal_anchor": None,
+                    "confidence": 1,
+                    "rationale": "test",
+                    "metadata": {},
+                },
+                {
+                    "segment_id": "seg_003",
+                    "text": "BALF淋巴细胞比例升高。",
+                    "unit_type": "standalone_lab_panel",
+                    "contained_source_types": ["bronchoscopy_findings"],
+                    "clinical_frame": "standalone_report",
+                    "temporal_anchor": None,
+                    "confidence": 1,
+                    "rationale": "test",
+                    "metadata": {},
+                },
+            ],
+            "detected_contained_source_types": [],
+            "notes": [],
+        }
+    )
+    classifier = DocumentClassifier(
+        llm,
+        "src/prompts/semantic_graphing/document_classification.md",
+        temperature=0,
+        max_tokens=1000,
+    )
+
+    classification, _ = classifier.classify(text)
+
+    assert classification.detected_contained_source_types == [
+        SourceType.FAMILY_HISTORY,
+        SourceType.CTD_RELATED_FINDINGS,
+        SourceType.BRONCHOSCOPY_FINDINGS,
+    ]
+
+
 def test_each_stage_runs_all_tasks_concurrently(monkeypatch):
     worker_counts = []
 

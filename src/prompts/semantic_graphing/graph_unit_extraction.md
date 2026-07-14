@@ -41,17 +41,20 @@
 - 当医生判断、诊断倾向、鉴别诊断、转诊意见或管理建议独立于任一诊疗接触出现时，拆出 clinician_assessment 或 management_plan graph unit；若该判断属于某次诊疗接触的一部分，则并入该接触 graph unit。
 - 优先按事件核边界切分，而不是按标点、句读或功能关键词机械切分；同一事件核跨多个短句连续展开时，保持为一个 graph unit。
 
-允许的 source_type（叙事角色，描述这块内容在病例故事里讲什么，不是数据模态）：
+允许的 source_type（标准化病例展示类别，描述这块内容应归入病例展示的哪一栏）：
 - demographics
 - chief_complaint
 - present_illness
 - past_medical_history
 - exposure_history
+- family_history
 - medication_history
 - general_condition
 - physical_exam
 - imaging_findings
 - laboratory_findings
+- ctd_related_findings
+- bronchoscopy_findings
 - pulmonary_function_findings
 - pathology_findings
 - treatment
@@ -75,9 +78,11 @@ mdt_specialty（该 graph unit 应送给哪些 ILD MDT 专科会诊）：
   - other：上述都不适用时的兑底。
 - 判断示例：
   - “HRCT 示双下肺网格影” → [thoracic_radiology]。
-  - “ANA 1:320、肌炎抗体阳性” → [rheumatology]；“KL-6 升高” → [pulmonology]；两者同段 → [rheumatology, pulmonology]。
+  - “ANA 1:320、肌炎抗体阳性” → source_type=ctd_related_findings, mdt_specialty=[rheumatology]；“KL-6 升高” → source_type=laboratory_findings, mdt_specialty=[pulmonology]；两者同段 → [rheumatology, pulmonology]。
+  - “BALF 淋巴细胞比例升高” → source_type=bronchoscopy_findings, mdt_specialty=[pulmonology]。
   - “关节晨僵，外院 CT 示纤维化” → [rheumatology, thoracic_radiology]。
   - “养鸟史 10 年” → [occupational_environmental]。
+  - “父亲患肺纤维化” → source_type=family_history, mdt_specialty=[shared_context]。
   - “55 岁男性”、“主诉咳嗽 3 月” → [shared_context]。
 - 不要把 source_type 机械映射成专科；同一个 source_type（如 laboratory_findings、present_illness）可能根据内容路由到不同专科。
 

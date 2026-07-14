@@ -66,6 +66,8 @@ PRIMARY_FRAME_DEFINITIONS: list[PrimaryFrameDefinition] = [
             SourceType.PHYSICAL_EXAM,
             SourceType.IMAGING_FINDINGS,
             SourceType.LABORATORY_FINDINGS,
+            SourceType.CTD_RELATED_FINDINGS,
+            SourceType.BRONCHOSCOPY_FINDINGS,
             SourceType.PULMONARY_FUNCTION_FINDINGS,
             SourceType.PATHOLOGY_FINDINGS,
         ],
@@ -101,6 +103,7 @@ PRIMARY_FRAME_DEFINITIONS: list[PrimaryFrameDefinition] = [
         covers_source_types=[
             SourceType.DEMOGRAPHICS,
             SourceType.EXPOSURE_HISTORY,
+            SourceType.FAMILY_HISTORY,
             SourceType.PAST_MEDICAL_HISTORY,
             SourceType.GENERAL_CONDITION,
         ],

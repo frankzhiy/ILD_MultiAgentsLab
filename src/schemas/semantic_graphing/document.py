@@ -5,23 +5,21 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class SourceType(StrEnum):
-    """Narrative role of an evidence block: which part of the clinical story it tells.
-
-    This axis is intentionally modality-free. It says what the text *is doing* in the
-    narrative, not which machine produced it. Specialty routing is a separate axis
-    (see MdtSpecialty) decided by reading the content.
-    """
+    """Standardized case-presentation category for an evidence block."""
 
     DEMOGRAPHICS = "demographics"
     CHIEF_COMPLAINT = "chief_complaint"
     PRESENT_ILLNESS = "present_illness"
     PAST_MEDICAL_HISTORY = "past_medical_history"
     EXPOSURE_HISTORY = "exposure_history"
+    FAMILY_HISTORY = "family_history"
     MEDICATION_HISTORY = "medication_history"
     GENERAL_CONDITION = "general_condition"
     PHYSICAL_EXAM = "physical_exam"
     IMAGING_FINDINGS = "imaging_findings"
     LABORATORY_FINDINGS = "laboratory_findings"
+    CTD_RELATED_FINDINGS = "ctd_related_findings"
+    BRONCHOSCOPY_FINDINGS = "bronchoscopy_findings"
     PULMONARY_FUNCTION_FINDINGS = "pulmonary_function_findings"
     PATHOLOGY_FINDINGS = "pathology_findings"
     TREATMENT = "treatment"
