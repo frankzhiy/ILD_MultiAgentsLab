@@ -73,15 +73,13 @@ mdt_specialty（该 graph unit 应送给哪些 ILD MDT 专科会诊）：
   - thoracic_radiology：胸部影像。HRCT/CT/胸片的影像所见与影像模式（UIP/NSIP/OP/HP 等）。
   - pathology：病理。活检、TBLC、外科肺活检的形态学发现。
   - rheumatology：风湿免疫。自身抗体、关节/雷诺/皮疹/肌肉等 CTD-ILD 肺外表现。
-  - occupational_environmental：职业与环境。养鸟、霉菌、粉尘、职业暴露等 HP/尘肺相关暴露史。
   - shared_context：广播背景。人口学信息、主诉等本身没有专科解读价值、但所有专科都需要知道的背景信息。
-  - other：上述都不适用时的兑底。
 - 判断示例：
   - “HRCT 示双下肺网格影” → [thoracic_radiology]。
   - “ANA 1:320、肌炎抗体阳性” → source_type=ctd_related_findings, mdt_specialty=[rheumatology]；“KL-6 升高” → source_type=laboratory_findings, mdt_specialty=[pulmonology]；两者同段 → [rheumatology, pulmonology]。
   - “BALF 淋巴细胞比例升高” → source_type=bronchoscopy_findings, mdt_specialty=[pulmonology]。
   - “关节晨僵，外院 CT 示纤维化” → [rheumatology, thoracic_radiology]。
-  - “养鸟史 10 年” → [occupational_environmental]。
+  - “养鸟史 10 年” → [pulmonology]。
   - “父亲患肺纤维化” → source_type=family_history, mdt_specialty=[shared_context]。
   - “55 岁男性”、“主诉咳嗽 3 月” → [shared_context]。
 - 不要把 source_type 机械映射成专科；同一个 source_type（如 laboratory_findings、present_illness）可能根据内容路由到不同专科。

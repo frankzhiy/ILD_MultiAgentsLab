@@ -77,7 +77,7 @@ def make_unit(text: str) -> GraphUnit:
         segment_id="seg_001",
         text=text,
         source_type=SourceType.EXPOSURE_HISTORY,
-        mdt_specialty=[MdtSpecialty.OCCUPATIONAL_ENVIRONMENTAL],
+        mdt_specialty=[MdtSpecialty.PULMONOLOGY],
         rationale="test",
     )
 

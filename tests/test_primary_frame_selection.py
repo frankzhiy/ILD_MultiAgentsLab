@@ -19,7 +19,7 @@ def make_unit() -> GraphUnit:
         segment_id="seg_001",
         text="原文",
         source_type=SourceType.OTHER,
-        mdt_specialty=[MdtSpecialty.OTHER],
+        mdt_specialty=[MdtSpecialty.SHARED_CONTEXT],
         rationale="test",
     )
 

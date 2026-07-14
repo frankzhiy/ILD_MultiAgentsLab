@@ -21,27 +21,26 @@ trace inspection, and future multi-agent diagnostic reasoning.
 
 ## Manual LLM Run
 
-Set credentials for the providers you use:
+Set the APIYI credential:
 
 ```bash
-export DEEPSEEK_API_KEY="..."
-export CHATANYWHERE_API_KEY="..."
+export APIYI_API_KEY="..."
 ```
 
 Set `provider`, model, base URL, API key environment variable, and timeout in
 `configs/agents/semantic_graphing/agent.yaml`.
 
-The default provider is DeepSeek using the official `deepseek-v4-pro` model. Set `thinking` to
-`enabled` or `disabled` to control DeepSeek reasoning for every stage. To switch back to
-ChatAnywhere, set `provider: chatanywhere`, its base URL and API key environment variable, and the
-model available from ChatAnywhere.
+Semantic graphing uses `deepseek-v4-flash` through APIYI's OpenAI-compatible endpoint. Thinking is
+explicitly disabled for every stage through `request_options`.
 
 ```yaml
-provider: chatanywhere
-model: gpt-5.5
-base_url: https://api.chatanywhere.tech/v1
-api_key_env: CHATANYWHERE_API_KEY
-reasoning_effort: low
+provider: apiyi
+model: deepseek-v4-flash
+base_url: https://api.apiyi.com/v1
+api_key_env: APIYI_API_KEY
+request_options:
+  thinking:
+    type: disabled
 ```
 
 The same config also controls `max_concurrency`, `max_attempts`, per-stage token limits, and
@@ -88,3 +87,20 @@ python3 scripts/run/run_semantic_graph_agent.py \
 
 Resume is rejected when the stage models, config, or prompt contents differ from the interrupted
 run, preventing mixed-version outputs.
+
+## Downstream Multi-Agent LLM
+
+The downstream multi-agent system has an independent LLM configuration at
+`configs/agents/multi_agent_system/llm.yaml`. It does not reuse or change the semantic-graphing
+agent configuration.
+
+Set the APIYI credential before running the future multi-agent system:
+
+```bash
+export APIYI_API_KEY="..."
+```
+
+The default downstream model is `deepseek-v4-flash` through APIYI's OpenAI-compatible endpoint.
+Thinking is explicitly disabled through `request_options`. The APIYI client is provider-specific,
+not DeepSeek-specific: GPT, Claude, Qwen, and other models exposed through APIYI's compatible
+endpoint can use the same client by changing `model` and any model-specific `request_options`.

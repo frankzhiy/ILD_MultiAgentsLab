@@ -23,18 +23,15 @@ GraphUnitCertainty = Literal["high", "moderate", "low", "unknown"]
 class MdtSpecialty(StrEnum):
     """ILD multidisciplinary team specialties that may review a graph unit.
 
-    Based on the core ILD MDD membership (pulmonology, thoracic radiology,
-    pathology, rheumatology, occupational/environmental medicine), plus a
-    shared_context tag for broadcast background that is not specialty evidence.
+    Includes the four reviewing specialties plus a shared_context tag for
+    broadcast background that is not specialty evidence.
     """
 
     PULMONOLOGY = "pulmonology"
     THORACIC_RADIOLOGY = "thoracic_radiology"
     PATHOLOGY = "pathology"
     RHEUMATOLOGY = "rheumatology"
-    OCCUPATIONAL_ENVIRONMENTAL = "occupational_environmental"
     SHARED_CONTEXT = "shared_context"
-    OTHER = "other"
 
 
 class GraphUnit(BaseModel):

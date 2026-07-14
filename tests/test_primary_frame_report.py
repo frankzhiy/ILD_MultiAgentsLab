@@ -57,7 +57,7 @@ def test_report_renders_single_primary_frame_and_boundary_warning(tmp_path):
                         segment_id="seg_001",
                         text=text,
                         source_type=SourceType.OTHER,
-                        mdt_specialty=[MdtSpecialty.OTHER],
+                        mdt_specialty=[MdtSpecialty.SHARED_CONTEXT],
                         rationale="test",
                     )
                 ],

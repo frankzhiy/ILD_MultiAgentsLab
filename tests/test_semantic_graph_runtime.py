@@ -50,6 +50,16 @@ class ResultSchema(BaseModel):
     value: str
 
 
+def test_mdt_specialty_contains_only_the_five_supported_categories():
+    assert {specialty.value for specialty in MdtSpecialty} == {
+        "pulmonology",
+        "thoracic_radiology",
+        "pathology",
+        "rheumatology",
+        "shared_context",
+    }
+
+
 class FakeHTTPResponse:
     def __enter__(self):
         return self
@@ -86,7 +96,7 @@ class FakeGraphUnitExtractor:
             segment_id=segment.segment_id,
             text=segment.text,
             source_type=SourceType.OTHER,
-            mdt_specialty=[MdtSpecialty.OTHER],
+            mdt_specialty=[MdtSpecialty.SHARED_CONTEXT],
             start_char=segment.start_char,
             end_char=segment.end_char,
             segment_start_char=0,
@@ -660,7 +670,7 @@ def test_final_output_contract_rejects_missing_offsets():
                         segment_id="seg_001",
                         text="text",
                         source_type=SourceType.OTHER,
-                        mdt_specialty=[MdtSpecialty.OTHER],
+                        mdt_specialty=[MdtSpecialty.SHARED_CONTEXT],
                         rationale="test",
                     )
                 ],

@@ -82,9 +82,7 @@ MDT_SPECIALTY_ZH: dict[str, str] = {
     "thoracic_radiology": "胸部影像",
     "pathology": "病理科",
     "rheumatology": "风湿免疫",
-    "occupational_environmental": "职业与环境",
     "shared_context": "共享背景",
-    "other": "其他",
 }
 
 MDT_SPECIALTY_COLORS: dict[str, str] = {
@@ -92,9 +90,7 @@ MDT_SPECIALTY_COLORS: dict[str, str] = {
     "thoracic_radiology": "#c7d2fe",
     "pathology": "#f5d0fe",
     "rheumatology": "#fecaca",
-    "occupational_environmental": "#ddd6fe",
     "shared_context": "#e5e7eb",
-    "other": "#e5e7eb",
 }
 
 SEGMENT_PALETTE: list[str] = [

@@ -1,0 +1,8 @@
+provider: apiyi
+model: deepseek-v4-flash
+base_url: https://api.apiyi.com/v1
+api_key_env: APIYI_API_KEY
+timeout_seconds: 300
+request_options:
+  thinking:
+    type: disabled

@@ -1,11 +1,10 @@
-provider: chatanywhere
-# model: deepseek-v4-pro
-# base_url: https://api.deepseek.com
-# api_key_env: DEEPSEEK_API_KEY
-model: gpt-5.5
-base_url: https://api.chatanywhere.tech/v1
-api_key_env: CHATANYWHERE_API_KEY
-reasoning_effort: low
+provider: apiyi
+model: deepseek-v4-flash
+base_url: https://api.apiyi.com/v1
+api_key_env: APIYI_API_KEY
+request_options:
+  thinking:
+    type: disabled
 timeout_seconds: 300
 temperature: 0.0
 max_concurrency: 6
