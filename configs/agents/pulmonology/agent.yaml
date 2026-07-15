@@ -25,13 +25,13 @@ clinical_rules:
     unclassifiable_ild: "完成充分多学科评估后，无任何单一诊断概率超过 50%"
   ppf:
     source: ATS/ERS/JRS/ALAT Clinical Practice Guideline 2022
-    population: non-IPF fibrotic ILD
-    assessment_window: past year
+    population: 非 IPF 纤维化性 ILD
+    assessment_window: 过去 1 年
     required_components: 2
     components:
-      symptoms: worsening respiratory symptoms
+      symptoms: 呼吸症状加重
       physiology:
         fvc_absolute_decline_percent_predicted: ">5"
         dlco_absolute_decline_percent_predicted: ">10"
-      radiology: radiological evidence of disease progression
+      radiology: 影像学疾病进展证据
     require_no_alternative_explanation: true

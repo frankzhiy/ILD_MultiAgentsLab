@@ -21,10 +21,9 @@ GraphUnitCertainty = Literal["high", "moderate", "low", "unknown"]
 
 
 class MdtSpecialty(StrEnum):
-    """ILD multidisciplinary team specialties that may review a graph unit.
+    """需要审阅 graph unit 的 ILD 多学科专业。
 
-    Includes the four reviewing specialties plus a shared_context tag for
-    broadcast background that is not specialty evidence.
+    包含四个专科以及用于广播共享背景的 shared_context 标签。
     """
 
     PULMONOLOGY = "pulmonology"

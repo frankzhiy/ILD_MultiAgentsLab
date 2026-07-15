@@ -42,6 +42,15 @@ from src.utils.config import load_yaml  # noqa: E402
 CONFIG_PATH = ROOT / "configs/agents/pulmonology/agent.yaml"
 RUNS_DIR = ROOT / "outputs/runs"
 
+STAGE_LABELS = {
+    "initial_foundation": "首轮 1/3：建立临床基础",
+    "initial_pulmonary_assessment": "首轮 2/3：肺部客观评估",
+    "initial_diagnostic_formulation": "首轮 3/3：诊断综合",
+    "discussion_evidence_mapping": "会中 1/3：专科证据映射",
+    "discussion_state_update": "会中 2/3：八问状态更新",
+    "discussion_consult_response": "会中 3/3：会诊响应",
+}
+
 
 class ProgressReporter:
     def __init__(self) -> None:
@@ -92,6 +101,39 @@ class ProgressReporter:
 
     def total_elapsed(self) -> str:
         return self.format_seconds(time.perf_counter() - self.started_at)
+
+    def generation_event(self, event: str, payload: dict) -> None:
+        stage = STAGE_LABELS.get(payload.get("stage"), payload.get("stage", "未知阶段"))
+        attempt = payload.get("attempt")
+        duration = self.format_seconds(float(payload.get("duration_seconds", 0.0)))
+        if event == "stage_started":
+            self.log(f"开始：{stage}")
+        elif event == "llm_attempt_started":
+            self.log(f"{stage} · 第 {attempt} 次 LLM 请求开始")
+        elif event == "llm_attempt_completed":
+            token_text = ""
+            if "prompt_tokens" in payload:
+                token_text = (
+                    f"，输入 {payload['prompt_tokens']} tokens，"
+                    f"输出 {payload.get('completion_tokens', 0)} tokens，"
+                    f"缓存 {payload.get('cached_tokens', 0)} tokens"
+                )
+            self.log(f"{stage} · 第 {attempt} 次 LLM 响应完成，耗时 {duration}{token_text}")
+        elif event == "llm_attempt_failed":
+            self.log(f"{stage} · 第 {attempt} 次 LLM 请求失败，耗时 {duration}")
+        elif event == "validation_completed":
+            self.log(f"{stage} · JSON 解析与本地校验通过，耗时 {duration}")
+        elif event == "validation_failed":
+            retry = "，将重新请求 LLM" if payload.get("will_retry") else ""
+            self.log(f"{stage} · JSON 解析或本地校验未通过，耗时 {duration}{retry}")
+        elif event in {"stage_completed", "stage_failed"}:
+            result = "完成" if event == "stage_completed" else "失败"
+            self.log(
+                f"{result}：{stage}，总耗时 {duration}；"
+                f"LLM {self.format_seconds(float(payload.get('llm_duration_seconds', 0.0)))}，"
+                f"本地校验 {self.format_seconds(float(payload.get('validation_duration_seconds', 0.0)))}，"
+                f"其他 {self.format_seconds(float(payload.get('other_duration_seconds', 0.0)))}"
+            )
 
 
 def load_env_file(path: Path = ROOT / ".env") -> None:
@@ -229,7 +271,11 @@ def main() -> int:
     with progress.step("初始化 APIYI 呼吸科 Agent"):
         config = load_yaml(CONFIG_PATH)
         llm = build_llm_client(config)
-        agent = PulmonologyAgent.from_config(CONFIG_PATH, llm)
+        agent = PulmonologyAgent.from_config(
+            CONFIG_PATH,
+            llm,
+            event_callback=progress.generation_event,
+        )
     output_stem = f"{case_input.case_id}_pulmonology"
 
     if phase == "initial":

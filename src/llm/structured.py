@@ -45,6 +45,7 @@ class StructuredLLMGenerator:
         max_attempts: int = 2,
         retry_backoff_seconds: float = 0.0,
         response_format_mode: str = "json_object",
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -54,6 +55,7 @@ class StructuredLLMGenerator:
         self.max_attempts = max_attempts
         self.retry_backoff_seconds = retry_backoff_seconds
         self.response_format_mode = response_format_mode
+        self.event_callback = event_callback
 
     def generate(
         self,
@@ -64,6 +66,8 @@ class StructuredLLMGenerator:
         user_prompt: str,
         extra_validation: Callable[[T], T] | None = None,
     ) -> tuple[T, dict]:
+        stage_started = time.perf_counter()
+        self._emit("stage_started", {"stage": schema_name})
         messages = [
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
@@ -74,6 +78,15 @@ class StructuredLLMGenerator:
         last_error = None
         for attempt_index in range(1, self.max_attempts + 1):
             attempt_started = time.perf_counter()
+            format_name = response_format.get("type") if response_format else None
+            self._emit(
+                "llm_attempt_started",
+                {
+                    "stage": schema_name,
+                    "attempt": attempt_index,
+                    "response_format": format_name,
+                },
+            )
             try:
                 response = self.llm.complete(
                     messages,
@@ -82,6 +95,16 @@ class StructuredLLMGenerator:
                     response_format=response_format,
                 )
             except RuntimeError as exc:
+                llm_duration = time.perf_counter() - attempt_started
+                self._emit(
+                    "llm_attempt_failed",
+                    {
+                        "stage": schema_name,
+                        "attempt": attempt_index,
+                        "duration_seconds": round(llm_duration, 3),
+                        "error": str(exc),
+                    },
+                )
                 if (
                     response_format
                     and response_format.get("type") == "json_schema"
@@ -94,7 +117,9 @@ class StructuredLLMGenerator:
                             "attempt": attempt_index,
                             "transport_error": str(exc),
                             "fallback": "json_object",
-                            "duration_seconds": round(time.perf_counter() - attempt_started, 3),
+                            "llm_duration_seconds": round(llm_duration, 3),
+                            "validation_duration_seconds": 0.0,
+                            "duration_seconds": round(llm_duration, 3),
                         }
                     )
                     continue
@@ -105,49 +130,122 @@ class StructuredLLMGenerator:
                             response_format.get("type") if response_format else None
                         ),
                         "transport_error": str(exc),
-                        "duration_seconds": round(time.perf_counter() - attempt_started, 3),
+                        "llm_duration_seconds": round(llm_duration, 3),
+                        "validation_duration_seconds": 0.0,
+                        "duration_seconds": round(llm_duration, 3),
                     }
                 )
                 if _is_retryable_transport_error(exc) and attempt_index < self.max_attempts:
                     time.sleep(self.retry_backoff_seconds * attempt_index)
                     continue
+                self._emit(
+                    "stage_failed",
+                    {"stage": schema_name, **_timing(stage_started, attempts)},
+                )
                 raise StructuredGenerationError(
                     f"Structured LLM request failed on attempt {attempt_index}: {exc}",
                     attempts=attempts,
                     stage=schema_name,
                 ) from exc
+            llm_duration = time.perf_counter() - attempt_started
+            usage = _usage(response.raw)
+            self._emit(
+                "llm_attempt_completed",
+                {
+                    "stage": schema_name,
+                    "attempt": attempt_index,
+                    "duration_seconds": round(llm_duration, 3),
+                    **usage,
+                },
+            )
             attempt_record = {
                 "attempt": attempt_index,
-                "response_format": response_format.get("type") if response_format else None,
+                "response_format": format_name,
                 "raw_response": response.raw,
                 "content": response.content,
-                "duration_seconds": round(time.perf_counter() - attempt_started, 3),
+                "llm_duration_seconds": round(llm_duration, 3),
+                **usage,
             }
             if not response.content.strip() and _finish_reason(response.raw) == "length":
                 attempt_record["validated"] = False
+                attempt_record["validation_duration_seconds"] = 0.0
+                attempt_record["duration_seconds"] = round(
+                    time.perf_counter() - attempt_started, 3
+                )
                 attempt_record["validation_error"] = (
                     "Model exhausted its output budget before producing response content."
                 )
                 attempts.append(attempt_record)
+                self._emit(
+                    "validation_failed",
+                    {
+                        "stage": schema_name,
+                        "attempt": attempt_index,
+                        "duration_seconds": 0.0,
+                        "will_retry": False,
+                    },
+                )
+                self._emit(
+                    "stage_failed",
+                    {"stage": schema_name, **_timing(stage_started, attempts)},
+                )
                 raise StructuredGenerationError(
                     "Structured LLM generation stopped because the model exhausted its output "
                     "budget before producing response content.",
                     attempts=attempts,
                     stage=schema_name,
                 )
+            validation_started = time.perf_counter()
             try:
                 parsed = parse_llm_json(response.content)
                 validated = schema_model.model_validate(parsed)
                 if extra_validation:
                     validated = extra_validation(validated)
+                validation_duration = time.perf_counter() - validation_started
                 attempt_record["validated"] = True
+                attempt_record["validation_duration_seconds"] = round(
+                    validation_duration, 3
+                )
+                attempt_record["duration_seconds"] = round(
+                    time.perf_counter() - attempt_started, 3
+                )
                 attempts.append(attempt_record)
-                return validated, {"prompt": user_prompt, "attempts": attempts}
+                self._emit(
+                    "validation_completed",
+                    {
+                        "stage": schema_name,
+                        "attempt": attempt_index,
+                        "duration_seconds": round(validation_duration, 3),
+                    },
+                )
+                timing = _timing(stage_started, attempts)
+                self._emit("stage_completed", {"stage": schema_name, **timing})
+                return validated, {
+                    "prompt": user_prompt,
+                    "timing": timing,
+                    "attempts": attempts,
+                }
             except (ValueError, ValidationError) as exc:
+                validation_duration = time.perf_counter() - validation_started
                 last_error = exc
                 attempt_record["validated"] = False
+                attempt_record["validation_duration_seconds"] = round(
+                    validation_duration, 3
+                )
+                attempt_record["duration_seconds"] = round(
+                    time.perf_counter() - attempt_started, 3
+                )
                 attempt_record["validation_error"] = str(exc)
                 attempts.append(attempt_record)
+                self._emit(
+                    "validation_failed",
+                    {
+                        "stage": schema_name,
+                        "attempt": attempt_index,
+                        "duration_seconds": round(validation_duration, 3),
+                        "will_retry": attempt_index < self.max_attempts,
+                    },
+                )
                 messages = [
                     LLMMessage(
                         role="system",
@@ -166,12 +264,17 @@ class StructuredLLMGenerator:
                 ]
 
         summaries = "; ".join(_summarize_attempt(item) for item in attempts)
+        self._emit("stage_failed", {"stage": schema_name, **_timing(stage_started, attempts)})
         raise StructuredGenerationError(
             f"Structured LLM generation failed after {self.max_attempts} attempts: "
             f"{last_error}. Attempts: {summaries}",
             attempts=attempts,
             stage=schema_name,
         )
+
+    def _emit(self, event: str, payload: dict[str, Any]) -> None:
+        if self.event_callback is not None:
+            self.event_callback(event, payload)
 
     def _initial_response_format(self, schema_model: type[BaseModel], schema_name: str) -> dict:
         if self.response_format_mode == "json_schema":
@@ -193,6 +296,32 @@ def _summarize_attempt(attempt: dict[str, Any]) -> str:
         f"#{attempt['attempt']} content_length={content_length}, "
         f"finish_reason={finish_reason!r}, error={attempt.get('validation_error')}"
     )
+
+
+def _usage(raw: dict[str, Any]) -> dict[str, int]:
+    usage = raw.get("usage") or {}
+    cached_tokens = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    values = {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "cached_tokens": cached_tokens,
+    }
+    return {key: value for key, value in values.items() if isinstance(value, int)}
+
+
+def _timing(stage_started: float, attempts: list[dict[str, Any]]) -> dict[str, float | int]:
+    total = time.perf_counter() - stage_started
+    llm = sum(float(item.get("llm_duration_seconds", 0.0)) for item in attempts)
+    validation = sum(
+        float(item.get("validation_duration_seconds", 0.0)) for item in attempts
+    )
+    return {
+        "attempt_count": len(attempts),
+        "duration_seconds": round(total, 3),
+        "llm_duration_seconds": round(llm, 3),
+        "validation_duration_seconds": round(validation, 3),
+        "other_duration_seconds": round(max(0.0, total - llm - validation), 3),
+    }
 
 
 def _finish_reason(raw: dict[str, Any]) -> str | None:

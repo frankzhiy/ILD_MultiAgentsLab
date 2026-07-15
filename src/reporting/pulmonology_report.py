@@ -15,8 +15,9 @@ from src.schemas.specialty_agent_input import SpecialtyCaseInput
 ROLE_LABELS = {
     "owned": "呼吸科主责",
     "shared_context": "共享背景",
-    "collaborative_context": "跨专科上下文",
+    "collaborative_context": "多专科共同使用",
     "reference_only": "其他专科参考",
+    "unknown": "角色未知",
 }
 
 SPECIALTY_LABELS = {
@@ -65,6 +66,35 @@ REVIEW_STATUS_LABELS = {
     "still_not_assessable": "仍不可评价",
     "still_deferred": "仍等待专科",
     "resolved": "已解决",
+}
+
+VALUE_LABELS = {
+    "present": "存在",
+    "absent": "未发现",
+    "possible": "可能存在",
+    "not_assessable": "不可评价",
+    "not_applicable": "不适用",
+    "performed_and_interpreted": "已完成并解释",
+    "indicated": "有指征",
+    "not_indicated": "暂无指征",
+    "consider_if_needed": "必要时考虑",
+    "unsafe_or_contraindicated": "不安全或存在禁忌",
+    "insufficient_data": "资料不足",
+    "symptoms": "症状",
+    "physiology": "生理",
+    "radiology": "影像",
+    "worsened": "恶化",
+    "stable": "稳定",
+    "improved": "改善",
+    "suspected": "疑似",
+    "not_supported": "暂不支持",
+    "meets_criteria": "符合标准",
+    "does_not_meet_criteria": "不符合标准",
+    "concordant": "一致",
+    "supplementary": "补充",
+    "conflicting": "冲突",
+    "unresolved": "未解决",
+    "past year": "过去一年",
 }
 
 
@@ -193,12 +223,12 @@ def _page(
 </head>
 <body>
   <header class="hero"><div class="hero-inner">
-    <div class="eyebrow">ILD Multidisciplinary Team · Pulmonology</div>
+    <div class="eyebrow">ILD 多学科团队 · 呼吸科</div>
     <h1>{escape(case_id)} · 呼吸科{phase_label}</h1>
     <div class="hero-subtitle">先读结果，再按需展开推理和原始证据</div>
     <div class="metrics">
-      <span class="metric">segment {summary.segment_count}</span>
-      <span class="metric">unit {summary.unit_count}</span>
+      <span class="metric">片段 {summary.segment_count}</span>
+      <span class="metric">单元 {summary.unit_count}</span>
       <span class="metric">主责 {summary.owned_unit_count}</span>
       <span class="metric">共享 {summary.shared_context_unit_count}</span>
       <span class="metric">跨专科 {summary.collaborative_context_unit_count}</span>
@@ -259,7 +289,7 @@ def _render_initial(result: PulmonologyInitialAssessment, roles: dict[str, str])
     secondary = "".join(
         _result_card(
             f"继发因素 · {item.cause}",
-            item.status,
+            _value_label(item.status),
             item.confidence,
         )
         for item in result.secondary_cause_assessment
@@ -485,7 +515,8 @@ def _progression_detail(item: Any, roles: dict[str, str]) -> str:
     if item is None:
         return _detail_section("进展与 PPF", [])
     components = "；".join(
-        f"{component.component}: {component.status}（{component.assessment}）"
+        f"{_value_label(component.component)}：{_value_label(component.status)}"
+        f"（{component.assessment}）"
         for component in item.components
     )
     evidence = [
@@ -494,11 +525,11 @@ def _progression_detail(item: Any, roles: dict[str, str]) -> str:
     related = [pointer for component in item.components for pointer in component.related_evidence]
     body = (
         '<article class="plain-card">'
-        f"<h3>近期变化：{escape(item.recent_worsening)} · "
-        f"PPF：{escape(item.ppf_status)}</h3>"
+        f"<h3>近期变化：{escape(_value_label(item.recent_worsening))} · "
+        f"PPF：{escape(_value_label(item.ppf_status))}</h3>"
         f"<p>{escape(item.reasoning_summary)}</p>"
         f"<p><strong>规则：</strong>{escape(item.rule_source)}；"
-        f"{escape(item.assessment_window)}</p>"
+        f"{escape(_value_label(item.assessment_window))}</p>"
         f"<p>{escape(components)}</p>{_evidence_panel(evidence, roles)}"
         f"{_evidence_panel(related, roles, '相关上下文（不支持结论）')}</article>"
     )
@@ -510,7 +541,7 @@ def _bronchoscopy_detail(item: Any, roles: dict[str, str]) -> str:
         return _detail_section("BAL / 支气管镜", [])
     body = (
         '<article class="plain-card">'
-        f'<span class="badge">{escape(item.decision)}</span>'
+        f'<span class="badge">{escape(_value_label(item.decision))}</span>'
         f"<h3>{escape(item.clinical_question)}</h3><p>{escape(item.rationale)}</p>"
         f"{_evidence_panel(item.supporting_evidence, roles)}"
         f"{_evidence_panel(item.related_evidence, roles, '相关上下文（不支持结论）')}"
@@ -536,7 +567,7 @@ def _mapped_finding_card(item: Any, roles: dict[str, str]) -> str:
     )
     return (
         '<article class="plain-card">'
-        f'<span class="badge">{escape(item.relationship)}</span>'
+        f'<span class="badge">{escape(_value_label(item.relationship))}</span>'
         f"<h3>{escape(item.opinion_id)} · {escape(domains)}</h3>"
         f"<p>{escape(item.clinical_effect)}</p>"
         f"{_evidence_panel(item.evidence, roles)}</article>"
@@ -562,7 +593,7 @@ def _coverage_zone(reviews: list[Any]) -> str:
 
 def _secondary_detail(item: Any, roles: dict[str, str]) -> str:
     return _detail_card(
-        f"{item.cause} · {item.status}",
+        f"{item.cause} · {_value_label(item.status)}",
         item.confidence,
         item.reasoning_summary,
         item.supporting_evidence,
@@ -681,9 +712,9 @@ def _evidence(pointer: EvidencePointer, roles: dict[str, str]) -> str:
         f'<span class="badge">{escape(role_label)}</span> '
         f'<span class="badge">{escape(pointer.graph_unit_id)}</span>'
         f"<blockquote>{escape(pointer.quote)}</blockquote>"
-        f"<code>segment · {escape(pointer.segment_id)}</code>"
-        f"<code>evidence · {escape(', '.join(pointer.evidence_ids))}</code>"
-        f"<code>nodes · {escape(', '.join(pointer.node_ids) or '无')}</code></div>"
+        f"<code>片段 · {escape(pointer.segment_id)}</code>"
+        f"<code>证据 · {escape(', '.join(pointer.evidence_ids))}</code>"
+        f"<code>节点 · {escape(', '.join(pointer.node_ids) or '无')}</code></div>"
     )
 
 
@@ -696,6 +727,10 @@ def _list_block(title: str, values: list[str]) -> str:
 def _confidence(value: str) -> str:
     label = CONFIDENCE_LABELS.get(value, value)
     return f'<span class="badge confidence-{escape(value)}">{escape(label)}</span>'
+
+
+def _value_label(value: str) -> str:
+    return VALUE_LABELS.get(value, value)
 
 
 def _lowest_confidence(items: list[Any]) -> str:

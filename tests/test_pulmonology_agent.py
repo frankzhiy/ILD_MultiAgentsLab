@@ -232,7 +232,12 @@ def test_initial_assessment_runs_three_ordered_stages():
     case = case_input()
     stages = initial_stages(case)
     llm = FakeLLM([llm_payload(item) for item in stages])
-    agent = PulmonologyAgent.from_config(CONFIG, llm)
+    events = []
+    agent = PulmonologyAgent.from_config(
+        CONFIG,
+        llm,
+        event_callback=lambda event, payload: events.append((event, payload)),
+    )
 
     result, trace = agent.initial_assessment(case)
 
@@ -244,8 +249,15 @@ def test_initial_assessment_runs_three_ordered_stages():
         "initial_diagnostic_formulation",
     ]
     assert len(llm.prompts) == 3
+    assert "所有面向人的文本字段必须使用简体中文" in llm.prompts[0][0].content
+    assert "简明、可审计的临床理由" in llm.prompts[0][1].content
     assert "第 1 阶段临床基础" in llm.prompts[1][1].content
     assert "第 2 阶段肺部评估" in llm.prompts[2][1].content
+    assert [event for event, _ in events].count("stage_completed") == 3
+    assert [event for event, _ in events].count("llm_attempt_completed") == 3
+    assert [event for event, _ in events].count("validation_completed") == 3
+    assert trace["stages"][0]["timing"]["llm_duration_seconds"] >= 0
+    assert trace["stages"][0]["timing"]["validation_duration_seconds"] >= 0
 
 
 def test_eight_domains_are_required_once_but_results_may_be_empty():
@@ -263,7 +275,7 @@ def test_stage_schema_exposes_only_evidence_ids_for_pointer():
 
     assert set(schema["$defs"]["EvidencePointer"]["properties"]) == {"evidence_ids"}
     assert (
-        "exactly one graph unit"
+        "来自同一个 graph unit"
         in schema["$defs"]["EvidencePointer"]["properties"]["evidence_ids"]["description"]
     )
     assert {"domain", "status", "rationale"}.issubset(schema["$defs"]["DomainReview"]["required"])
@@ -430,6 +442,8 @@ def test_initial_report_shows_clinical_results_and_coverage_audit(tmp_path):
     assert pointer.evidence_ids[0] in html and pointer.quote in html
     assert "八问处理状态" in html
     assert "可解锁的决策" in html
+    assert "ILD 多学科团队 · 呼吸科" in html
+    assert "片段 ·" in html and "segment ·" not in html
 
 
 def test_legacy_saved_assessment_migrates_to_v2_state():
@@ -536,7 +550,7 @@ def test_discussion_authorizes_reference_evidence_by_exact_block_id():
         specialist_opinions_used=[opinion.opinion_id],
     )
 
-    with pytest.raises(ValueError, match="exact matching specialist claim"):
+    with pytest.raises(ValueError, match="精确引用相同 evidence ID"):
         validate_discussion_response(response, discussion_input)
 
 

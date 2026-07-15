@@ -5,6 +5,7 @@ import pytest
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
 import scripts.run.run_pulmonology_agent as runner
 from scripts.run.run_pulmonology_agent import (
+    ProgressReporter,
     choose_file,
     choose_phase,
     discover_semantic_run_dirs,
@@ -44,6 +45,27 @@ def test_cli_can_skip_optional_file(monkeypatch):
 
 def test_cli_discovers_semantic_graphing_run_directory():
     assert RUN_DIR.resolve() in [path.resolve() for path in discover_semantic_run_dirs()]
+
+
+def test_cli_reports_llm_and_local_validation_time(capsys):
+    reporter = ProgressReporter()
+    reporter.console = None
+
+    reporter.generation_event(
+        "stage_completed",
+        {
+            "stage": "initial_foundation",
+            "duration_seconds": 12.5,
+            "llm_duration_seconds": 12.2,
+            "validation_duration_seconds": 0.1,
+            "other_duration_seconds": 0.2,
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert "首轮 1/3：建立临床基础" in output
+    assert "LLM 12.2s" in output
+    assert "本地校验 0.1s" in output
 
 
 def test_failed_generation_trace_is_written_with_raw_attempts(tmp_path):
@@ -86,7 +108,7 @@ def test_main_builds_input_with_prepare_specialty_input_before_running_agent(
 
     class FakeAgent:
         @classmethod
-        def from_config(cls, config_path, llm):
+        def from_config(cls, config_path, llm, **kwargs):
             return cls()
 
         def initial_assessment(self, case_input):
@@ -119,7 +141,7 @@ def test_main_saves_failed_stage_trace_before_reraising(monkeypatch, tmp_path):
 
     class FailingAgent:
         @classmethod
-        def from_config(cls, config_path, llm):
+        def from_config(cls, config_path, llm, **kwargs):
             return cls()
 
         def initial_assessment(self, case_input):

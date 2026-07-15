@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 from pydantic import BaseModel
 
@@ -28,9 +28,9 @@ from src.utils.config import load_text, load_yaml, render_template
 
 SYSTEM_PROMPT = (
     "你是严谨的 ILD 呼吸科会诊医生，只负责诊断与专业会诊，"
-    "不是 MDT 主席。只返回符合 schema 的 JSON。"
+    "不是 MDT 主席。所有面向人的文本字段必须使用简体中文，医学标准缩写可保留；"
+    "不得整句或整段使用英文。只返回符合 schema 的 JSON。"
 )
-
 
 class PulmonologyAgent:
     def __init__(
@@ -48,6 +48,7 @@ class PulmonologyAgent:
         max_tokens: int,
         max_attempts: int = 2,
         retry_backoff_seconds: float = 0.0,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.prompts = {
             "initial_foundation": load_text(initial_foundation_prompt_path),
@@ -67,6 +68,7 @@ class PulmonologyAgent:
             response_format_mode=(
                 "json_schema" if getattr(llm, "supports_json_schema", False) else "json_object"
             ),
+            event_callback=event_callback,
         )
 
     @classmethod
@@ -74,6 +76,8 @@ class PulmonologyAgent:
         cls,
         config_path: str | Path,
         llm: LLMClient,
+        *,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> "PulmonologyAgent":
         config = load_yaml(config_path)
         prompt_keys = (
@@ -95,6 +99,7 @@ class PulmonologyAgent:
             max_tokens=int(config.get("max_tokens", 12000)),
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
+            event_callback=event_callback,
         )
 
     def initial_assessment(
@@ -611,9 +616,9 @@ def _validate_authorized_pointers(
             continue
         if not set(pointer.evidence_ids).issubset(authorized_evidence_ids):
             raise ValueError(
-                f"{unit.evidence_role} evidence {pointer.evidence_ids} cannot support a "
-                "pulmonology diagnostic statement without an exact matching specialist claim; "
-                "use related_evidence for orientation, limitations, or specialist deferral"
+                f"{unit.evidence_role} 证据 {pointer.evidence_ids} 不能直接支持呼吸科诊断性判断；"
+                "如无精确引用相同 evidence ID 的正式专科 claim，请将其放入 "
+                "related_evidence，用于病例理解、局限性说明或等待专科确认"
             )
 
 

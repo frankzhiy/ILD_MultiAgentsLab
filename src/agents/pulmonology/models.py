@@ -48,9 +48,8 @@ class EvidencePointer(BaseModel):
     evidence_ids: list[str] = Field(
         min_length=1,
         description=(
-            "Evidence block IDs from exactly one graph unit. When a judgment uses evidence "
-            "from multiple graph units, create one EvidencePointer per unit. Locators are "
-            "resolved by code."
+            "来自同一个 graph unit 的 evidence block ID。判断涉及多个 graph unit 时，"
+            "每个 unit 分别创建一个 EvidencePointer；其余定位信息由程序补全。"
         ),
     )
     segment_id: SkipJsonSchema[str] = ""
@@ -66,14 +65,14 @@ class ClinicalAssessmentItem(BaseModel):
     confidence: ClinicalConfidence
     reasoning_summary: str = Field(
         min_length=1,
-        description="Concise clinical rationale, not hidden chain-of-thought.",
+        description="简明、可审计的临床理由，不输出隐藏思维链。",
     )
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(
         default_factory=list,
         description=(
-            "Context explaining a limitation, deferral, or question; it does not support the "
-            "clinical conclusion and may include non-authoritative specialty material."
+            "用于解释局限、等待专科或问题背景的相关证据；不直接支持临床结论，"
+            "可以包含非本专业主责资料。"
         ),
     )
     specialist_opinion_ids: list[str] = Field(default_factory=list)
@@ -119,7 +118,7 @@ class DataGap(BaseModel):
     why_it_matters: str = Field(min_length=1)
     decision_unlocked: str = Field(
         min_length=1,
-        description="Diagnostic decision this information could change; prevents test shopping.",
+        description="该信息可能改变的诊断决策，用于避免无目的检查清单。",
     )
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
 
@@ -159,7 +158,7 @@ class DomainReview(BaseModel):
     ]
     rationale: str = Field(
         min_length=1,
-        description="Why this processing status is appropriate; do not invent a clinical result.",
+        description="说明为何采用该处理状态，不得虚构临床结果。",
     )
 
 
@@ -230,7 +229,7 @@ class DiagnosticFormulation(BaseModel):
     confidence: ClinicalConfidence
     morphologic_pattern: ClinicalAssessmentItem | None = Field(
         default=None,
-        description="Imaging/pathology pattern, explicitly distinct from the disease diagnosis.",
+        description="影像或病理形态学模式，必须与临床疾病诊断明确区分。",
     )
     reasoning_summary: str = Field(min_length=1)
     differential_diagnoses: list[DifferentialDiagnosis] = Field(default_factory=list)
