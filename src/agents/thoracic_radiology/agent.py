@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel
-
 from src.agents.thoracic_radiology.evidence_projection import (
     RadiologyWorkingInput,
+    build_radiology_evidence_prompt_input,
+    build_radiology_reconstruction_prompt_input,
     build_radiology_working_input,
 )
 from src.agents.thoracic_radiology.models import (
@@ -35,6 +34,7 @@ from src.agents.thoracic_radiology.validation import (
 )
 from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
 from src.llm.base import LLMClient
+from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 from src.utils.config import load_text, load_yaml, render_template
@@ -46,6 +46,25 @@ SYSTEM_PROMPT = (
     "原报告所见、原报告印象、临床诊断和你的影像解释必须严格分层。"
     "所有面向人的文本字段使用简体中文，标准医学缩写可保留；只返回符合schema的JSON。"
 )
+
+_RULE_KEYS_BY_STAGE = {
+    "initial_case_reconstruction": ("ipf_hrct", "acquisition"),
+    "initial_consult_formulation": (
+        "morphology",
+        "diagnostic_confidence",
+        "ipf_hrct",
+        "radiologic_progression",
+        "acquisition",
+    ),
+    "discussion_evidence_mapping": (),
+    "discussion_update_and_response": (
+        "morphology",
+        "diagnostic_confidence",
+        "ipf_hrct",
+        "radiologic_progression",
+        "acquisition",
+    ),
+}
 
 
 class ThoracicRadiologyAgent:
@@ -132,14 +151,19 @@ class ThoracicRadiologyAgent:
     ) -> tuple[ThoracicRadiologyInitialAssessment, dict]:
         _require_radiology_input(case_input)
         working_input = build_radiology_working_input(case_input)
-        working_json = _json(working_input)
+        reconstruction_input_json = _json(
+            build_radiology_reconstruction_prompt_input(case_input, working_input)
+        )
+        evidence_input_json = _json(
+            build_radiology_evidence_prompt_input(working_input)
+        )
         rules_json = _json(self.clinical_rules)
 
         reconstruction, reconstruction_trace = self._generate(
             stage="initial_case_reconstruction",
             schema_model=InitialCaseReconstruction,
             variables={
-                "working_input": working_json,
+                "working_input": reconstruction_input_json,
                 "clinical_rules": rules_json,
             },
             validation=lambda result: _validate_case_reconstruction(
@@ -150,7 +174,7 @@ class ThoracicRadiologyAgent:
             stage="initial_consult_formulation",
             schema_model=InitialConsultFormulation,
             variables={
-                "working_input": working_json,
+                "working_input": evidence_input_json,
                 "case_reconstruction": _json(reconstruction),
                 "clinical_rules": rules_json,
             },
@@ -191,7 +215,9 @@ class ThoracicRadiologyAgent:
         working_input = build_radiology_working_input(case_input)
         compact_input = {
             "case_id": case_input.case_id,
-            "working_input": working_input,
+            "imaging_evidence": build_radiology_evidence_prompt_input(working_input)[
+                "imaging_evidence"
+            ],
             "initial_assessment": discussion_input.initial_assessment,
             "specialist_opinions": discussion_input.specialist_opinions,
             "chair_questions": discussion_input.chair_questions,
@@ -266,16 +292,26 @@ class ThoracicRadiologyAgent:
             if self.guideline_runtime
             else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
         )
+        variables = {
+            **variables,
+            "clinical_rules": _json(
+                {
+                    key: self.clinical_rules[key]
+                    for key in _RULE_KEYS_BY_STAGE[stage]
+                    if key in self.clinical_rules
+                }
+            ),
+        }
+        output_schema = prompt_schema_json(schema_model)
         prompt = render_template(
             self.prompts[stage],
             {
-                "output_schema": json.dumps(
-                    schema_model.model_json_schema(), ensure_ascii=False, indent=2
-                ),
+                "output_schema": output_schema,
                 **variables,
             },
         )
-        prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+        if allowed_chunks:
+            prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
 
         def validate_with_guidelines(result):
             result = validation(result)
@@ -292,6 +328,12 @@ class ThoracicRadiologyAgent:
             extra_validation=validate_with_guidelines,
         )
         trace["guideline_retrieval"] = retrieval_trace
+        trace["prompt_components"] = {
+            "total_chars": len(prompt),
+            "output_schema_chars": len(output_schema),
+            "guideline_context_chars": len(guideline_context) if allowed_chunks else 0,
+            **{f"{key}_chars": len(value) for key, value in variables.items()},
+        }
         return result, trace
 
 
@@ -360,16 +402,7 @@ def _dedupe_actions(items: list[RadiologyActionItem]) -> list[RadiologyActionIte
 
 
 def _json(value: object) -> str:
-    def serializable(item):
-        if isinstance(item, BaseModel):
-            return item.model_dump(mode="json")
-        if isinstance(item, dict):
-            return {key: serializable(nested) for key, nested in item.items()}
-        if isinstance(item, (list, tuple)):
-            return [serializable(nested) for nested in item]
-        return item
-
-    return json.dumps(serializable(value), ensure_ascii=False, indent=2)
+    return prompt_json(value)
 
 
 def _combined_trace(working_input: RadiologyWorkingInput, *stages) -> dict:

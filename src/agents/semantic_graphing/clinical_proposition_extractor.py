@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
+from src.agents.semantic_graphing.evidence import build_evidence_blocks
 from src.llm.base import LLMClient
+from src.llm.prompting import prompt_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.semantic_graphing.clinical_proposition import (
     ClinicalModifier,
@@ -26,12 +29,22 @@ class ExtractedGraphUnitClinicalPropositions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    graph_unit_id: str
-    primary_frame: PrimaryFrame
-    event_modifiers: list[ClinicalModifier] = Field(default_factory=list)
-    propositions: list[ClinicalProposition] = Field(min_length=1)
-    notes: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    graph_unit_id: SkipJsonSchema[str] = ""
+    primary_frame: SkipJsonSchema[PrimaryFrame] = PrimaryFrame.BACKGROUND_CONTEXT
+    event_modifiers: list["ExtractedClinicalModifier"] = Field(default_factory=list)
+    propositions: list["ExtractedClinicalProposition"] = Field(min_length=1)
+    notes: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    metadata: SkipJsonSchema[dict[str, Any]] = Field(default_factory=dict)
+
+
+class ExtractedClinicalModifier(ClinicalModifier):
+    modifier_id: SkipJsonSchema[str] = ""
+
+
+class ExtractedClinicalProposition(ClinicalProposition):
+    proposition_id: SkipJsonSchema[str] = ""
+    modifiers: list[ExtractedClinicalModifier] = Field(default_factory=list)
+    rationale: SkipJsonSchema[str] = "命题边界由原文证据确定。"
 
 
 class ClinicalPropositionExtractor:
@@ -117,21 +130,17 @@ class ClinicalPropositionExtractor:
         primary_frame: GraphUnitPrimaryFrame,
         evidence_blocks: list[EvidenceBlock],
     ) -> tuple[GraphUnitClinicalPropositions, dict]:
+        evidence_json = prompt_json(evidence_blocks)
         prompt = render_template(
             self.prompt_template,
             {
                 "graph_unit_id": unit.graph_unit_id,
                 "primary_frame": str(primary_frame.primary_frame),
                 "clinical_proposition_catalog": self.clinical_proposition_catalog,
-                "unit_text": unit.text,
-                "evidence_blocks": json.dumps(
-                    [block.model_dump() for block in evidence_blocks],
-                    ensure_ascii=False,
-                    indent=2,
-                ),
+                "evidence_blocks": evidence_json,
             },
         )
-        return self.generator.generate(
+        result, trace = self.generator.generate(
             schema_model=ExtractedGraphUnitClinicalPropositions,
             schema_name="graph_unit_clinical_propositions",
             system_prompt=(
@@ -140,11 +149,16 @@ class ClinicalPropositionExtractor:
             ),
             user_prompt=prompt,
             extra_validation=lambda result: validate_clinical_propositions(
-                _attach_evidence_blocks(result, evidence_blocks),
+                _attach_evidence_blocks(result, evidence_blocks, unit, primary_frame),
                 unit,
                 primary_frame,
             ),
         )
+        trace["prompt_components"] = {
+            "instruction_and_catalog_chars": len(prompt) - len(evidence_json),
+            "evidence_chars": len(evidence_json),
+        }
+        return result, trace
 
 
 def split_dense_unit_text(text: str, max_chunk_chars: int) -> list[str]:
@@ -154,28 +168,6 @@ def split_dense_unit_text(text: str, max_chunk_chars: int) -> list[str]:
     return [
         "".join(block.text for block in blocks)
         for blocks in split_dense_unit_evidence_blocks(build_evidence_blocks(unit), max_chunk_chars)
-    ]
-
-
-def build_evidence_blocks(unit: GraphUnit) -> list[EvidenceBlock]:
-    """Deterministically split a graph unit into ordered, globally unique evidence blocks."""
-
-    parts = [
-        match.group(0)
-        for match in re.finditer(r".*?(?:[。！？；;\n]+|$)", unit.text, flags=re.DOTALL)
-        if match.group(0)
-    ]
-    blocks: list[str] = []
-    for part in parts:
-        if part.strip() or not blocks:
-            blocks.append(part)
-        else:
-            blocks[-1] += part
-    if not blocks:
-        raise ValueError(f"Cannot create evidence blocks for empty graph unit {unit.graph_unit_id}")
-    return [
-        EvidenceBlock(evidence_id=f"{unit.graph_unit_id}_ev_{index:03d}", text=text)
-        for index, text in enumerate(blocks, start=1)
     ]
 
 
@@ -207,10 +199,35 @@ def split_dense_unit_evidence_blocks(
 def _attach_evidence_blocks(
     result: ExtractedGraphUnitClinicalPropositions,
     evidence_blocks: list[EvidenceBlock],
+    unit: GraphUnit,
+    primary_frame: GraphUnitPrimaryFrame,
 ) -> GraphUnitClinicalPropositions:
+    modifier_index = 1
+
+    def normalized_modifier(item: ClinicalModifier) -> ClinicalModifier:
+        nonlocal modifier_index
+        normalized = ClinicalModifier(
+            **item.model_dump(exclude={"modifier_id"}),
+            modifier_id=f"mod_{modifier_index:03d}",
+        )
+        modifier_index += 1
+        return normalized
+
+    event_modifiers = [normalized_modifier(item) for item in result.event_modifiers]
+    propositions = [
+        ClinicalProposition(
+            **item.model_dump(exclude={"proposition_id", "modifiers"}),
+            proposition_id=f"prop_{index:03d}",
+            modifiers=[normalized_modifier(modifier) for modifier in item.modifiers],
+        )
+        for index, item in enumerate(result.propositions, start=1)
+    ]
     return GraphUnitClinicalPropositions(
-        **result.model_dump(),
+        graph_unit_id=unit.graph_unit_id,
+        primary_frame=primary_frame.primary_frame,
         evidence_blocks=evidence_blocks,
+        event_modifiers=event_modifiers,
+        propositions=propositions,
     )
 
 
@@ -384,6 +401,16 @@ def validate_clinical_propositions(
                     f"Modifier {modifier.modifier_id} must share at least one evidence block "
                     f"with owning proposition {proposition.proposition_id}"
                 )
+
+    from src.agents.semantic_graphing.clinical_proposition_validator import (
+        ClinicalPropositionValidator,
+    )
+
+    quality = ClinicalPropositionValidator().validate_unit(unit, primary_frame, result)
+    errors = [issue for issue in quality.issues if str(issue.severity) == "error"]
+    if errors:
+        details = "; ".join(f"{issue.code}: {issue.message}" for issue in errors)
+        raise ValueError(f"Clinical proposition quality gate failed: {details}")
 
     return result
 

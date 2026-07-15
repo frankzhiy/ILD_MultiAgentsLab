@@ -234,7 +234,7 @@ def test_extractor_uses_schema_response_and_validates_nested_modifier_ownership(
     assert '"concept_text"' in llm.messages[1].content
     assert '"value_text"' in llm.messages[1].content
     assert '"actor_text"' in llm.messages[1].content
-    assert '"attribution": null' in llm.messages[1].content
+    assert '"attribution":null' in llm.messages[1].content
     assert "attribution 表示当前 graph unit 原文明示的陈述来源" in llm.messages[1].content
     assert "不得仅因其主体是患者而填写 patient attribution" in llm.messages[1].content
     assert "来源仅在上级 segment 或其他 graph unit 出现时，必须输出 null" in llm.messages[1].content

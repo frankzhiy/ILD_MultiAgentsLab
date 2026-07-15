@@ -254,6 +254,61 @@ def build_radiology_working_input(case_input: SpecialtyCaseInput) -> RadiologyWo
     )
 
 
+def build_radiology_reconstruction_prompt_input(
+    case_input: SpecialtyCaseInput,
+    working_input: RadiologyWorkingInput,
+) -> dict:
+    """Full verbatim case context plus the small proposition view radiology can cite."""
+
+    return {
+        "case_id": case_input.case_id,
+        "case_context": [
+            {
+                "segment_id": item.segment.segment_id,
+                "text": item.segment.text,
+            }
+            for item in case_input.segments
+        ],
+        "imaging_evidence": _radiology_evidence_view(working_input),
+        "excluded_candidate_ids": [
+            item.graph_unit_id for item in working_input.excluded_radiology_candidates
+        ],
+    }
+
+
+def build_radiology_evidence_prompt_input(
+    working_input: RadiologyWorkingInput,
+) -> dict:
+    return {
+        "case_id": working_input.case_id,
+        "imaging_evidence": _radiology_evidence_view(working_input),
+    }
+
+
+def _radiology_evidence_view(working_input: RadiologyWorkingInput) -> list[dict]:
+    return [
+        {
+            "graph_unit_id": unit.graph_unit_id,
+            "evidence_role": unit.evidence_role,
+            "description_level_hint": unit.description_level_hint,
+            "statements": [
+                {
+                    "proposition_id": statement.proposition_id,
+                    "kind": statement.kind,
+                    "disposition": statement.disposition,
+                    "concept_text": statement.concept_text,
+                    "status": statement.status,
+                    "certainty": statement.certainty,
+                    "quote": statement.quote,
+                    "attribution": statement.attribution,
+                }
+                for statement in unit.statements
+            ],
+        }
+        for unit in working_input.evidence_units
+    ]
+
+
 def _contains_thoracic_imaging(text: str) -> bool:
     return bool(_CHEST_MODALITY_RE.search(text))
 

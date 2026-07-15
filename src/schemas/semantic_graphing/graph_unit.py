@@ -4,6 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from src.schemas.semantic_graphing.document import SourceType
+from src.schemas.semantic_graphing.primary_frame import PrimaryFrame
 
 
 GraphUnitStatus = Literal[
@@ -46,6 +47,12 @@ class GraphUnit(BaseModel):
     )
     temporal_anchor: str | None = Field(default=None)
     clinical_context: str | None = Field(default=None)
+    primary_frame: PrimaryFrame | None = Field(
+        default=None,
+        description="Event-nucleus organization selected while defining this unit boundary.",
+    )
+    primary_frame_rationale: str | None = Field(default=None)
+    boundary_warning: str | None = Field(default=None)
     status: GraphUnitStatus = "unknown"
     certainty: GraphUnitCertainty = "unknown"
     start_char: int | None = Field(

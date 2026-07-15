@@ -7,10 +7,18 @@ from pydantic import BaseModel, ValidationError
 
 import src.agents.semantic_graphing.agent as agent_module
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent
-from src.agents.semantic_graphing.document_classifier import DocumentClassifier
+from src.agents.semantic_graphing.document_classifier import (
+    DocumentClassifier,
+    UnitRangeClassifiedSegment,
+    UnitRangeDocumentClassification,
+    build_source_units,
+    rebuild_document_classification,
+)
 from src.agents.semantic_graphing.graph_unit_extractor import (
+    ExtractedSegmentGraphUnits,
     normalize_and_validate_graph_units,
 )
+from src.agents.semantic_graphing.primary_frame_selector import PrimaryFrameSelector
 from src.llm.base import LLMMessage, LLMResponse
 from src.llm.chatanywhere_client import ChatAnywhereClient
 from src.llm.deepseek_client import DeepSeekClient
@@ -24,6 +32,7 @@ from src.schemas.semantic_graphing.clinical_proposition import (
     GraphUnitClinicalPropositions,
     PropositionType,
     SegmentClinicalPropositions,
+    render_clinical_proposition_catalog,
 )
 from src.schemas.semantic_graphing.document import (
     ClassifiedSegment,
@@ -40,6 +49,7 @@ from src.schemas.semantic_graphing.graph_unit import (
 from src.schemas.semantic_graphing.primary_frame import (
     GraphUnitPrimaryFrame,
     PrimaryFrame,
+    render_primary_frame_catalog,
 )
 from scripts.run.run_semantic_graph_agent import (
     build_run_signature,
@@ -71,6 +81,20 @@ def test_graph_unit_prompt_keeps_event_boundary_but_routes_only_chest_imaging():
     assert "专科路由变化也不是切分依据" in prompt
     assert "肺功能、超声心动图、下肢血管超声及其他非胸部影像不属于胸部影像科" in prompt
     assert "CTPA 文字结论由影像科解释" in prompt
+
+
+def test_semantic_prompts_have_bounded_repeated_instruction_payloads():
+    root = Path("src/prompts/semantic_graphing")
+    classification = (root / "document_classification.md").read_text(encoding="utf-8")
+    graph = (root / "graph_unit_extraction.md").read_text(encoding="utf-8")
+    propositions = (root / "clinical_proposition_extraction.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert len(classification) < 2_000
+    assert len(graph) + len(render_primary_frame_catalog()) < 3_500
+    assert len(propositions) + len(render_clinical_proposition_catalog()) < 3_000
+    assert "{{ unit_text }}" not in propositions
 
 
 def test_graph_unit_validation_rejects_non_thoracic_tests_routed_to_radiology():
@@ -140,6 +164,155 @@ def test_graph_unit_validation_accepts_mixed_event_with_ctpa():
     assert normalized.graph_units[0].text == text
 
 
+def test_graph_unit_validation_rejects_omitted_clinical_text():
+    text = "活动后气短。ANA阳性。"
+    segment = ClassifiedSegment(
+        segment_id="seg_001",
+        text=text,
+        unit_type=DiscourseUnitType.CLINICAL_EPISODE,
+        clinical_frame="present_illness",
+        start_char=0,
+        end_char=len(text),
+        confidence=1,
+        rationale="test",
+    )
+    result = SegmentGraphUnits(
+        segment_id=segment.segment_id,
+        graph_units=[
+            GraphUnit(
+                graph_unit_id="seg_001_gu_001",
+                segment_id=segment.segment_id,
+                text="活动后气短。",
+                source_type=SourceType.PRESENT_ILLNESS,
+                mdt_specialty=[MdtSpecialty.PULMONOLOGY],
+                rationale="test",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="omit non-whitespace source text"):
+        normalize_and_validate_graph_units(result, segment)
+
+
+def test_document_validation_rejects_omitted_clinical_text():
+    text = "活动后气短。ANA阳性。"
+    source_units = build_source_units(text)
+    classification = UnitRangeDocumentClassification(
+        segments=[
+            UnitRangeClassifiedSegment(
+                end_unit=1,
+                unit_type=DiscourseUnitType.CLINICAL_EPISODE,
+                contained_source_types=[SourceType.PRESENT_ILLNESS],
+                clinical_frame="present_illness",
+                confidence=1,
+                rationale="test",
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="last segment must end at source unit 2"):
+        rebuild_document_classification(classification, text, source_units)
+
+
+def test_document_llm_schema_excludes_program_owned_fields():
+    schema = UnitRangeDocumentClassification.model_json_schema()
+    segment_schema = schema["$defs"]["UnitRangeClassifiedSegment"]
+
+    assert set(schema["properties"]) == {"segments"}
+    assert "end_unit" in segment_schema["properties"]
+    assert "text" not in segment_schema["properties"]
+    assert "segment_id" not in segment_schema["properties"]
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        UnitRangeDocumentClassification.model_validate(
+            {
+                "segments": [
+                    {
+                        "end_unit": 1,
+                        "text": "模型不应复制原文。",
+                        "unit_type": "other",
+                        "clinical_frame": "other",
+                        "confidence": 1,
+                        "rationale": "test",
+                    }
+                ]
+            }
+        )
+
+
+def test_source_units_preserve_exact_input_and_program_rebuilds_punctuation():
+    text = (
+        "一般健康状况：良好。\n"
+        "既往冠心病病史，口服普罗布考片5g 每日2次，每日一次。"
+        "传染病史：否认。"
+    )
+    source_units = build_source_units(text)
+    classification = UnitRangeDocumentClassification(
+        segments=[
+            UnitRangeClassifiedSegment(
+                end_unit=2,
+                unit_type=DiscourseUnitType.CURRENT_MEDICATION,
+                contained_source_types=[SourceType.MEDICATION_HISTORY],
+                clinical_frame="medication_history",
+                confidence=1,
+                rationale="test",
+            ),
+            UnitRangeClassifiedSegment(
+                end_unit=3,
+                unit_type=DiscourseUnitType.PAST_MEDICAL_HISTORY,
+                contained_source_types=[SourceType.PAST_MEDICAL_HISTORY],
+                clinical_frame="past_history_summary",
+                confidence=1,
+                rationale="test",
+            ),
+        ]
+    )
+
+    rebuilt = rebuild_document_classification(classification, text, source_units)
+
+    assert "".join(unit.text for unit in source_units) == text
+    assert rebuilt.segments[0].text.endswith("每日一次。")
+    assert rebuilt.segments[1].text == "传染病史：否认。"
+    assert rebuilt.segments[1].start_char == text.index("传染病史")
+
+
+def test_document_range_validation_rejects_non_increasing_end_units():
+    text = "活动后气短。ANA阳性。"
+    source_units = build_source_units(text)
+    classification = UnitRangeDocumentClassification(
+        segments=[
+            UnitRangeClassifiedSegment(
+                end_unit=1,
+                unit_type=DiscourseUnitType.CLINICAL_EPISODE,
+                clinical_frame="present_illness",
+                confidence=1,
+                rationale="test",
+            ),
+            UnitRangeClassifiedSegment(
+                end_unit=1,
+                unit_type=DiscourseUnitType.STANDALONE_LAB_PANEL,
+                clinical_frame="standalone_report",
+                confidence=1,
+                rationale="test",
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="segment 2 end_unit must be greater than 1"):
+        rebuild_document_classification(classification, text, source_units)
+
+
+def test_graph_unit_llm_schema_requires_frame_but_not_program_owned_ids():
+    schema = ExtractedSegmentGraphUnits.model_json_schema()
+    unit_schema = schema["$defs"]["ExtractedGraphUnit"]
+
+    assert "primary_frame" in unit_schema["required"]
+    assert "primary_frame_rationale" in unit_schema["required"]
+    assert "graph_unit_id" not in unit_schema["properties"]
+    assert "segment_id" not in unit_schema["properties"]
+    assert "start_char" not in unit_schema["properties"]
+
+
 class FakeHTTPResponse:
     def __enter__(self):
         return self
@@ -159,6 +332,11 @@ class EmptyResponseLLM:
         )
 
 
+class FailIfCalledLLM:
+    def complete(self, messages, *, temperature, max_tokens, response_format=None):
+        raise AssertionError("LLM must not be called")
+
+
 class StaticResponseLLM:
     def __init__(self, response):
         self.response = response
@@ -167,6 +345,31 @@ class StaticResponseLLM:
     def complete(self, messages, *, temperature, max_tokens, response_format=None):
         self.messages = messages
         return LLMResponse(content=json.dumps(self.response, ensure_ascii=False), raw={})
+
+
+def test_primary_frame_selector_reuses_graph_unit_decision_without_llm_call():
+    unit = GraphUnit(
+        graph_unit_id="seg_001_gu_001",
+        segment_id="seg_001",
+        text="活动后气短。",
+        source_type=SourceType.PRESENT_ILLNESS,
+        mdt_specialty=[MdtSpecialty.PULMONOLOGY],
+        primary_frame=PrimaryFrame.SYMPTOM_EPISODE,
+        primary_frame_rationale="同一症状事件核",
+        rationale="test",
+    )
+    selector = PrimaryFrameSelector(
+        FailIfCalledLLM(),
+        "src/prompts/semantic_graphing/primary_frame_selection.md",
+        temperature=0,
+        max_tokens=100,
+    )
+
+    selected, trace = selector.select_unit(unit)
+
+    assert selected.primary_frame == PrimaryFrame.SYMPTOM_EPISODE
+    assert selected.rationale == "同一症状事件核"
+    assert trace == {"derived_from_graph_unit": True, "attempts": []}
 
 
 class FakeGraphUnitExtractor:
@@ -452,33 +655,24 @@ def test_classifier_program_computes_offsets_without_asking_model_to_count():
         {
             "segments": [
                 {
-                    "segment_id": "seg_001",
-                    "text": "主诉：活动后气短。",
+                    "end_unit": 1,
                     "unit_type": "demographics_chief_complaint",
                     "contained_source_types": ["chief_complaint"],
                     "clinical_frame": "chief_complaint",
                     "temporal_anchor": None,
                     "confidence": 1,
                     "rationale": "test",
-                    "metadata": {},
                 },
                 {
-                    "segment_id": "seg_002",
-                    "text": "既往高血压。",
+                    "end_unit": 2,
                     "unit_type": "past_medical_history",
                     "contained_source_types": ["past_medical_history"],
                     "clinical_frame": "past_medical_history",
                     "temporal_anchor": None,
                     "confidence": 1,
                     "rationale": "test",
-                    "metadata": {},
                 },
             ],
-            "detected_contained_source_types": [
-                "chief_complaint",
-                "past_medical_history",
-            ],
-            "notes": [],
         }
     )
     classifier = DocumentClassifier(
@@ -490,8 +684,9 @@ def test_classifier_program_computes_offsets_without_asking_model_to_count():
 
     classification, _ = classifier.classify(text)
 
-    assert "start_char" not in llm.messages[1].content
-    assert "end_char" not in llm.messages[1].content
+    assert "text" not in llm.response["segments"][0]
+    assert "逐字连续原文" not in llm.messages[1].content
+    assert '[1] "主诉：活动后气短。"' in llm.messages[1].content
     assert classification.segments[0].start_char == 0
     assert classification.segments[0].end_char == len("主诉：活动后气短。")
     assert classification.segments[1].start_char == text.index("既往高血压。")
@@ -504,41 +699,33 @@ def test_classifier_accepts_standardized_ild_presentation_categories():
         {
             "segments": [
                 {
-                    "segment_id": "seg_001",
-                    "text": "父亲患肺纤维化。",
+                    "end_unit": 1,
                     "unit_type": "past_medical_history",
                     "contained_source_types": ["family_history"],
                     "clinical_frame": "family_history",
                     "temporal_anchor": None,
                     "confidence": 1,
                     "rationale": "test",
-                    "metadata": {},
                 },
                 {
-                    "segment_id": "seg_002",
-                    "text": "ANA阳性。",
+                    "end_unit": 2,
                     "unit_type": "standalone_lab_panel",
                     "contained_source_types": ["ctd_related_findings"],
                     "clinical_frame": "standalone_report",
                     "temporal_anchor": None,
                     "confidence": 1,
                     "rationale": "test",
-                    "metadata": {},
                 },
                 {
-                    "segment_id": "seg_003",
-                    "text": "BALF淋巴细胞比例升高。",
+                    "end_unit": 3,
                     "unit_type": "standalone_lab_panel",
                     "contained_source_types": ["bronchoscopy_findings"],
                     "clinical_frame": "standalone_report",
                     "temporal_anchor": None,
                     "confidence": 1,
                     "rationale": "test",
-                    "metadata": {},
                 },
             ],
-            "detected_contained_source_types": [],
-            "notes": [],
         }
     )
     classifier = DocumentClassifier(

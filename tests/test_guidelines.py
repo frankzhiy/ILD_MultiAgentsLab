@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,31 @@ def test_runtime_records_retrieved_candidates_for_stage():
     assert "guide:p001:c001" in prompt
     assert set(allowed) == {"guide:p001:c001"}
     assert trace["candidates"] == [{"chunk_id": "guide:p001:c001", "score": 0.91}]
+
+
+def test_runtime_honors_stage_limit_and_skips_zero_limit_stage():
+    calls = []
+
+    class FakeRetriever:
+        def search(self, query, *, guideline_ids, limit):
+            calls.append((query, limit))
+            return [GuidelineSearchHit(chunk=chunk(), score=0.91)]
+
+    runtime = GuidelineRuntime(
+        FakeRetriever(),
+        ["guide"],
+        {"assessment": "诊断", "mapping": "映射"},
+        limit=6,
+        limits={"assessment": 2, "mapping": 0},
+    )
+
+    prompt, _, _ = runtime.prepare("assessment")
+    skipped, allowed, _ = runtime.prepare("mapping")
+
+    assert calls == [("诊断", 2)]
+    assert set(json.loads(prompt)[0]) == {"chunk_id", "section_path", "text"}
+    assert skipped == "[]"
+    assert allowed == {}
 
 
 def test_unretrieved_citation_is_rejected():

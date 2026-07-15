@@ -21,6 +21,13 @@ guideline_retrieval:
   enabled: true
   directory: data/guidelines
   limit: 6
+  limits:
+    initial_case_reconstruction: 2
+    initial_autoimmune_assessment: 4
+    initial_consult_formulation: 4
+    discussion_evidence_mapping: 0
+    discussion_state_update: 3
+    discussion_consult_response: 4
   scope:
     - ers-eular-ctd-ild-2025
     - cra-ctd-ild-2022-zh

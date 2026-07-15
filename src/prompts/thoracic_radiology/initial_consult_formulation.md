@@ -16,7 +16,7 @@
 - 对MDT决策的影响；
 - 如仍有关键缺口，仅给一个最能改变决策的下一步。资料不足本身是允许且正式的结论。
 
-证据格式：EvidencePointer只填写`graph_unit_id`和`proposition_ids`。supporting/conflicting evidence只能使用工作输入中`thoracic_imaging_eligible=true`的proposition；临床背景只能放related_evidence。不要填写程序回填字段。
+证据格式：EvidencePointer只填写`graph_unit_id`和`proposition_ids`。supporting/conflicting evidence只能使用工作输入中`disposition=thoracic_imaging`的proposition；临床背景只能放related_evidence。不要填写程序回填字段。
 
 不声称直接阅片，不输出最终MDT诊断，不制定治疗方案。检查请求必须针对当前决策，禁止罗列薄层、呼气、俯卧、增强等通用清单。
 

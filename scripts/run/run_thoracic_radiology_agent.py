@@ -26,6 +26,8 @@ if str(ROOT) not in sys.path:
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input  # noqa: E402
 from src.agents.thoracic_radiology.agent import ThoracicRadiologyAgent  # noqa: E402
 from src.agents.thoracic_radiology.evidence_projection import (  # noqa: E402
+    build_radiology_evidence_prompt_input,
+    build_radiology_reconstruction_prompt_input,
     build_radiology_working_input,
 )
 from src.agents.thoracic_radiology.models import (  # noqa: E402
@@ -34,6 +36,7 @@ from src.agents.thoracic_radiology.models import (  # noqa: E402
     ThoracicRadiologyInitialAssessment,
 )
 from src.llm.factory import build_llm_client  # noqa: E402
+from src.llm.prompting import llm_value  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.reporting.thoracic_radiology_report import (  # noqa: E402
     render_thoracic_radiology_report,
@@ -246,6 +249,22 @@ def main() -> int:
             run_dir / f"{case_input.case_id}_thoracic_radiology_working_input.json"
         )
         write_json(working_input_path, working_input.model_dump(mode="json"))
+        reconstruction_input_path = (
+            run_dir / f"{case_input.case_id}_thoracic_radiology_reconstruction_input.json"
+        )
+        evidence_input_path = (
+            run_dir / f"{case_input.case_id}_thoracic_radiology_evidence_input.json"
+        )
+        write_json(
+            reconstruction_input_path,
+            llm_value(
+                build_radiology_reconstruction_prompt_input(case_input, working_input)
+            ),
+        )
+        write_json(
+            evidence_input_path,
+            llm_value(build_radiology_evidence_prompt_input(working_input)),
+        )
     progress.log(
         f"输入完成：segments={case_input.summary.segment_count} "
         f"units={case_input.summary.unit_count} owned={case_input.summary.owned_unit_count} "
@@ -259,6 +278,8 @@ def main() -> int:
         f"thoracic_units={working_input.summary.thoracic_evidence_unit_count} "
         f"excluded={working_input.summary.excluded_candidate_unit_count}"
     )
+    progress.log(f"首阶段病例输入：{reconstruction_input_path.resolve()}")
+    progress.log(f"后续阶段证据输入：{evidence_input_path.resolve()}")
     with progress.step("初始化 APIYI 胸部影像科 Agent"):
         config = load_yaml(CONFIG_PATH)
         agent = ThoracicRadiologyAgent.from_config(

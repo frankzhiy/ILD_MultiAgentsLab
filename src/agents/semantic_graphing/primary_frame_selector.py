@@ -33,6 +33,13 @@ class PrimaryFrameSelector:
         )
 
     def select_unit(self, unit: GraphUnit) -> tuple[GraphUnitPrimaryFrame, dict]:
+        if unit.primary_frame is not None:
+            return GraphUnitPrimaryFrame(
+                graph_unit_id=unit.graph_unit_id,
+                primary_frame=unit.primary_frame,
+                rationale=unit.primary_frame_rationale or unit.rationale,
+                boundary_warning=unit.boundary_warning,
+            ), {"derived_from_graph_unit": True, "attempts": []}
         prompt = render_template(
             self.prompt_template,
             {

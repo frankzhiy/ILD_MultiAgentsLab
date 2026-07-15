@@ -20,6 +20,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input  # noqa: E402
+from src.agents.common.evidence_projection import (  # noqa: E402
+    build_specialty_evidence_prompt_input,
+    build_specialty_working_input,
+)
 from src.agents.rheumatology.agent import RheumatologyAgent  # noqa: E402
 from src.agents.rheumatology.models import (  # noqa: E402
     RheumatologyDiscussionInput,
@@ -27,6 +31,7 @@ from src.agents.rheumatology.models import (  # noqa: E402
     SpecialistOpinion,
 )
 from src.llm.factory import build_llm_client  # noqa: E402
+from src.llm.prompting import llm_value  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.reporting.rheumatology_report import render_rheumatology_report  # noqa: E402
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty  # noqa: E402
@@ -182,6 +187,14 @@ def main() -> int:
         case = build_specialty_case_input(run_dir, MdtSpecialty.RHEUMATOLOGY)
         input_path = run_dir / f"{case.case_id}_rheumatology_input.json"
         write_json(input_path, case.model_dump(mode="json"))
+        working_input = build_specialty_working_input(case)
+        working_input_path = run_dir / f"{case.case_id}_rheumatology_working_input.json"
+        write_json(working_input_path, working_input.model_dump(mode="json"))
+        evidence_input_path = run_dir / f"{case.case_id}_rheumatology_evidence_input.json"
+        write_json(
+            evidence_input_path,
+            llm_value(build_specialty_evidence_prompt_input(case)),
+        )
     progress.log(
         f"风湿科输入：{input_path.resolve()}；segments={case.summary.segment_count} "
         f"units={case.summary.unit_count} owned={case.summary.owned_unit_count} "
@@ -189,6 +202,8 @@ def main() -> int:
         f"collaborative={case.summary.collaborative_context_unit_count} "
         f"reference={case.summary.reference_only_unit_count}"
     )
+    progress.log(f"首阶段病例输入：{working_input_path.resolve()}")
+    progress.log(f"后续阶段证据输入：{evidence_input_path.resolve()}")
     with progress.step("初始化风湿科 Agent"):
         config = load_yaml(CONFIG_PATH)
         agent = RheumatologyAgent.from_config(

@@ -13,7 +13,7 @@
 - 呼吸科负责发现 CTD、暴露等线索和提出问题，不替风湿免疫、影像或病理专家完成其最终专业解释。
 
 证据使用规则：
-- `graph_unit.text` 是临床事实来源；clinical propositions、primary frame 和 local graph 只用于定位、组织和核对，不产生原文之外的新事实。local graph 的边不是临床因果关系。
+- `segment.text` 与 `graph_unit.text` 是逐字病例原文；`evidence_blocks` 只提供可引用的 evidence ID 与对应原文，不产生原文之外的新事实。
 - 证据权限以每个 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `collaborative_context` 只表示该 unit 分别路由给一个或多个专科，二者使用权完全相同；加上 `shared_context`，都可用于相应判断并进入 `supporting_evidence` 或 `conflicting_evidence`。不得仅因 unit 同时路由给其他专科而降低其权限。`reference_only` 只能用于理解病例、`related_evidence`、待确认观察或专科问题。
 - 缺失信息不等于阴性信息，“未提及”不等于“未做”。不要补写原文没有的症状、暴露、检查或时间点。
 - 每项实际形成的临床判断都应引用相应证据。每个 EvidencePointer 只填写 `evidence_ids`，且同一个 EvidencePointer 中的 ID 必须全部属于同一个 graph unit；判断涉及多个 unit 时，拆成多个 EvidencePointer。逐字复制 evidence block ID，不要填写 segment_id、graph_unit_id、node_ids 或 quote。

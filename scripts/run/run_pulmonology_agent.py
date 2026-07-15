@@ -26,6 +26,10 @@ if str(ROOT) not in sys.path:
 from scripts.agent_input.prepare_specialty_input import (  # noqa: E402
     build_specialty_case_input,
 )
+from src.agents.common.evidence_projection import (  # noqa: E402
+    build_specialty_evidence_prompt_input,
+    build_specialty_working_input,
+)
 from src.agents.pulmonology.agent import PulmonologyAgent  # noqa: E402
 from src.agents.pulmonology.models import (  # noqa: E402
     PulmonologyDiscussionInput,
@@ -33,6 +37,7 @@ from src.agents.pulmonology.models import (  # noqa: E402
     SpecialistOpinion,
 )
 from src.llm.factory import build_llm_client  # noqa: E402
+from src.llm.prompting import llm_value  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.reporting.pulmonology_report import render_pulmonology_report  # noqa: E402
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty  # noqa: E402
@@ -259,7 +264,21 @@ def main() -> int:
         )
         input_path = run_dir / f"{case_input.case_id}_pulmonology_input.json"
         write_json(input_path, case_input.model_dump(mode="json"))
+        working_input = build_specialty_working_input(case_input)
+        working_input_path = (
+            run_dir / f"{case_input.case_id}_pulmonology_working_input.json"
+        )
+        write_json(working_input_path, working_input.model_dump(mode="json"))
+        evidence_input_path = (
+            run_dir / f"{case_input.case_id}_pulmonology_evidence_input.json"
+        )
+        write_json(
+            evidence_input_path,
+            llm_value(build_specialty_evidence_prompt_input(case_input)),
+        )
     progress.log(f"呼吸科输入：{input_path.resolve()}")
+    progress.log(f"首阶段病例输入：{working_input_path.resolve()}")
+    progress.log(f"后续阶段证据输入：{evidence_input_path.resolve()}")
     progress.log(
         f"segments={case_input.summary.segment_count} "
         f"units={case_input.summary.unit_count} "

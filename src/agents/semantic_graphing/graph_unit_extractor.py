@@ -1,9 +1,19 @@
 import re
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.agents.semantic_graphing.span_validation import require_non_whitespace_coverage
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
-from src.schemas.semantic_graphing.document import ClassifiedSegment
-from src.schemas.semantic_graphing.graph_unit import MdtSpecialty, SegmentGraphUnits
+from src.schemas.semantic_graphing.document import ClassifiedSegment, SourceType
+from src.schemas.semantic_graphing.graph_unit import (
+    GraphUnit,
+    GraphUnitCertainty,
+    GraphUnitStatus,
+    MdtSpecialty,
+    SegmentGraphUnits,
+)
+from src.schemas.semantic_graphing.primary_frame import PrimaryFrame, render_primary_frame_catalog
 from src.utils.config import load_text, render_template
 
 
@@ -23,6 +33,30 @@ _NON_THORACIC_TEST_RE = re.compile(
 )
 
 
+class ExtractedGraphUnit(BaseModel):
+    """Only fields that require clinical judgment belong to the LLM response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    source_type: SourceType
+    mdt_specialty: list[MdtSpecialty] = Field(min_length=1)
+    temporal_anchor: str | None = None
+    clinical_context: str | None = None
+    primary_frame: PrimaryFrame
+    primary_frame_rationale: str = Field(min_length=1)
+    boundary_warning: str | None = None
+    status: GraphUnitStatus = "unknown"
+    certainty: GraphUnitCertainty = "unknown"
+    rationale: str = Field(min_length=1)
+
+
+class ExtractedSegmentGraphUnits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    graph_units: list[ExtractedGraphUnit] = Field(min_length=1)
+
+
 class SegmentGraphUnitExtractor:
     def __init__(
         self,
@@ -38,6 +72,7 @@ class SegmentGraphUnitExtractor:
         self.prompt_template = load_text(prompt_path)
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.primary_frame_catalog = render_primary_frame_catalog()
         self.generator = StructuredLLMGenerator(
             llm,
             temperature=temperature,
@@ -59,19 +94,43 @@ class SegmentGraphUnitExtractor:
                 "clinical_frame": segment.clinical_frame,
                 "temporal_anchor": segment.temporal_anchor or "null",
                 "rationale": segment.rationale,
+                "primary_frame_catalog": self.primary_frame_catalog,
                 "segment_text": segment.text,
             },
         )
-        return self.generator.generate(
-            schema_model=SegmentGraphUnits,
+        result, trace = self.generator.generate(
+            schema_model=ExtractedSegmentGraphUnits,
             schema_name="segment_graph_units",
             system_prompt="你是严谨的 ILD graph-unit extraction agent，只返回符合 schema 的 JSON。",
             user_prompt=prompt,
-            extra_validation=lambda result: normalize_and_validate_graph_units(
-                result,
-                segment,
-            ),
+            extra_validation=lambda result: normalize_extracted_graph_units(result, segment),
         )
+        trace["prompt_components"] = {
+            "instruction_and_catalog_chars": len(prompt) - len(segment.text),
+            "source_text_chars": len(segment.text),
+        }
+        return result, trace
+
+
+def normalize_extracted_graph_units(
+    result: ExtractedSegmentGraphUnits,
+    segment: ClassifiedSegment,
+) -> SegmentGraphUnits:
+    graph_units = [
+        GraphUnit(
+            graph_unit_id=f"{segment.segment_id}_gu_{index:03d}",
+            segment_id=segment.segment_id,
+            **unit.model_dump(),
+        )
+        for index, unit in enumerate(result.graph_units, start=1)
+    ]
+    return normalize_and_validate_graph_units(
+        SegmentGraphUnits(
+            segment_id=segment.segment_id,
+            graph_units=graph_units,
+        ),
+        segment,
+    )
 
 
 def normalize_and_validate_graph_units(
@@ -140,6 +199,16 @@ def normalize_and_validate_graph_units(
                 "Graph units overlap or are out of order: "
                 f"{previous.graph_unit_id}, {current.graph_unit_id}"
             )
+
+    require_non_whitespace_coverage(
+        segment.text,
+        [
+            (unit.segment_start_char, unit.segment_end_char)
+            for unit in normalized_units
+            if unit.segment_start_char is not None and unit.segment_end_char is not None
+        ],
+        label=f"Graph units in {segment.segment_id}",
+    )
 
     normalized = result.model_copy(update={"graph_units": normalized_units})
     require_complete_graph_unit_offsets(normalized)

@@ -21,6 +21,13 @@ guideline_retrieval:
   enabled: true
   directory: data/guidelines
   limit: 6
+  limits:
+    initial_foundation: 3
+    initial_pulmonary_assessment: 3
+    initial_diagnostic_formulation: 4
+    discussion_evidence_mapping: 0
+    discussion_state_update: 3
+    discussion_consult_response: 4
   scope:
     - ers-ats-iip-classification-2025
     - ats-ers-jrs-alat-ipf-ppf-2022

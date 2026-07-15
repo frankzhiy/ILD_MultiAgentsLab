@@ -1,129 +1,39 @@
-你是一个用于 ILD 科研系统的 clinical discourse segmentation agent。
+你负责把 ILD 病例的连续原文单元分组成完整、可建图的 clinical discourse segments。
 
-任务：
-将输入的自由文本切分为稳定、可审阅、后续可建图的 clinical discourse units。
+切分原则：
+- segment 表示一个完整临床叙事单元；source type 只是标签，不是切分依据。
+- 同一次起病/加重/就诊/住院中的症状、检查、判断、治疗、反应和转归保持在同一 clinical_episode。
+- 只有事件链、独立报告、独立既往史/用药、一般情况、独立治疗方案或独立医生总结发生切换时才新建 segment。
+- 时间变化若仍属于同一疾病进展链，不单独触发切分。
+- 每个 `[n]` 是程序从原文生成的不可拆分单元；只能在单元之间设置 segment 边界。
+- 每个 segment 只输出其最后一个单元编号 `end_unit`（包含该单元）。首段从 1 开始，后段自动从上一段结尾的下一单元开始。
+- end_unit 必须严格递增，最后一段必须以 {{ unit_count }} 结束，确保连续覆盖所有单元。
+- 原文、segment_id 和字符 offset 均由程序按范围重建；不要输出或复制 text。
+- 只做 discourse segmentation 和标签，不抽取 finding，不建图。
 
-核心原则：
-- 先识别完整 clinical episode / discourse unit，再给这个 unit 标注主 source type。
-- source type 不是切分依据，只是切分后的标签。
-- 不要因为看到“CT示”“治疗上给予”“诊断为”“会诊后”等关键词就切开。
-- 如果检查、治疗、诊断判断都服务于同一个病程推进链条，它们必须保留在同一个 clinical_episode segment 内。
-- segment 应该读起来像一个完整临床叙事单元，而不是被拆碎的句子成分。
+unit_type 只能取：
+demographics_chief_complaint, past_medical_history, current_medication,
+clinical_episode, general_condition, standalone_imaging_report,
+standalone_pulmonary_function_report, standalone_lab_panel,
+standalone_pathology_report, standalone_treatment_plan,
+standalone_clinician_assessment, other。
 
-什么是完整 clinical episode：
-围绕同一个时间锚点或同一次临床问题展开的一段连续叙事。它可以包含：
-- 背景或诱因
-- 症状出现、复发或加重
-- 就诊地点
-- 检查结果
-- 医生判断
-- 治疗或处理
-- 治疗反应
-- 转诊或收治
+contained_source_types 可多选：
+demographics, chief_complaint, present_illness, past_medical_history,
+exposure_history, family_history, medication_history, general_condition,
+physical_exam, imaging_findings, laboratory_findings, ctd_related_findings,
+bronchoscopy_findings, pulmonary_function_findings, pathology_findings,
+treatment, clinician_assessment, other。
 
-只要这些成分共同构成同一条病程链，就保持为一个 segment。
+字段：
+- clinical_frame：简短描述叙事框架，如 symptom_episode、diagnostic_care_episode、standalone_report。
+- temporal_anchor：原文明示时间；没有则 null。
+- confidence：0 到 1。
+- rationale：一句话说明边界；不重复病例内容。
+- text、segment_id、offset、汇总、metadata 和 notes 由程序生成，不要输出。
 
-切分边界规则：
-1. 时间锚点切换只有在进入独立临床问题或独立事件链时才形成新 episode。
-   同一疾病进展链中的“8年前”“1年前”“2月前”保留在同一个 clinical episode。
-2. 一个时间锚点内部的症状、就诊、检查、治疗、反应、转诊、诊断判断，不要再按关键词拆开。
-3. 从病程叙事切换到独立报告式内容时才切开，例如独立的“胸部CT：1、...”、独立肺功能报告、独立实验室列表。
-4. 从病程叙事切换到独立治疗方案/医嘱时才切开，例如“入院后给予...治疗方案”。
-5. 从病程叙事切换到独立医生总结、鉴别诊断或管理建议时才切开。
-6. 当前用药和既往史可以作为独立 discourse unit，但不要把嵌在 episode 里的处理行为切成 current_medication。
-7. 一句话如果表达的是同一次 episode，即使包含检查、治疗、诊断，也默认不拆。
+只返回 JSON：
+{"segments":[{"end_unit":3,"unit_type":"clinical_episode","contained_source_types":["present_illness"],"clinical_frame":"diagnostic_care_episode","temporal_anchor":null,"confidence":0.95,"rationale":"边界理由"}]}
 
-允许的 unit_type 取值：
-- demographics_chief_complaint
-- past_medical_history
-- current_medication
-- clinical_episode
-- general_condition
-- standalone_imaging_report
-- standalone_pulmonary_function_report
-- standalone_lab_panel
-- standalone_pathology_report
-- standalone_treatment_plan
-- standalone_clinician_assessment
-- other
-
-允许的 contained_source_types 取值（叙事角色，不含数据模态）：
-- demographics
-- chief_complaint
-- present_illness
-- past_medical_history
-- exposure_history
-- family_history
-- medication_history
-- general_condition
-- physical_exam
-- imaging_findings
-- laboratory_findings
-- ctd_related_findings
-- bronchoscopy_findings
-- pulmonary_function_findings
-- pathology_findings
-- treatment
-- clinician_assessment
-- other
-
-如果难以判断类型：
-- unit_type 使用 other。
-- 在 rationale 中说明不确定性。
-
-字段说明：
-- unit_type：这个 span 为什么成为一个 segment。
-- contained_source_types：segment 内部包含哪些标准化病例展示类别；这些类别不触发切分。
-- clinical_frame：更具体的临床叙事框架，例如 symptom_onset_episode、symptom_recurrence_episode、diagnostic_care_episode、standalone_report、general_condition_summary。
-- temporal_anchor：原文中的时间锚点，例如 8年前、1年前、2月前、目前；没有则为 null。
-- text：必须是输入原文中的连续子串。字符位置由程序计算。
-
-source type 判定补充（source_type 是标准化病例展示类别，描述这段文字应归入病例展示的哪一栏）：
-- demographics：性别、年龄、体重等人口学特征。
-- chief_complaint：主诉、入院主因、就诊主因等高度压缩的就诊原因。
-- present_illness：现病史、病程、呼吸系统症状、进展速度、CTD 相关症状。
-- past_medical_history：既往疾病、合并症及相关用药情况。
-- exposure_history：职业、潜在致敏原暴露、吸烟史等暴露史。
-- family_history：家族成员是否有肺纤维化。
-- medication_history：长期或既往用药史（不依附于某次具体就诊处置）。
-- general_condition：病程中的一般状态总结，例如神志、精神、饮食睡眠、大小便、体重变化。
-- physical_exam：生命体征、SpO2、胸部查体体征、浅表淋巴结肿大、CTD 相关体征。
-- imaging_findings：影像检查发现的叙述，例如 HRCT、胸片、CT 的所见。
-- laboratory_findings：常规检验、血气分析、sACE、KL-6 等实验室检验；自身抗体和干眼症相关检查归入 ctd_related_findings。
-- ctd_related_findings：免疫球蛋白、补体、RF、ANA、ENA 谱、Anti-CCP、ANCA、MSA、IgG4、Schirmer 试验、角膜荧光染色等 CTD 相关检查。
-- bronchoscopy_findings：支气管镜下表现、BALF 细胞计数分类、细胞学、流式细胞分析和病原学。
-- pulmonary_function_findings：肺功能检查发现的叙述，例如 FVC、DLCO、通气/弥散结果。
-- pathology_findings：病理检查发现的叙述，例如活检、TBLC、外科肺活检形态学。
-- treatment：治疗经过或处置方案。
-- clinician_assessment：医生判断、诊断倾向、鉴别诊断、转诊意见和管理建议。
-- 体格检查段落不要标为 clinician_assessment；clinician_assessment 用于医生判断而非客观查体。
-
-严格要求：
-- text 必须是输入原文中的连续子串。
-- 禁止改写、概括、删除括号内容、替换标点或规范化原文。
-- segment 之间必须按原文顺序排列，不能重叠。
-- 这一步只做 discourse segmentation 和标签标注，不做医学发现抽取，不构建图谱。
-- JSON 字段名和枚举值必须保持英文，以便程序校验。
-
-只返回严格 JSON：
-
-{
-  "segments": [
-    {
-      "segment_id": "seg_001",
-      "text": "verbatim continuous text span",
-      "unit_type": "clinical_episode",
-      "contained_source_types": ["present_illness", "imaging_findings", "treatment", "clinician_assessment"],
-      "clinical_frame": "diagnostic_care_episode",
-      "temporal_anchor": "2月前",
-      "confidence": 0.95,
-      "rationale": "short reason",
-      "metadata": {}
-    }
-  ],
-  "detected_contained_source_types": ["present_illness", "imaging_findings", "treatment", "clinician_assessment"],
-  "notes": []
-}
-
-输入文本：
-{{ input_text }}
+原文单元（引号内是未经改写的原始内容）：
+{{ source_units }}

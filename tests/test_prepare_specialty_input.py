@@ -5,6 +5,16 @@ import shutil
 import pytest
 
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
+from src.agents.common.evidence_projection import (
+    build_specialty_evidence_prompt_input,
+    build_specialty_working_input,
+)
+from src.agents.thoracic_radiology.evidence_projection import (
+    build_radiology_evidence_prompt_input,
+    build_radiology_reconstruction_prompt_input,
+    build_radiology_working_input,
+)
+from src.llm.prompting import prompt_json
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import EvidenceRole
 
@@ -67,6 +77,68 @@ def test_builds_ordered_complete_pulmonology_input_from_current_run():
     assert len(units["seg_003_gu_003"].graph_unit.mdt_specialty) == 2
     assert units["seg_004_gu_001"].evidence_role == EvidenceRole.REFERENCE_ONLY
     assert units["seg_004_gu_001"].may_support_diagnostic_claim is False
+
+
+def test_working_input_preserves_verbatim_sources_without_semantic_graph_payloads():
+    full = build_specialty_case_input(RUN_DIR, MdtSpecialty.PULMONOLOGY)
+    working = build_specialty_working_input(full)
+
+    assert [item.segment.text for item in working.segments] == [
+        item.segment.text for item in full.segments
+    ]
+    assert [unit.graph_unit.text for item in working.segments for unit in item.units] == [
+        unit.graph_unit.text for item in full.segments for unit in item.units
+    ]
+    assert [
+        block.model_dump()
+        for item in working.segments
+        for unit in item.units
+        for block in unit.evidence_blocks
+    ] == [
+        block.model_dump()
+        for item in full.segments
+        for unit in item.units
+        for block in unit.clinical_propositions.evidence_blocks
+    ]
+
+    working_json = working.model_dump_json()
+    full_json = full.model_dump_json()
+    assert len(working_json) < len(full_json) * 0.2
+    for omitted_key in (
+        '"local_graph"',
+        '"clinical_propositions"',
+        '"proposition_validation"',
+        '"primary_frame"',
+        '"source_run_dir"',
+    ):
+        assert omitted_key not in working_json
+
+
+def test_later_specialty_and_radiology_stage_payloads_are_bounded():
+    pulmonary = build_specialty_case_input(RUN_DIR, MdtSpecialty.PULMONOLOGY)
+    full_working = prompt_json(build_specialty_working_input(pulmonary))
+    later = prompt_json(build_specialty_evidence_prompt_input(pulmonary))
+    assert len(later) < len(full_working) * 0.6
+
+    radiology = build_specialty_case_input(RUN_DIR, MdtSpecialty.THORACIC_RADIOLOGY)
+    audit = build_radiology_working_input(radiology)
+    reconstruction = prompt_json(
+        build_radiology_reconstruction_prompt_input(radiology, audit)
+    )
+    evidence = prompt_json(build_radiology_evidence_prompt_input(audit))
+    assert len(reconstruction) < len(audit.model_dump_json()) * 0.5
+    assert len(evidence) < len(audit.model_dump_json()) * 0.35
+
+
+def test_rejects_conflicting_embedded_and_separate_primary_frames(tmp_path):
+    copy_semantic_outputs(tmp_path)
+    path = tmp_path / f"{CASE_ID}_graph_units.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["segments"][0]["graph_units"][0]["primary_frame"] = "encounter"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="embeds primary_frame"):
+        build_specialty_case_input(tmp_path, MdtSpecialty.PULMONOLOGY)
 
 
 def test_builds_same_complete_input_for_thoracic_radiology_with_new_roles():

@@ -222,7 +222,7 @@ def test_pulmonology_yaml_builds_apiyi_client(monkeypatch):
     client = build_llm_client(load_yaml(CONFIG))
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "deepseek-v4-flash"
+    assert client.model == "gpt-5.6-luna"
     assert client.base_url == "https://api.apiyi.com/v1"
 
 

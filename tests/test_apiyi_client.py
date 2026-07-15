@@ -26,7 +26,7 @@ def test_multi_agent_config_builds_apiyi_client(monkeypatch):
     client = build_llm_client(config)
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "deepseek-v4-flash"
+    assert client.model == "gpt-5.6-luna"
     assert client.base_url == "https://api.apiyi.com/v1"
     assert client.request_options == {"thinking": {"type": "disabled"}}
 
@@ -38,7 +38,7 @@ def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
     client = build_llm_client(config)
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "deepseek-v4-flash"
+    assert client.model == "gpt-5.6-luna"
     assert client.request_options == {"thinking": {"type": "disabled"}}
 
 

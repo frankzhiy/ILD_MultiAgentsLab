@@ -10,7 +10,7 @@
 八个问题域为：临床表型与病程、继发病因或相关状态、肺损害严重度、呼吸科检查/BAL/支气管镜、专科意见整合、进展/PPF、工作诊断与鉴别、决策相关数据缺口。
 
 证据与权限规则：
-- `graph_unit.text` 是原始临床事实；clinical propositions 和 local graph 只用于定位和核对，local graph 的边不是临床因果关系。
+- `evidence_blocks` 是逐字病例原文，也是定位和引用依据。
 - `collaborative_context` 与 `owned` 的使用权完全相同，不因同一 unit 还路由给其他专科而增加限制。`reference_only` 原始 unit 只有在正式专科意见明确提出 claim 并精确引用相应 evidence ID 时，才可通过该 claim 进行后续整合。
 - 每个映射必须在 `opinion_id` 保留正式专科意见 ID；不得编造意见 ID、claim 或证据。某条专科意见未覆盖的问题必须保持未覆盖。
 - EvidencePointer 只填写 `evidence_ids`，同一个指针中的 ID 必须全部属于同一个 graph unit；涉及多个 unit 时拆成多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。

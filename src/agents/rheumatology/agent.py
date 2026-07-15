@@ -1,11 +1,12 @@
 """Rheumatology specialist agent for staged ILD diagnostic consultation."""
 
-import json
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel
-
+from src.agents.common.evidence_projection import (
+    build_specialty_evidence_prompt_input,
+    build_specialty_working_input,
+)
 from src.agents.rheumatology.models import (
     DiscussionConsultOutput,
     DiscussionEvidenceMap,
@@ -30,6 +31,7 @@ from src.agents.rheumatology.validation import (
 )
 from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
 from src.llm.base import LLMClient
+from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 from src.utils.config import load_text, load_yaml, render_template
@@ -40,6 +42,34 @@ SYSTEM_PROMPT = (
     "所有面向人的文本字段必须使用简体中文，医学标准缩写可保留；不得整句或整段使用英文。"
     "只返回符合 schema 的 JSON。"
 )
+
+_RULE_KEYS_BY_STAGE = {
+    "initial_case_reconstruction": (),
+    "initial_autoimmune_assessment": (
+        "ipaf",
+        "screening_and_risk",
+        "specialist_boundaries",
+    ),
+    "initial_consult_formulation": (
+        "diagnostic_confidence",
+        "ctd_ild_diagnosis",
+        "ipaf",
+        "specialist_boundaries",
+    ),
+    "discussion_evidence_mapping": (),
+    "discussion_state_update": (
+        "diagnostic_confidence",
+        "ctd_ild_diagnosis",
+        "ipaf",
+        "screening_and_risk",
+        "specialist_boundaries",
+    ),
+    "discussion_consult_response": (
+        "diagnostic_confidence",
+        "ctd_ild_diagnosis",
+        "specialist_boundaries",
+    ),
+}
 
 
 class RheumatologyAgent:
@@ -115,7 +145,9 @@ class RheumatologyAgent:
 
     def initial_assessment(self, case_input: SpecialtyCaseInput) -> tuple[RheumatologyInitialAssessment, dict]:
         require_rheumatology_input(case_input)
-        case_json, rules_json = _json(case_input), _json(self.clinical_rules)
+        case_json = _json(build_specialty_working_input(case_input))
+        evidence_json = _json(build_specialty_evidence_prompt_input(case_input))
+        rules_json = _json(self.clinical_rules)
         reconstruction, reconstruction_trace = self._generate(
             "initial_case_reconstruction", InitialCaseReconstruction,
             {"case_input": case_json, "clinical_rules": rules_json},
@@ -123,13 +155,13 @@ class RheumatologyAgent:
         )
         autoimmune, autoimmune_trace = self._generate(
             "initial_autoimmune_assessment", InitialAutoimmuneAssessment,
-            {"case_input": case_json, "case_reconstruction": _json(reconstruction), "clinical_rules": rules_json},
+            {"case_input": evidence_json, "case_reconstruction": _json(reconstruction), "clinical_rules": rules_json},
             lambda result: validate_initial_stage(result, case_input, self.clinical_rules),
         )
         formulation, formulation_trace = self._generate(
             "initial_consult_formulation", InitialConsultFormulation,
             {
-                "case_input": case_json,
+                "case_input": evidence_json,
                 "case_reconstruction": _json(reconstruction),
                 "autoimmune_assessment": _json(autoimmune),
                 "clinical_rules": rules_json,
@@ -165,7 +197,15 @@ class RheumatologyAgent:
         require_rheumatology_input(case)
         validate_initial_assessment(discussion_input.initial_assessment, case, self.clinical_rules)
         validate_specialist_opinions(discussion_input)
-        discussion_json, rules_json = _json(discussion_input), _json(self.clinical_rules)
+        discussion_json = _json(
+            {
+                "case_input": build_specialty_evidence_prompt_input(case),
+                "initial_assessment": discussion_input.initial_assessment,
+                "specialist_opinions": discussion_input.specialist_opinions,
+                "chair_questions": discussion_input.chair_questions,
+            }
+        )
+        rules_json = _json(self.clinical_rules)
         evidence_map, map_trace = self._generate(
             "discussion_evidence_mapping", DiscussionEvidenceMap,
             {"discussion_input": discussion_json, "clinical_rules": rules_json},
@@ -210,11 +250,23 @@ class RheumatologyAgent:
             if self.guideline_runtime
             else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
         )
+        variables = {
+            **variables,
+            "clinical_rules": _json(
+                {
+                    key: self.clinical_rules[key]
+                    for key in _RULE_KEYS_BY_STAGE[stage]
+                    if key in self.clinical_rules
+                }
+            ),
+        }
+        output_schema = prompt_schema_json(schema_model)
         prompt = render_template(
             self.prompts[stage],
-            {"output_schema": json.dumps(schema_model.model_json_schema(), ensure_ascii=False, indent=2), **variables},
+            {"output_schema": output_schema, **variables},
         )
-        prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+        if allowed_chunks:
+            prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
 
         def validate_with_guidelines(result):
             result = validation(result)
@@ -231,20 +283,17 @@ class RheumatologyAgent:
             extra_validation=validate_with_guidelines,
         )
         trace["guideline_retrieval"] = retrieval_trace
+        trace["prompt_components"] = {
+            "total_chars": len(prompt),
+            "output_schema_chars": len(output_schema),
+            "guideline_context_chars": len(guideline_context) if allowed_chunks else 0,
+            **{f"{key}_chars": len(value) for key, value in variables.items()},
+        }
         return result, trace
 
 
 def _json(value: object) -> str:
-    def serializable(item):
-        if isinstance(item, BaseModel):
-            return item.model_dump(mode="json")
-        if isinstance(item, dict):
-            return {key: serializable(value) for key, value in item.items()}
-        if isinstance(item, (list, tuple)):
-            return [serializable(value) for value in item]
-        return item
-
-    return json.dumps(serializable(value), ensure_ascii=False, indent=2)
+    return prompt_json(value)
 
 
 def _combined_trace(*stages) -> dict:

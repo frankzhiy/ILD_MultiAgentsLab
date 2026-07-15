@@ -2,7 +2,7 @@
 
 from collections import Counter, defaultdict
 
-from src.agents.semantic_graphing.clinical_proposition_extractor import build_evidence_blocks
+from src.agents.semantic_graphing.evidence import build_evidence_blocks
 from src.schemas.semantic_graphing.clinical_proposition import (
     DocumentClinicalPropositions,
     EvidenceBlock,

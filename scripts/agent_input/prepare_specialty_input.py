@@ -166,6 +166,15 @@ def build_specialty_case_input(
                     f"not parent segment {segment_id}"
                 )
             unit_id = unit.graph_unit_id
+            primary_frame = frame_by_unit[unit_id]
+            if (
+                unit.primary_frame is not None
+                and unit.primary_frame != primary_frame.primary_frame
+            ):
+                raise ValueError(
+                    f"Graph unit {unit_id} embeds primary_frame={unit.primary_frame}, "
+                    f"but primary_frames output contains {primary_frame.primary_frame}"
+                )
             local_graph = local_graph_by_unit[unit_id]
             if local_graph.segment_id != segment_id:
                 raise ValueError(
@@ -191,7 +200,7 @@ def build_specialty_case_input(
                     allowed_uses=_ALLOWED_USES[role],
                     locator_status=locator_status,
                     graph_unit=unit,
-                    primary_frame=frame_by_unit[unit_id],
+                    primary_frame=primary_frame,
                     clinical_propositions=proposition_by_unit[unit_id],
                     proposition_validation=validation,
                     local_graph=local_graph,

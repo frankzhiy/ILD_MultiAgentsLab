@@ -1,117 +1,40 @@
-你是一个用于 ILD 科研系统的 clinical proposition extraction agent。
+你负责从一个已确定边界和 primary frame 的 graph unit 中抽取全部可独立引用的 clinical propositions。
 
-任务：
-给你一个已经确定事件核边界和 primary frame 的 graph unit。请只根据该 unit 原文，抽取其中所有有明确原文证据、可独立引用的临床陈述，并把临床意义明确的修饰信息归入它实际修饰的对象。
+规则：
+- 只表达原文明示信息；不补医学常识、因果或诊断结论。
+- propositions 按证据出现顺序；并列且可独立判断状态的概念分别抽取，共享谓词可在 concept_text 中补全。
+- concept_text 是最小但语义完整的命题，quote 是逐字证据，两者不要求逐字相同；不要把语义展开或规范化后的 `concept_text` 直接复制为 quote。
+- 阳性、阴性、可能、历史、计划、已执行、未执行、未知必须区分。
+- 诊断判断用 diagnosis_assertion，保留原文明示来源；不能改成患者确定患病。
+- “不详/未见检查单”用 information_availability，不能解释为正常或未实施。
 
-核心定义：
-- clinical proposition 是原文明示的一条可独立引用的临床陈述，而不是对整段原文的总结。
-- proposition 的修饰信息必须放入该 proposition 自己的 `modifiers`。
-- 只有修饰整个事件核的信息才放入 `event_modifiers`。
-- primary frame 仅用于理解该 unit 的组织中心；不能限制或替代原文中实际存在的 propositions。
+modifier 归属：
+- 修饰整个事件核的时间、起病、触发或场景放 event_modifiers。
+- duration、frequency、severity、value、trend、site、dose、route、schedule、response 等局部属性放所属 proposition.modifiers。
+- 同一修饰信息只能出现一次；已写入 concept_text 的语义不能再次作为 modifier。
 
-抽取原则：
-- 完整覆盖原文明示的临床信息，不遗漏具有诊断、病程或证据定位价值的陈述。
-- propositions 按其 evidence 在 graph unit 原文中的出现顺序排列。
-- 将并列且可独立判断状态的临床概念分别抽取为 proposition。
-- 将属性归入它实际修饰的 proposition，禁止把局部属性错误放入 event_modifiers。
-- 每个 modifier 证据只能拥有一个归属层级：
-  - 修饰整个 primary-frame 事件核时，放入 `event_modifiers`。
-  - 仅修饰某一 proposition 时，放入该 proposition 的 `modifiers`。
-  - 当 modifier 同时看似可以修饰事件核及其核心 proposition 时，优先归入
-    `event_modifiers`，不得在 proposition 中重复。
-- 起病时间、整个事件的时间锚、整个事件的诱因或场景等，可作为 event_modifiers。
-- duration、frequency、severity、quantity、intensity、value、range、trend、color、consistency、quality、anatomical_site、dose、route、schedule、response 等局部属性，应归入对应 proposition。
-- 阳性、阴性、可能、历史、计划、已执行、未执行和未知状态必须区分。
-- 诊断判断必须抽取为 `diagnosis_assertion`，并保留原文明示的判断来源；不得直接改写为患者确定患病的事实。
-- “信息不详”“未见检查单”等信息可用 `information_availability` 表达；不得解释成检查正常或未实施。
-- 不建立原文没有明确支持的因果关系，不补充医学常识。
-- attribution 表示当前 graph unit 原文明示的陈述来源、判断来源或报告来源，不表示 proposition 的语义主体。
-- 病例中的症状、暴露和既往史默认以患者为语义主体；不得仅因其主体是患者而填写 patient attribution。
-- 只有当前 graph unit 原文明示信息来源时，attribution 才能非 null；来源仅在上级 segment 或其他 graph unit 出现时，必须输出 null。
-- 中文并列省略中的共享谓词或状态应展开到每个独立 proposition。例如“呼吸储备功能、肺容量及气道阻力正常”应分别表达为“呼吸储备功能正常”“肺容量正常”“气道阻力正常”。
-- rationale 只说明边界或 modifier 归属，保持在一句短语内。
+attribution：
+- attribution 表示当前 graph unit 原文明示的陈述来源，不是 proposition 的语义主体。
+- 只有当前 evidence blocks 明示患者、医生或报告等来源时填写；来源仅在上级 segment 或其他 graph unit 出现时，必须输出 null。
+- 症状、暴露和既往史不得仅因其主体是患者而填写 patient attribution。
+- actor_text 必须逐字包含在 attribution quote 中。
+- attribution 非 null 时结构为：`{"attribution_type":"clinician","actor_text":"逐字主体","evidence":{"evidence_ids":["..."],"quote":"逐字原文"}}`。
 
-原文证据引用：
-- 程序已经将 graph unit 原文确定性切分为 evidence blocks；你不得创建、修改或输出 evidence blocks。
-- 每个 proposition、modifier 和 attribution 都必须提供 `evidence.evidence_ids` 和 `evidence.quote`。
-- `evidence_ids` 必须从下方 evidence blocks 中选择，按原文顺序排列，且只能引用连续 blocks。
-- `quote` 必须是所引用 evidence blocks 合并文本中的完整连续原文子串。
-- `concept_text` 表达一条最小但语义完整、可独立理解的临床命题。对于原文中的并列省略，可以补全各并列项共享但被省略的主语、宾语、谓词、状态或判断结果，使每条 proposition 能够独立理解。除完成该命题所必需的共享语义外，不要加入可单独归入 modifier 的限定信息。任何已经写入 concept_text 的语义，不得再次作为该 proposition 的 modifier 输出。`evidence.quote` 表达支持该命题的原文证据，两者不要求逐字相同。
-- 不要把语义展开或规范化后的 `concept_text` 直接复制为 `evidence.quote`。
-- proposition 的 quote 应覆盖表达该临床陈述的最小充分连续原文。
-- 当 proposition 展开了并列省略、导致展开后的 `concept_text` 不是原文连续子串时，`quote` 必须引用包含该概念及共享谓词或状态的完整连续原文；多个 proposition 可以共享同一 evidence block 或 quote。
-- modifier 的 quote 应仅覆盖表达该修饰信息的连续原文，并至少与所属 proposition 共享一个 evidence_id。
-- actor_text 必须逐字包含于 attribution 的 evidence.quote 中。
+证据：
+- 只能引用下面程序生成的 evidence_id，不创建或输出 evidence blocks。
+- proposition、modifier、attribution 都必须给 evidence_ids 和连续逐字 quote。
+- evidence_ids 必须属于连续 blocks 并按原文顺序；modifier 至少与所属 proposition 共享一个 evidence_id。
+- quote 是被引用 blocks 合并文本中的连续子串；并列省略可让多个 proposition 共享证据。
 
-ID 规则：
-- proposition_id 在当前 unit 内唯一，使用 `prop_001`、`prop_002` 等形式。
-- modifier_id 在当前 unit 的 event_modifiers 和所有 proposition modifiers 中共同唯一，使用 `mod_001`、`mod_002` 等形式。
-
-所有受控枚举值必须取自以下由程序 schema 动态生成的清单：
+枚举：
 {{ clinical_proposition_catalog }}
 
-待处理 graph unit：
-- graph_unit_id: {{ graph_unit_id }}
-- primary_frame: {{ primary_frame }}
+程序生成 graph_unit_id、primary_frame、proposition_id、modifier_id、rationale、notes 和 metadata，不要输出。
 
-graph unit 原文：
-{{ unit_text }}
+只返回 event_modifiers 和 propositions，字段结构：
+{"event_modifiers":[{"modifier_type":"time","value_text":"原文值","evidence":{"evidence_ids":["{{ graph_unit_id }}_ev_001"],"quote":"逐字原文"}}],"propositions":[{"proposition_type":"finding","concept_text":"完整命题","status":"present","certainty":"high","attribution":null,"modifiers":[],"evidence":{"evidence_ids":["{{ graph_unit_id }}_ev_001"],"quote":"最小充分逐字原文"}}]}
 
-程序生成的 evidence blocks：
+graph_unit_id: {{ graph_unit_id }}
+primary_frame: {{ primary_frame }}
+evidence blocks（按顺序拼接即完整 graph unit 原文）：
 {{ evidence_blocks }}
-
-只返回严格 JSON，字段结构必须符合程序 schema。必须包含：
-- graph_unit_id
-- primary_frame
-- event_modifiers
-- propositions
-- notes
-- metadata
-
-严格使用以下字段名和嵌套结构。不要使用 `clinical_concept`、`clinical_statement`、
-`text`、`value`、`attributions` 等替代字段名；每条 proposition 必须包含
-`concept_text`、`attribution`、`rationale`，每个 modifier 必须包含 `value_text`：
-
-{
-  "graph_unit_id": "{{ graph_unit_id }}",
-  "primary_frame": "{{ primary_frame }}",
-  "event_modifiers": [
-    {
-      "modifier_id": "mod_001",
-      "modifier_type": "time",
-      "value_text": "原文修饰值",
-      "evidence": {
-        "evidence_ids": ["{{ graph_unit_id }}_ev_001"],
-        "quote": "原文修饰值"
-      }
-    }
-  ],
-  "propositions": [
-    {
-      "proposition_id": "prop_001",
-      "proposition_type": "finding",
-      "concept_text": "原文临床概念",
-      "status": "present",
-      "certainty": "high",
-      "attribution": null,
-      "modifiers": [],
-      "evidence": {
-        "evidence_ids": ["{{ graph_unit_id }}_ev_001"],
-        "quote": "原文最小充分证据"
-      },
-      "rationale": "简短说明 proposition 边界和 modifier 归属"
-    }
-  ],
-  "notes": [],
-  "metadata": {}
-}
-
-如果 attribution 非 null，必须严格使用：
-{
-  "attribution_type": "clinician",
-  "actor_text": "原文责任主体",
-  "evidence": {
-    "evidence_ids": ["{{ graph_unit_id }}_ev_001"],
-    "quote": "原文责任主体"
-  }
-}

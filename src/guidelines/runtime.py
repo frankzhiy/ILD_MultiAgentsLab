@@ -23,11 +23,19 @@ PROMPT_RULES = """
 
 
 class GuidelineRuntime:
-    def __init__(self, retriever: GuidelineRetriever, scope: list[str], queries: dict, limit: int = 6):
+    def __init__(
+        self,
+        retriever: GuidelineRetriever,
+        scope: list[str],
+        queries: dict,
+        limit: int = 6,
+        limits: dict | None = None,
+    ):
         self.retriever = retriever
         self.scope = scope
         self.queries = queries
         self.limit = limit
+        self.limits = limits or {}
 
     @classmethod
     def from_config(cls, config: dict) -> "GuidelineRuntime | None":
@@ -42,20 +50,21 @@ class GuidelineRuntime:
             list(settings.get("scope") or []),
             dict(settings.get("queries") or {}),
             int(settings.get("limit", 6)),
+            dict(settings.get("limits") or {}),
         )
 
     def prepare(self, stage: str) -> tuple[str, dict[str, GuidelineChunk], dict]:
         query = str(self.queries.get(stage) or "").strip()
         if not query:
             return "[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []}
-        hits = self.retriever.search(query, guideline_ids=self.scope, limit=self.limit)
+        limit = int(self.limits.get(stage, self.limit))
+        if limit <= 0:
+            return "[]", {}, {"query": query, "candidates": [], "used_chunk_ids": []}
+        hits = self.retriever.search(query, guideline_ids=self.scope, limit=limit)
         chunks = {hit.chunk.chunk_id: hit.chunk for hit in hits}
         prompt_items = [
             {
                 "chunk_id": hit.chunk.chunk_id,
-                "guideline_id": hit.chunk.guideline_id,
-                "title": hit.chunk.title,
-                "page": hit.chunk.page,
                 "section_path": hit.chunk.section_path,
                 "text": hit.chunk.text,
             }
@@ -69,7 +78,11 @@ class GuidelineRuntime:
             ],
             "used_chunk_ids": [],
         }
-        return json.dumps(prompt_items, ensure_ascii=False, indent=2), chunks, trace
+        return json.dumps(
+            prompt_items,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ), chunks, trace
 
 
 def resolve_guideline_evidence(value: object, allowed: dict[str, GuidelineChunk]) -> list[str]:
