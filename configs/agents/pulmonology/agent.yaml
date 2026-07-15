@@ -17,14 +17,32 @@ discussion_evidence_mapping_prompt: src/prompts/pulmonology/discussion_evidence_
 discussion_state_update_prompt: src/prompts/pulmonology/discussion_state_update.md
 discussion_consult_response_prompt: src/prompts/pulmonology/discussion_consult_response.md
 
+guideline_retrieval:
+  enabled: true
+  directory: data/guidelines
+  limit: 6
+  scope:
+    - ers-ats-iip-classification-2025
+    - ats-ers-jrs-alat-ipf-ppf-2022
+    - cts-ild-mdd-2023-zh
+    - cra-ctd-ild-2022-zh
+    - ers-eular-ctd-ild-2025
+  queries:
+    initial_foundation: ILD 临床表型评估、继发病因识别和多学科诊断需要哪些病例信息
+    initial_pulmonary_assessment: ILD 严重程度、肺功能、急性加重和进展性肺纤维化 PPF 应如何评价
+    initial_diagnostic_formulation: ILD 诊断信度、暂定诊断和未分类 ILD 应如何定义与表达
+    discussion_evidence_mapping: ILD 多学科讨论中如何采用其他专科证据并处理证据冲突
+    discussion_state_update: 新增多学科证据如何改变 ILD 诊断状态、进展判断和诊断信度
+    discussion_consult_response: ILD 多学科会诊结论如何表达限制、信度和下一步诊断建议
+
 clinical_rules:
   diagnostic_confidence:
-    source: ERS/ATS Statement 2025 (Eur Respir J 2025;66:2500158)
+    guideline_id: ers-ats-iip-classification-2025
     confident_diagnosis_probability: ">=90%"
     provisional_diagnosis_probability: "51-89%"
     unclassifiable_ild: "完成充分多学科评估后，无任何单一诊断概率超过 50%"
   ppf:
-    source: ATS/ERS/JRS/ALAT Clinical Practice Guideline 2022
+    guideline_id: ats-ers-jrs-alat-ipf-ppf-2022
     population: 非 IPF 纤维化性 ILD
     assessment_window: 过去 1 年
     required_components: 2

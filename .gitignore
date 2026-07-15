@@ -44,6 +44,11 @@ data/raw_cases/
 data/processed_cases/
 data/annotations/
 
+# Rebuildable, project-local guideline search artifacts (PDFs and catalog stay versioned)
+data/guidelines/processed/
+data/guidelines/index/
+data/guidelines/models/
+
 # Logs
 *.log
 logs/

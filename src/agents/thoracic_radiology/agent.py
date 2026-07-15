@@ -33,6 +33,7 @@ from src.agents.thoracic_radiology.validation import (
     validate_specialist_opinions as _validate_specialist_opinions,
     validate_update_and_consult as _validate_update_and_consult,
 )
+from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
@@ -62,6 +63,7 @@ class ThoracicRadiologyAgent:
         max_attempts: int = 2,
         retry_backoff_seconds: float = 0.0,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        guideline_runtime: GuidelineRuntime | None = None,
     ) -> None:
         self.prompts = {
             "initial_case_reconstruction": load_text(
@@ -76,6 +78,7 @@ class ThoracicRadiologyAgent:
             ),
         }
         self.clinical_rules = clinical_rules
+        self.guideline_runtime = guideline_runtime
         self.generator = StructuredLLMGenerator(
             llm,
             temperature=temperature,
@@ -95,6 +98,7 @@ class ThoracicRadiologyAgent:
         llm: LLMClient,
         *,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        enable_guidelines: bool = True,
     ) -> "ThoracicRadiologyAgent":
         config = load_yaml(config_path)
         prompt_keys = (
@@ -115,6 +119,7 @@ class ThoracicRadiologyAgent:
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
             event_callback=event_callback,
+            guideline_runtime=GuidelineRuntime.from_config(config) if enable_guidelines else None,
         )
 
     @staticmethod
@@ -256,6 +261,11 @@ class ThoracicRadiologyAgent:
         )
 
     def _generate(self, *, stage, schema_model, variables, validation):
+        guideline_context, allowed_chunks, retrieval_trace = (
+            self.guideline_runtime.prepare(stage)
+            if self.guideline_runtime
+            else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
+        )
         prompt = render_template(
             self.prompts[stage],
             {
@@ -265,13 +275,24 @@ class ThoracicRadiologyAgent:
                 **variables,
             },
         )
-        return self.generator.generate(
+        prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+
+        def validate_with_guidelines(result):
+            result = validation(result)
+            retrieval_trace["used_chunk_ids"] = resolve_guideline_evidence(
+                result, allowed_chunks
+            )
+            return result
+
+        result, trace = self.generator.generate(
             schema_model=schema_model,
             schema_name=stage,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
-            extra_validation=validation,
+            extra_validation=validate_with_guidelines,
         )
+        trace["guideline_retrieval"] = retrieval_trace
+        return result, trace
 
 
 def _merge_discussion_update(

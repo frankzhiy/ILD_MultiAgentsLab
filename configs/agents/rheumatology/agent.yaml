@@ -17,19 +17,39 @@ discussion_evidence_mapping_prompt: src/prompts/rheumatology/discussion_evidence
 discussion_state_update_prompt: src/prompts/rheumatology/discussion_state_update.md
 discussion_consult_response_prompt: src/prompts/rheumatology/discussion_consult_response.md
 
+guideline_retrieval:
+  enabled: true
+  directory: data/guidelines
+  limit: 6
+  scope:
+    - ers-eular-ctd-ild-2025
+    - cra-ctd-ild-2022-zh
+    - acr-chest-sard-ild-2023
+    - cts-ild-mdd-2023-zh
+    - ers-ats-iip-classification-2025
+  queries:
+    initial_case_reconstruction: ILD 患者风湿免疫评估应系统询问和检查哪些肺外自身免疫表现
+    initial_autoimmune_assessment: 自身抗体如何结合临床表型解释并形成 CTD、未分化状态或 IPAF 分类判断
+    initial_consult_formulation: CTD 与 ILD 应如何分别诊断和进行归因并排除感染药物暴露肿瘤及心脏病
+    discussion_evidence_mapping: 风湿免疫科如何采用影像呼吸病理意见并处理 CTD-ILD 归因冲突
+    discussion_state_update: 新增多学科证据如何改变风湿病诊断状态、ILD 归因、活动度和风险分层
+    discussion_consult_response: 风湿免疫会诊结论如何回答主席问题并表达信度限制和监测建议
+
 clinical_rules:
   diagnostic_confidence:
-    source: ILD-MDD 中国专家共识 2023
+    guideline_id: cts-ild-mdd-2023-zh
     principle: 诊断信度应与证据充分性一致；低信度诊断允许并需明确限制。
   ctd_ild_diagnosis:
-    source: 结缔组织病相关间质性肺疾病诊疗规范 2022
+    guideline_id: cra-ctd-ild-2022-zh
     principle: CTD 与 ILD 的诊断应由风湿免疫科和呼吸科协作，并鉴别感染、肿瘤、心脏病、药物和过敏等替代病因。
   ipaf:
-    source: ERS/ATS Research Statement 2015（由中国 CTD-ILD 诊疗规范转述）
+    guideline_id: cra-ctd-ild-2022-zh
     requires: 已证实 ILD、排除其他已知病因、尚不能诊断确定 CTD、临床/血清学/形态学三域至少满足两域。
     classification_not_clinical_diagnosis: true
   screening_and_risk:
-    source: ERS/EULAR CTD-ILD Clinical Practice Guideline 2025；ACR/CHEST SARD-ILD Guideline 2023
+    guideline_ids:
+      - ers-eular-ctd-ild-2025
+      - acr-chest-sard-ild-2023
     principle: 风险分层应疾病特异，并结合临床表型、抗体、HRCT 和肺功能；不得以肺功能替代 HRCT 筛查。
     serologic_review_for_ild:
       - ANA
@@ -66,6 +86,6 @@ clinical_rules:
       - 风险因子缺失不排除 ILD 或 CTD-ILD。
       - 风湿科可识别风险，但 HRCT 模式、范围和进展必须由相应正式专科意见确认。
   specialist_boundaries:
-    source: ILD-MDD 中国专家共识 2023
+    guideline_id: cts-ild-mdd-2023-zh
     final_mdt_diagnosis_by_team: true
     rheumatology_must_not_confirm_radiologic_or_pathologic_pattern: true

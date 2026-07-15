@@ -10,6 +10,11 @@ from src.agents.pulmonology.models import (
     PulmonologyInitialAssessment,
 )
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
+from src.reporting.specialty_report_common import (
+    COMMON_CSS,
+    render_guideline_audit,
+    render_reasoning_audit,
+)
 
 
 ROLE_LABELS = {
@@ -111,6 +116,8 @@ def render_pulmonology_report(
     is_initial = isinstance(result, PulmonologyInitialAssessment)
     phase_label = "首轮评估" if is_initial else "会中响应"
     body = _render_initial(result, roles) if is_initial else _render_discussion(result, roles)
+    body += render_reasoning_audit(result, roles, output_path)
+    body += render_guideline_audit(result, output_path)
     html = _page(result.case_id, phase_label, case_input, body)
     path = Path(output_path)
     path.write_text(html, encoding="utf-8")
@@ -219,6 +226,7 @@ def _page(
       .rank-item {{ grid-template-columns:34px 1fr; }} .rank-item > :last-child {{ grid-column:2; justify-self:start; }}
       .change {{ grid-template-columns:1fr; }} .change-arrow {{ display:none; }}
     }}
+    {COMMON_CSS}
   </style>
 </head>
 <body>
@@ -236,7 +244,8 @@ def _page(
     </div>
   </div></header>
   <nav class="jump">
-    <a href="#results">核心结果</a><a href="#reasoning">推理与证据</a>
+    <a href="#results">核心结果</a><a href="#reasoning">专科推理</a>
+    <a href="#reasoning-audit">统一证据链</a><a href="#guideline-audit">指南引用</a>
     <a href="#gaps">数据缺口</a><a href="#collaboration">跨专科协作</a>
     <a href="#coverage">八问覆盖</a>
   </nav>

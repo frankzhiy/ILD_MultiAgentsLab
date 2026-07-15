@@ -14,7 +14,6 @@ from src.agents.rheumatology.models import (
     DiscussionEvidenceMap,
     DiscussionStateUpdate,
     DomainChange,
-    DomainReview,
     EvidencePointer,
     IldAttributionAssessment,
     InitialAutoimmuneAssessment,
@@ -22,6 +21,7 @@ from src.agents.rheumatology.models import (
     InitialConsultFormulation,
     RheumaticDiseaseFormulation,
     RheumatologyClinicalState,
+    RheumatologyDiscussionState,
     RheumatologyDiscussionInput,
     RheumatologyDomain,
     SerologicFinding,
@@ -148,6 +148,23 @@ def test_initial_assessment_aggregates_three_stages_and_renders_report(tmp_path)
     assert "风湿免疫科 首轮评估" in report.read_text(encoding="utf-8")
 
 
+def test_initial_stage_schema_excludes_discussion_statuses_and_other_domains():
+    schema = InitialConsultFormulation.model_json_schema()
+    review_schema = schema["$defs"]["InitialConsultDomainReview"]
+
+    assert set(review_schema["properties"]["domain"]["enum"]) == {
+        "ild_attribution", "specialist_integration_and_gaps"
+    }
+    assert "updated" not in review_schema["properties"]["status"]["enum"]
+    with pytest.raises(ValueError):
+        InitialConsultFormulation(
+            domain_reviews=[
+                review(RheumatologyDomain.ILD_ATTRIBUTION, "updated"),
+                review(RheumatologyDomain.SEROLOGIC_ASSESSMENT, "assessed"),
+            ]
+        )
+
+
 def test_discussion_updates_same_state_without_chair_questions():
     case = case_input()
     reconstruction, autoimmune, formulation = stages(case)
@@ -173,7 +190,7 @@ def test_discussion_updates_same_state_without_chair_questions():
         phase="discussion_update",
         domain_reviews=[review(domain, "reviewed_unchanged") for domain in RheumatologyDomain],
     )
-    updated = RheumatologyClinicalState(**updated_data)
+    updated = RheumatologyDiscussionState(**updated_data)
     changes = [
         DomainChange(domain=domain, change_status="reviewed_unchanged", initial_view="首轮状态", updated_view="复核后不变", reason="无新的正式专科证据。")
         for domain in RheumatologyDomain

@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
@@ -68,6 +69,7 @@ class ClinicalAssessmentItem(BaseModel):
         description="简明、可审计的临床理由，不输出隐藏思维链。",
     )
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
+    conflicting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(
         default_factory=list,
         description=(
@@ -75,6 +77,7 @@ class ClinicalAssessmentItem(BaseModel):
             "可以包含非本专业主责资料。"
         ),
     )
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -87,6 +90,7 @@ class SecondaryCauseAssessment(BaseModel):
     reasoning_summary: str = Field(min_length=1)
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -100,6 +104,7 @@ class DifferentialDiagnosis(BaseModel):
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     conflicting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -162,6 +167,54 @@ class DomainReview(BaseModel):
     )
 
 
+class InitialDomainReview(DomainReview):
+    """首轮完整状态使用的 review；schema 不暴露会中状态。"""
+
+    status: Literal[
+        "assessed",
+        "partially_assessable",
+        "not_assessable",
+        "deferred_to_specialist",
+        "not_applicable",
+    ]
+
+
+class DiscussionDomainReview(DomainReview):
+    """会中更新状态使用的 review；schema 不暴露首轮状态。"""
+
+    status: Literal[
+        "updated",
+        "reviewed_unchanged",
+        "still_not_assessable",
+        "still_deferred",
+        "resolved",
+        "not_applicable",
+    ]
+
+
+class InitialFoundationReview(InitialDomainReview):
+    domain: Literal[
+        PulmonologyDomain.CLINICAL_PHENOTYPE,
+        PulmonologyDomain.SECONDARY_CAUSES,
+    ]
+
+
+class InitialPulmonaryReview(InitialDomainReview):
+    domain: Literal[
+        PulmonologyDomain.PULMONARY_SEVERITY,
+        PulmonologyDomain.RESPIRATORY_TESTS,
+        PulmonologyDomain.PROGRESSION,
+    ]
+
+
+class InitialDiagnosticReview(InitialDomainReview):
+    domain: Literal[
+        PulmonologyDomain.SPECIALIST_INTEGRATION,
+        PulmonologyDomain.DIAGNOSTIC_FORMULATION,
+        PulmonologyDomain.DECISION_RELEVANT_GAPS,
+    ]
+
+
 class BronchoscopyAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -178,6 +231,7 @@ class BronchoscopyAssessment(BaseModel):
     safety_considerations: list[str] = Field(default_factory=list)
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -189,6 +243,7 @@ class ProgressionComponent(BaseModel):
     assessment: str = Field(min_length=1)
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -206,6 +261,7 @@ class ProgressionAssessment(BaseModel):
     components: list[ProgressionComponent] = Field(default_factory=list)
     alternative_explanations: list[str] = Field(default_factory=list)
     reasoning_summary: str = Field(min_length=1)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -243,6 +299,7 @@ class DiagnosticFormulation(BaseModel):
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     conflicting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -294,13 +351,20 @@ class PulmonologyClinicalState(BaseModel):
 
 class PulmonologyInitialAssessment(PulmonologyClinicalState):
     phase: Literal["initial_assessment"] = "initial_assessment"
+    domain_reviews: list[InitialDomainReview] = Field(min_length=8, max_length=8)
 
     @model_validator(mode="before")
     @classmethod
     def migrate_v1_saved_output(cls, value):
-        if not isinstance(value, dict) or value.get("domain_reviews"):
+        if not isinstance(value, dict):
             return value
         migrated = dict(value)
+        if migrated.get("domain_reviews"):
+            migrated["domain_reviews"] = [
+                item.model_dump(mode="python") if isinstance(item, DomainReview) else item
+                for item in migrated["domain_reviews"]
+            ]
+            return migrated
         migrated["schema_version"] = "pulmonology.v2"
         migrated["phase"] = "initial_assessment"
         old_differential = migrated.pop("working_differential", [])
@@ -396,7 +460,7 @@ class PulmonologyInitialAssessment(PulmonologyClinicalState):
 class InitialFoundation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    domain_reviews: list[DomainReview] = Field(min_length=2, max_length=2)
+    domain_reviews: list[InitialFoundationReview] = Field(min_length=2, max_length=2)
     clinical_phenotype: ClinicalAssessmentItem | None = None
     secondary_cause_assessment: list[SecondaryCauseAssessment] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
@@ -414,7 +478,7 @@ class InitialFoundation(BaseModel):
 class InitialPulmonaryAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    domain_reviews: list[DomainReview] = Field(min_length=3, max_length=3)
+    domain_reviews: list[InitialPulmonaryReview] = Field(min_length=3, max_length=3)
     pulmonary_severity: ClinicalAssessmentItem | None = None
     respiratory_test_interpretation: list[ClinicalAssessmentItem] = Field(default_factory=list)
     bronchoscopy_assessment: BronchoscopyAssessment | None = None
@@ -440,7 +504,7 @@ class InitialPulmonaryAssessment(BaseModel):
 class InitialDiagnosticFormulation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    domain_reviews: list[DomainReview] = Field(min_length=3, max_length=3)
+    domain_reviews: list[InitialDiagnosticReview] = Field(min_length=3, max_length=3)
     specialist_dependencies: list[SpecialistQuestion] = Field(default_factory=list)
     reference_observations: list[ReferenceObservation] = Field(default_factory=list)
     diagnostic_formulation: DiagnosticFormulation | None = None
@@ -545,13 +609,19 @@ class DomainChange(BaseModel):
     updated_view: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
+
+
+class PulmonologyDiscussionState(PulmonologyClinicalState):
+    phase: Literal["discussion_update"] = "discussion_update"
+    domain_reviews: list[DiscussionDomainReview] = Field(min_length=8, max_length=8)
 
 
 class DiscussionStateUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    updated_state: PulmonologyClinicalState
+    updated_state: PulmonologyDiscussionState
     domain_changes: list[DomainChange] = Field(min_length=8, max_length=8)
 
     @model_validator(mode="after")
@@ -575,6 +645,7 @@ class ChairAnswer(BaseModel):
     answer: str = Field(min_length=1)
     confidence: ClinicalConfidence
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -593,7 +664,7 @@ class PulmonologyDiscussionResponse(BaseModel):
     schema_version: Literal["pulmonology.v2"] = "pulmonology.v2"
     case_id: SkipJsonSchema[str] = ""
     phase: SkipJsonSchema[str] = "discussion_response"
-    updated_state: PulmonologyClinicalState
+    updated_state: PulmonologyDiscussionState
     domain_changes: list[DomainChange] = Field(min_length=8, max_length=8)
     specialist_opinions_used: list[str] = Field(default_factory=list)
     mapped_findings: list[MappedSpecialistFinding] = Field(default_factory=list)

@@ -19,15 +19,14 @@ from src.agents.pulmonology.models import (
     DiscussionEvidenceMap,
     DiscussionStateUpdate,
     DomainChange,
-    DomainReview,
     EvidencePointer,
     InitialDiagnosticFormulation,
     InitialFoundation,
     InitialPulmonaryAssessment,
+    PulmonologyDiscussionState,
     MappedSpecialistFinding,
     ProgressionAssessment,
     ProgressionComponent,
-    PulmonologyClinicalState,
     PulmonologyDiscussionInput,
     PulmonologyDiscussionResponse,
     PulmonologyDomain,
@@ -96,7 +95,7 @@ def llm_payload(model):
 
 
 def review(domain, status="assessed"):
-    return DomainReview(domain=domain, status=status, rationale="已按本域规则审阅。")
+    return {"domain": domain, "status": status, "rationale": "已按本域规则审阅。"}
 
 
 def initial_reviews():
@@ -187,7 +186,7 @@ def initial_stages(case):
 
 
 def discussion_state(initial, *, diagnostic_formulation=None):
-    return PulmonologyClinicalState(
+    return PulmonologyDiscussionState(
         case_id=initial.case_id,
         phase="discussion_update",
         domain_reviews=discussion_reviews(),
@@ -236,6 +235,7 @@ def test_initial_assessment_runs_three_ordered_stages():
         CONFIG,
         llm,
         event_callback=lambda event, payload: events.append((event, payload)),
+        enable_guidelines=False,
     )
 
     result, trace = agent.initial_assessment(case)
@@ -277,7 +277,32 @@ def test_stage_schema_exposes_only_evidence_ids_for_pointer():
         "来自同一个 graph unit"
         in schema["$defs"]["EvidencePointer"]["properties"]["evidence_ids"]["description"]
     )
-    assert {"domain", "status", "rationale"}.issubset(schema["$defs"]["DomainReview"]["required"])
+    review_schema = schema["$defs"]["InitialFoundationReview"]
+    assert {"domain", "status", "rationale"}.issubset(review_schema["required"])
+    assert set(review_schema["properties"]["status"]["enum"]) == {
+        "assessed", "partially_assessable", "not_assessable", "deferred_to_specialist", "not_applicable"
+    }
+    assert set(review_schema["properties"]["domain"]["enum"]) == {
+        "clinical_phenotype", "secondary_causes"
+    }
+
+
+def test_initial_stage_schema_excludes_other_stage_domains_and_discussion_statuses():
+    schema = InitialDiagnosticFormulation.model_json_schema()
+    review_schema = schema["$defs"]["InitialDiagnosticReview"]
+
+    assert set(review_schema["properties"]["domain"]["enum"]) == {
+        "specialist_integration", "diagnostic_formulation", "decision_relevant_gaps"
+    }
+    assert "updated" not in review_schema["properties"]["status"]["enum"]
+    with pytest.raises(ValueError):
+        InitialDiagnosticFormulation(
+            domain_reviews=[
+                review(PulmonologyDomain.SPECIALIST_INTEGRATION, "deferred_to_specialist"),
+                review(PulmonologyDomain.DIAGNOSTIC_FORMULATION, "updated"),
+                review(PulmonologyDomain.SECONDARY_CAUSES, "assessed"),
+            ]
+        )
 
 
 def test_program_resolves_and_overwrites_evidence_locator():
@@ -381,7 +406,7 @@ def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():
         )
     ]
     llm = FakeLLM([llm_payload(foundation), llm_payload(pulmonary), llm_payload(formulation)])
-    agent = PulmonologyAgent.from_config(CONFIG, llm)
+    agent = PulmonologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
 
     result, _ = agent.initial_assessment(case)
 
@@ -436,7 +461,7 @@ def test_legacy_saved_assessment_migrates_to_v2_state():
 
 def test_agent_rejects_wrong_specialty_and_empty_input():
     case = case_input()
-    agent = PulmonologyAgent.from_config(CONFIG, FakeLLM([]))
+    agent = PulmonologyAgent.from_config(CONFIG, FakeLLM([]), enable_guidelines=False)
     case.target_specialty = MdtSpecialty.THORACIC_RADIOLOGY
     with pytest.raises(ValueError, match="target_specialty=pulmonology"):
         agent.initial_assessment(case)
@@ -500,7 +525,7 @@ def test_discussion_runs_mapping_update_and_consult_stages():
         diagnostic_recommendations=["如关键冲突仍存在，建议主席安排再次 MDD。"],
     )
     llm = FakeLLM([llm_payload(evidence_map), llm_payload(update), llm_payload(consult)])
-    agent = PulmonologyAgent.from_config(CONFIG, llm)
+    agent = PulmonologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
 
     result, trace = agent.discussion_response(discussion_input)
 
@@ -548,7 +573,7 @@ def test_discussion_rejects_specialist_evidence_outside_scope():
         initial_assessment=assessment_for(case),
         specialist_opinions=[opinion],
     )
-    agent = PulmonologyAgent.from_config(CONFIG, FakeLLM([]))
+    agent = PulmonologyAgent.from_config(CONFIG, FakeLLM([]), enable_guidelines=False)
 
     with pytest.raises(ValueError, match="outside pathology's evidence scope"):
         agent.discussion_response(discussion_input)

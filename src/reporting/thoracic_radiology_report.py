@@ -11,6 +11,12 @@ from src.agents.thoracic_radiology.models import (
     ThoracicRadiologyDiscussionResponse,
     ThoracicRadiologyInitialAssessment,
 )
+from src.reporting.specialty_report_common import (
+    COMMON_CSS,
+    render_guideline_audit,
+    render_reasoning_audit,
+    report_nav,
+)
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
@@ -42,6 +48,7 @@ def render_thoracic_radiology_report(
     body = "".join(
         [
             _hero(case_input.case_id, phase, state),
+            report_nav(),
             _orientation_section(state, roles),
             _source_section(state, roles),
             _reported_content_section(state, roles),
@@ -49,6 +56,8 @@ def render_thoracic_radiology_report(
             _discussion_section(result, roles) if not is_initial else "",
             _next_steps_section(state, roles),
             _coverage_section(state),
+            render_reasoning_audit(result, roles, output),
+            render_guideline_audit(result, output),
         ]
     )
     output.write_text(
@@ -72,6 +81,7 @@ section{{margin-top:22px;padding:24px;border:1px solid var(--line);border-radius
 table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}}th{{font-size:12px;color:var(--muted)}}
 .evidence{{margin-top:10px;padding:10px;border-left:3px solid #93a4e8;background:#f7f8ff}}.evidence code{{font-size:11px;color:#526178}}.quote{{margin-top:4px;color:#38445a}}ul{{margin:6px 0;padding-left:21px}}footer{{margin-top:22px;color:var(--muted);text-align:center}}
 @media(max-width:800px){{.grid,.cards{{grid-template-columns:1fr}}.wide{{grid-column:auto}}}}
+{COMMON_CSS}
 </style></head><body><main>{body}<footer>ILD多学科团队 · 胸部影像科文字描述分析</footer></main></body></html>"""
 
 

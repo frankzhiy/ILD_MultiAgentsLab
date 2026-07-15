@@ -28,6 +28,7 @@ from src.agents.rheumatology.validation import (
     validate_specialist_opinions,
     validate_state_update,
 )
+from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
@@ -58,6 +59,7 @@ class RheumatologyAgent:
         max_attempts: int = 2,
         retry_backoff_seconds: float = 0.0,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        guideline_runtime: GuidelineRuntime | None = None,
     ) -> None:
         self.prompts = {
             "initial_case_reconstruction": load_text(initial_case_reconstruction_prompt_path),
@@ -68,6 +70,7 @@ class RheumatologyAgent:
             "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
         }
         self.clinical_rules = clinical_rules
+        self.guideline_runtime = guideline_runtime
         self.generator = StructuredLLMGenerator(
             llm,
             temperature=temperature,
@@ -79,7 +82,14 @@ class RheumatologyAgent:
         )
 
     @classmethod
-    def from_config(cls, config_path: str | Path, llm: LLMClient, *, event_callback=None) -> "RheumatologyAgent":
+    def from_config(
+        cls,
+        config_path: str | Path,
+        llm: LLMClient,
+        *,
+        event_callback=None,
+        enable_guidelines: bool = True,
+    ) -> "RheumatologyAgent":
         config = load_yaml(config_path)
         keys = (
             "initial_case_reconstruction_prompt",
@@ -100,6 +110,7 @@ class RheumatologyAgent:
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
             event_callback=event_callback,
+            guideline_runtime=GuidelineRuntime.from_config(config) if enable_guidelines else None,
         )
 
     def initial_assessment(self, case_input: SpecialtyCaseInput) -> tuple[RheumatologyInitialAssessment, dict]:
@@ -194,17 +205,33 @@ class RheumatologyAgent:
         )
 
     def _generate(self, stage, schema_model, variables, validation):
+        guideline_context, allowed_chunks, retrieval_trace = (
+            self.guideline_runtime.prepare(stage)
+            if self.guideline_runtime
+            else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
+        )
         prompt = render_template(
             self.prompts[stage],
             {"output_schema": json.dumps(schema_model.model_json_schema(), ensure_ascii=False, indent=2), **variables},
         )
-        return self.generator.generate(
+        prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+
+        def validate_with_guidelines(result):
+            result = validation(result)
+            retrieval_trace["used_chunk_ids"] = resolve_guideline_evidence(
+                result, allowed_chunks
+            )
+            return result
+
+        result, trace = self.generator.generate(
             schema_model=schema_model,
             schema_name=stage,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
-            extra_validation=validation,
+            extra_validation=validate_with_guidelines,
         )
+        trace["guideline_retrieval"] = retrieval_trace
+        return result, trace
 
 
 def _json(value: object) -> str:

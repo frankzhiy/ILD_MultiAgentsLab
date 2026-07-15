@@ -16,9 +16,23 @@ initial_consult_formulation_prompt: src/prompts/thoracic_radiology/initial_consu
 discussion_evidence_mapping_prompt: src/prompts/thoracic_radiology/discussion_evidence_mapping.md
 discussion_update_and_response_prompt: src/prompts/thoracic_radiology/discussion_update_and_response.md
 
+guideline_retrieval:
+  enabled: true
+  directory: data/guidelines
+  limit: 6
+  scope:
+    - ers-ats-iip-classification-2025
+    - ats-ers-jrs-alat-ipf-ppf-2022
+    - cts-ild-mdd-2023-zh
+  queries:
+    initial_case_reconstruction: ILD 影像会诊如何评价检查来源、HRCT 技术质量、可评价性和比较检查
+    initial_consult_formulation: ILD 影像表型、形态模式、UIP 分类、急性叠加和纵向进展如何解释
+    discussion_evidence_mapping: ILD 多学科讨论中影像证据如何与临床和病理意见映射并处理冲突
+    discussion_update_and_response: 新增影像描述和专科意见如何改变影像模式、进展判断及诊断信度
+
 clinical_rules:
   morphology:
-    source: ERS/ATS Statement 2025 (Eur Respir J 2025;66:2500158)
+    guideline_id: ers-ats-iip-classification-2025
     separate_pattern_from_disease: true
     high_level_sequence:
       - interstitial_or_alveolar_filling
@@ -39,12 +53,12 @@ clinical_rules:
       - combined_pattern
       - unclassifiable_pattern
   diagnostic_confidence:
-    source: ERS/ATS Statement 2025 (Eur Respir J 2025;66:2500158)
+    guideline_id: ers-ats-iip-classification-2025
     confident_probability: ">=90%"
     provisional_probability: "51-89%"
     unclassifiable: "完成充分评估后，无任何单一模式概率超过 50%"
   ipf_hrct:
-    source: ATS/ERS/JRS/ALAT Clinical Practice Guideline 2022
+    guideline_id: ats-ers-jrs-alat-ipf-ppf-2022
     applicability: 仅用于临床上疑似 IPF 的情境
     categories:
       - UIP
@@ -52,7 +66,7 @@ clinical_rules:
       - indeterminate_for_UIP
       - alternative_diagnosis
   radiologic_progression:
-    source: ATS/ERS/JRS/ALAT Clinical Practice Guideline 2022
+    guideline_id: ats-ers-jrs-alat-ipf-ppf-2022
     features:
       - increased_traction_bronchiectasis_or_bronchiolectasis
       - new_ground_glass_with_traction_bronchiectasis
@@ -62,7 +76,7 @@ clinical_rules:
       - increased_lobar_volume_loss
     prohibit_full_ppf_diagnosis: true
   acquisition:
-    source: 间质性肺疾病多学科讨论规范中国专家共识
+    guideline_id: cts-ild-mdd-2023-zh
     thin_section_max_mm: 1.5
     conditional_series:
       expiratory: 疑似 HP、RB-ILD 或需评价气体潴留时

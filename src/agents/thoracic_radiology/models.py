@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
@@ -203,6 +204,7 @@ class RadiologyTaskAssessment(BaseModel):
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     conflicting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     decision_impact: str = Field(min_length=1)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
@@ -214,6 +216,8 @@ class CoreConsultAnswer(BaseModel):
     primary_question: str = Field(min_length=1)
     answer: str = Field(min_length=1)
     confidence: ImagingConfidence
+    reasoning_summary: str = "依据各影像任务的推理摘要综合形成。"
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     decision_impact: str = Field(min_length=1)
     decisive_next_step: str | None = None
 
@@ -399,6 +403,7 @@ class TaskUpdate(BaseModel):
     updated_assessment: RadiologyTaskAssessment
     reason: str = Field(min_length=1)
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -408,7 +413,9 @@ class ChairAnswer(BaseModel):
     question_id: str = Field(min_length=1)
     answer: str = Field(min_length=1)
     confidence: ImagingConfidence
+    reasoning_summary: str = "回答依据见支持证据和相关指南。"
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 

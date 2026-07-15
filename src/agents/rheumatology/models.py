@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
@@ -66,6 +67,7 @@ class ClinicalAssessmentItem(BaseModel):
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
     conflicting_evidence: list[EvidencePointer] = Field(default_factory=list)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
@@ -175,11 +177,23 @@ class DomainReview(BaseModel):
     rationale: str = Field(min_length=1)
 
 
-class InitialCaseDomainReview(DomainReview):
+class InitialDomainReview(DomainReview):
+    status: Literal[
+        "assessed", "partially_assessable", "not_assessable", "deferred_to_specialist", "not_applicable"
+    ]
+
+
+class DiscussionDomainReview(DomainReview):
+    status: Literal[
+        "updated", "reviewed_unchanged", "still_not_assessable", "still_deferred", "resolved", "not_applicable"
+    ]
+
+
+class InitialCaseDomainReview(InitialDomainReview):
     domain: Literal["source_and_evaluability", "autoimmune_phenotype"]
 
 
-class InitialAutoimmuneDomainReview(DomainReview):
+class InitialAutoimmuneDomainReview(InitialDomainReview):
     domain: Literal[
         "serologic_assessment",
         "rheumatic_disease_formulation",
@@ -187,7 +201,7 @@ class InitialAutoimmuneDomainReview(DomainReview):
     ]
 
 
-class InitialConsultDomainReview(DomainReview):
+class InitialConsultDomainReview(InitialDomainReview):
     domain: Literal["ild_attribution", "specialist_integration_and_gaps"]
 
 
@@ -222,6 +236,19 @@ class RheumatologyClinicalState(BaseModel):
 
 class RheumatologyInitialAssessment(RheumatologyClinicalState):
     phase: Literal["initial_assessment"] = "initial_assessment"
+    domain_reviews: list[InitialDomainReview] = Field(min_length=7, max_length=7)
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_legacy_domain_reviews(cls, value):
+        if not isinstance(value, dict) or not value.get("domain_reviews"):
+            return value
+        migrated = dict(value)
+        migrated["domain_reviews"] = [
+            item.model_dump(mode="python") if isinstance(item, DomainReview) else item
+            for item in migrated["domain_reviews"]
+        ]
+        return migrated
 
 
 class InitialCaseReconstruction(BaseModel):
@@ -332,12 +359,18 @@ class DomainChange(BaseModel):
     updated_view: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     specialist_opinion_ids: list[str] = Field(default_factory=list)
+
+
+class RheumatologyDiscussionState(RheumatologyClinicalState):
+    phase: Literal["discussion_update"] = "discussion_update"
+    domain_reviews: list[DiscussionDomainReview] = Field(min_length=7, max_length=7)
 
 
 class DiscussionStateUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    updated_state: RheumatologyClinicalState
+    updated_state: RheumatologyDiscussionState
     domain_changes: list[DomainChange] = Field(min_length=7, max_length=7)
 
     @model_validator(mode="after")
@@ -373,7 +406,7 @@ class RheumatologyDiscussionResponse(BaseModel):
     schema_version: Literal["rheumatology.v1"] = "rheumatology.v1"
     case_id: SkipJsonSchema[str] = ""
     phase: SkipJsonSchema[str] = "discussion_response"
-    updated_state: RheumatologyClinicalState
+    updated_state: RheumatologyDiscussionState
     domain_changes: list[DomainChange] = Field(min_length=7, max_length=7)
     specialist_opinions_used: list[str] = Field(default_factory=list)
     mapped_findings: list[MappedSpecialistFinding] = Field(default_factory=list)

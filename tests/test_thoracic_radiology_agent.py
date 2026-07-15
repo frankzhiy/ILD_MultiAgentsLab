@@ -386,7 +386,7 @@ def test_initial_assessment_runs_two_problem_oriented_stages():
     reconstruction = reconstruction_0714()
     formulation = formulation_0714()
     llm = FakeLLM([llm_payload(reconstruction), llm_payload(formulation)])
-    agent = ThoracicRadiologyAgent.from_config(CONFIG, llm)
+    agent = ThoracicRadiologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
 
     result, trace = agent.initial_assessment(case)
 
@@ -672,7 +672,7 @@ def test_discussion_updates_only_affected_interpretation_task():
         ],
     )
     llm = FakeLLM([llm_payload(evidence_map), llm_payload(update)])
-    agent = ThoracicRadiologyAgent.from_config(CONFIG, llm)
+    agent = ThoracicRadiologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
 
     result, trace = agent.discussion_response(discussion_input)
 
