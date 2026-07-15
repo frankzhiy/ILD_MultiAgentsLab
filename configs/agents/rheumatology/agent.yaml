@@ -1,0 +1,71 @@
+provider: apiyi
+model: gpt-5.6-luna
+base_url: https://api.apiyi.com/v1
+api_key_env: APIYI_API_KEY
+request_options:
+  thinking:
+    type: disabled
+timeout_seconds: 300
+temperature: 0.0
+max_tokens: 12000
+max_attempts: 2
+retry_backoff_seconds: 2
+initial_case_reconstruction_prompt: src/prompts/rheumatology/initial_case_reconstruction.md
+initial_autoimmune_assessment_prompt: src/prompts/rheumatology/initial_autoimmune_assessment.md
+initial_consult_formulation_prompt: src/prompts/rheumatology/initial_consult_formulation.md
+discussion_evidence_mapping_prompt: src/prompts/rheumatology/discussion_evidence_mapping.md
+discussion_state_update_prompt: src/prompts/rheumatology/discussion_state_update.md
+discussion_consult_response_prompt: src/prompts/rheumatology/discussion_consult_response.md
+
+clinical_rules:
+  diagnostic_confidence:
+    source: ILD-MDD 中国专家共识 2023
+    principle: 诊断信度应与证据充分性一致；低信度诊断允许并需明确限制。
+  ctd_ild_diagnosis:
+    source: 结缔组织病相关间质性肺疾病诊疗规范 2022
+    principle: CTD 与 ILD 的诊断应由风湿免疫科和呼吸科协作，并鉴别感染、肿瘤、心脏病、药物和过敏等替代病因。
+  ipaf:
+    source: ERS/ATS Research Statement 2015（由中国 CTD-ILD 诊疗规范转述）
+    requires: 已证实 ILD、排除其他已知病因、尚不能诊断确定 CTD、临床/血清学/形态学三域至少满足两域。
+    classification_not_clinical_diagnosis: true
+  screening_and_risk:
+    source: ERS/EULAR CTD-ILD Clinical Practice Guideline 2025；ACR/CHEST SARD-ILD Guideline 2023
+    principle: 风险分层应疾病特异，并结合临床表型、抗体、HRCT 和肺功能；不得以肺功能替代 HRCT 筛查。
+    serologic_review_for_ild:
+      - ANA
+      - ENA
+      - rheumatoid_factor
+      - anti_CCP
+      - myositis_specific_antibodies
+      - ANCA
+    disease_specific_risk_profiles:
+      systemic_sclerosis:
+        - anti_Scl_70_or_ATA
+        - nucleolar_ANA_pattern
+        - diffuse_cutaneous_or_early_disease
+        - skin_progression_or_inflammatory_markers
+      rheumatoid_arthritis:
+        - high_titer_rheumatoid_factor_or_anti_CCP
+        - smoking
+        - older_age_or_male_sex
+        - high_articular_disease_activity
+        - UIP_pattern_or_extensive_ILD_requires_specialist_confirmation
+      idiopathic_inflammatory_myopathy:
+        - anti_MDA5
+        - anti_synthetase
+        - anti_Ro52_or_overlap_antibodies
+        - mechanic_hands_arthritis_or_ulcerating_skin_lesions
+      mixed_connective_tissue_disease:
+        - Raynaud_phenomenon_or_dysphagia
+        - systemic_sclerosis_features
+      sjogren_disease:
+        - anti_Ro52_or_ANA
+        - Raynaud_phenomenon
+        - lymphopenia_or_severe_dental_caries
+    constraints:
+      - 风险因子缺失不排除 ILD 或 CTD-ILD。
+      - 风湿科可识别风险，但 HRCT 模式、范围和进展必须由相应正式专科意见确认。
+  specialist_boundaries:
+    source: ILD-MDD 中国专家共识 2023
+    final_mdt_diagnosis_by_team: true
+    rheumatology_must_not_confirm_radiologic_or_pathologic_pattern: true

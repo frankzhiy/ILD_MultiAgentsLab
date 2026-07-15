@@ -104,3 +104,21 @@ The default downstream model is `deepseek-v4-flash` through APIYI's OpenAI-compa
 Thinking is explicitly disabled through `request_options`. The APIYI client is provider-specific,
 not DeepSeek-specific: GPT, Claude, Qwen, and other models exposed through APIYI's compatible
 endpoint can use the same client by changing `model` and any model-specific `request_options`.
+
+## Rheumatology ILD Consultation Agent
+
+The rheumatology agent follows the same staged consultation pattern as the pulmonology agent:
+three initial-assessment stages (case reconstruction, autoimmune assessment, consult formulation)
+and three discussion stages (evidence mapping, state update, chair response). It records the
+rheumatic-disease working formulation separately from the ILD attribution assessment and does not
+issue a final MDT diagnosis or treatment plan.
+
+Run it after semantic-graph outputs are available:
+
+```bash
+python3 scripts/run/run_rheumatology_agent.py
+```
+
+The CLI writes rheumatology input, structured result, stage trace, and HTML report beside the
+selected semantic-graph run. Configuration and guideline guardrails are in
+`configs/agents/rheumatology/agent.yaml`.

@@ -66,7 +66,14 @@ def resolve_evidence_pointers(
             for evidence_id in pointer.evidence_ids
         }
         if len(referenced_units) != 1:
-            raise ValueError("Evidence pointer evidence_ids must belong to one graph unit")
+            locations = ", ".join(
+                f"{evidence_id}->{evidence_index[evidence_id][0].graph_unit.graph_unit_id}"
+                for evidence_id in pointer.evidence_ids
+            )
+            raise ValueError(
+                "Evidence pointer evidence_ids must belong to one graph unit; "
+                f"split this pointer: {locations}"
+            )
         unit = evidence_index[pointer.evidence_ids[0]][0]
         selected_ids = set(pointer.evidence_ids)
         blocks = [

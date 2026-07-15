@@ -1,0 +1,224 @@
+"""Rheumatology specialist agent for staged ILD diagnostic consultation."""
+
+import json
+from pathlib import Path
+from typing import Any, Callable
+
+from pydantic import BaseModel
+
+from src.agents.rheumatology.models import (
+    DiscussionConsultOutput,
+    DiscussionEvidenceMap,
+    DiscussionStateUpdate,
+    InitialAutoimmuneAssessment,
+    InitialCaseReconstruction,
+    InitialConsultFormulation,
+    RheumatologyDiscussionInput,
+    RheumatologyDiscussionResponse,
+    RheumatologyDomain,
+    RheumatologyInitialAssessment,
+)
+from src.agents.rheumatology.validation import (
+    require_rheumatology_input,
+    validate_consult_output,
+    validate_discussion_response,
+    validate_evidence_map,
+    validate_initial_assessment,
+    validate_initial_stage,
+    validate_specialist_opinions,
+    validate_state_update,
+)
+from src.llm.base import LLMClient
+from src.llm.structured import StructuredLLMGenerator
+from src.schemas.specialty_agent_input import SpecialtyCaseInput
+from src.utils.config import load_text, load_yaml, render_template
+
+
+SYSTEM_PROMPT = (
+    "你是严谨的 ILD 多学科团队风湿免疫会诊医生，只负责诊断与专业会诊，不是 MDT 主席。"
+    "所有面向人的文本字段必须使用简体中文，医学标准缩写可保留；不得整句或整段使用英文。"
+    "只返回符合 schema 的 JSON。"
+)
+
+
+class RheumatologyAgent:
+    def __init__(
+        self,
+        llm: LLMClient,
+        *,
+        initial_case_reconstruction_prompt_path: str | Path,
+        initial_autoimmune_assessment_prompt_path: str | Path,
+        initial_consult_formulation_prompt_path: str | Path,
+        discussion_evidence_mapping_prompt_path: str | Path,
+        discussion_state_update_prompt_path: str | Path,
+        discussion_consult_response_prompt_path: str | Path,
+        clinical_rules: dict,
+        temperature: float,
+        max_tokens: int,
+        max_attempts: int = 2,
+        retry_backoff_seconds: float = 0.0,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
+        self.prompts = {
+            "initial_case_reconstruction": load_text(initial_case_reconstruction_prompt_path),
+            "initial_autoimmune_assessment": load_text(initial_autoimmune_assessment_prompt_path),
+            "initial_consult_formulation": load_text(initial_consult_formulation_prompt_path),
+            "discussion_evidence_mapping": load_text(discussion_evidence_mapping_prompt_path),
+            "discussion_state_update": load_text(discussion_state_update_prompt_path),
+            "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
+        }
+        self.clinical_rules = clinical_rules
+        self.generator = StructuredLLMGenerator(
+            llm,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+            response_format_mode="json_schema" if getattr(llm, "supports_json_schema", False) else "json_object",
+            event_callback=event_callback,
+        )
+
+    @classmethod
+    def from_config(cls, config_path: str | Path, llm: LLMClient, *, event_callback=None) -> "RheumatologyAgent":
+        config = load_yaml(config_path)
+        keys = (
+            "initial_case_reconstruction_prompt",
+            "initial_autoimmune_assessment_prompt",
+            "initial_consult_formulation_prompt",
+            "discussion_evidence_mapping_prompt",
+            "discussion_state_update_prompt",
+            "discussion_consult_response_prompt",
+        )
+        if missing := [key for key in keys if key not in config]:
+            raise ValueError(f"Rheumatology config is missing prompt paths: {missing}")
+        return cls(
+            llm,
+            **{f"{key}_path": config[key] for key in keys},
+            clinical_rules=config.get("clinical_rules", {}),
+            temperature=float(config.get("temperature", 0.0)),
+            max_tokens=int(config.get("max_tokens", 12000)),
+            max_attempts=int(config.get("max_attempts", 2)),
+            retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
+            event_callback=event_callback,
+        )
+
+    def initial_assessment(self, case_input: SpecialtyCaseInput) -> tuple[RheumatologyInitialAssessment, dict]:
+        require_rheumatology_input(case_input)
+        case_json, rules_json = _json(case_input), _json(self.clinical_rules)
+        reconstruction, reconstruction_trace = self._generate(
+            "initial_case_reconstruction", InitialCaseReconstruction,
+            {"case_input": case_json, "clinical_rules": rules_json},
+            lambda result: validate_initial_stage(result, case_input),
+        )
+        autoimmune, autoimmune_trace = self._generate(
+            "initial_autoimmune_assessment", InitialAutoimmuneAssessment,
+            {"case_input": case_json, "case_reconstruction": _json(reconstruction), "clinical_rules": rules_json},
+            lambda result: validate_initial_stage(result, case_input, self.clinical_rules),
+        )
+        formulation, formulation_trace = self._generate(
+            "initial_consult_formulation", InitialConsultFormulation,
+            {
+                "case_input": case_json,
+                "case_reconstruction": _json(reconstruction),
+                "autoimmune_assessment": _json(autoimmune),
+                "clinical_rules": rules_json,
+            },
+            lambda result: validate_initial_stage(result, case_input, self.clinical_rules),
+        )
+        result = RheumatologyInitialAssessment(
+            case_id=case_input.case_id,
+            domain_reviews=sorted(
+                [*reconstruction.domain_reviews, *autoimmune.domain_reviews, *formulation.domain_reviews],
+                key=lambda item: list(RheumatologyDomain).index(RheumatologyDomain(item.domain)),
+            ),
+            case_orientation=reconstruction.case_orientation,
+            autoimmune_manifestations=reconstruction.autoimmune_manifestations,
+            serologic_findings=autoimmune.serologic_findings,
+            rheumatic_disease_formulation=autoimmune.rheumatic_disease_formulation,
+            activity_and_risk=autoimmune.activity_and_risk,
+            ild_attribution=formulation.ild_attribution,
+            specialist_dependencies=formulation.specialist_dependencies,
+            reference_observations=formulation.reference_observations,
+            missing_data=formulation.missing_data,
+            limitations=[*reconstruction.limitations, *autoimmune.limitations, *formulation.limitations],
+        )
+        validate_initial_assessment(result, case_input, self.clinical_rules)
+        return result, _combined_trace(
+            ("initial_case_reconstruction", reconstruction_trace),
+            ("initial_autoimmune_assessment", autoimmune_trace),
+            ("initial_consult_formulation", formulation_trace),
+        )
+
+    def discussion_response(self, discussion_input: RheumatologyDiscussionInput) -> tuple[RheumatologyDiscussionResponse, dict]:
+        case = discussion_input.case_input
+        require_rheumatology_input(case)
+        validate_initial_assessment(discussion_input.initial_assessment, case, self.clinical_rules)
+        validate_specialist_opinions(discussion_input)
+        discussion_json, rules_json = _json(discussion_input), _json(self.clinical_rules)
+        evidence_map, map_trace = self._generate(
+            "discussion_evidence_mapping", DiscussionEvidenceMap,
+            {"discussion_input": discussion_json, "clinical_rules": rules_json},
+            lambda result: validate_evidence_map(result, discussion_input),
+        )
+        state_update, update_trace = self._generate(
+            "discussion_state_update", DiscussionStateUpdate,
+            {"discussion_input": discussion_json, "evidence_map": _json(evidence_map), "clinical_rules": rules_json},
+            lambda result: validate_state_update(result, discussion_input, self.clinical_rules),
+        )
+        consult, consult_trace = self._generate(
+            "discussion_consult_response", DiscussionConsultOutput,
+            {
+                "discussion_input": discussion_json,
+                "updated_state": _json(state_update.updated_state),
+                "state_delta": _json(state_update.domain_changes),
+                "clinical_rules": rules_json,
+            },
+            lambda result: validate_consult_output(result, discussion_input),
+        )
+        result = RheumatologyDiscussionResponse(
+            case_id=case.case_id,
+            updated_state=state_update.updated_state,
+            domain_changes=state_update.domain_changes,
+            specialist_opinions_used=evidence_map.specialist_opinions_used,
+            mapped_findings=evidence_map.mapped_findings,
+            chair_answers=consult.chair_answers,
+            unresolved_conflicts=[*evidence_map.unresolved_conflicts, *consult.unresolved_conflicts],
+            diagnostic_recommendations=consult.diagnostic_recommendations,
+            limitations=consult.limitations,
+        )
+        validate_discussion_response(result, discussion_input, self.clinical_rules)
+        return result, _combined_trace(
+            ("discussion_evidence_mapping", map_trace),
+            ("discussion_state_update", update_trace),
+            ("discussion_consult_response", consult_trace),
+        )
+
+    def _generate(self, stage, schema_model, variables, validation):
+        prompt = render_template(
+            self.prompts[stage],
+            {"output_schema": json.dumps(schema_model.model_json_schema(), ensure_ascii=False, indent=2), **variables},
+        )
+        return self.generator.generate(
+            schema_model=schema_model,
+            schema_name=stage,
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=prompt,
+            extra_validation=validation,
+        )
+
+
+def _json(value: object) -> str:
+    def serializable(item):
+        if isinstance(item, BaseModel):
+            return item.model_dump(mode="json")
+        if isinstance(item, dict):
+            return {key: serializable(value) for key, value in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [serializable(value) for value in item]
+        return item
+
+    return json.dumps(serializable(value), ensure_ascii=False, indent=2)
+
+
+def _combined_trace(*stages) -> dict:
+    return {"schema_version": "rheumatology.v1", "stages": [{"stage": name, **trace} for name, trace in stages]}
