@@ -69,7 +69,7 @@ mdt_specialty（该 graph unit 应送给哪些 ILD MDT 专科会诊）：
 - 这是一个列表，至少一个值；同一块证据可以同时送给多个专科。
 - 你要阅读这块内容的实际含义来判断，而不是机械套用 source_type。
 - 可选专科：
-  - pulmonology：呼吸科。肺功能、呼吸症状与病程、KL-6/LDH、整体整合与牵头。
+  - pulmonology：肺功能、呼吸症状与病程、暴露与用药、氧合、BAL/支气管镜及肺部治疗反应。
   - thoracic_radiology：胸部影像。HRCT/CT/胸片的影像所见与影像模式（UIP/NSIP/OP/HP 等）。
   - pathology：病理。活检、TBLC、外科肺活检的形态学发现。
   - rheumatology：风湿免疫。自身抗体、关节/雷诺/皮疹/肌肉等 CTD-ILD 肺外表现。

@@ -1,0 +1,37 @@
+provider: apiyi
+model: deepseek-v4-flash
+base_url: https://api.apiyi.com/v1
+api_key_env: APIYI_API_KEY
+request_options:
+  thinking:
+    type: disabled
+timeout_seconds: 300
+temperature: 0.0
+max_tokens: 12000
+max_attempts: 2
+retry_backoff_seconds: 2
+initial_foundation_prompt: src/prompts/pulmonology/initial_foundation.md
+initial_pulmonary_assessment_prompt: src/prompts/pulmonology/initial_pulmonary_assessment.md
+initial_diagnostic_formulation_prompt: src/prompts/pulmonology/initial_diagnostic_formulation.md
+discussion_evidence_mapping_prompt: src/prompts/pulmonology/discussion_evidence_mapping.md
+discussion_state_update_prompt: src/prompts/pulmonology/discussion_state_update.md
+discussion_consult_response_prompt: src/prompts/pulmonology/discussion_consult_response.md
+
+clinical_rules:
+  diagnostic_confidence:
+    source: ERS/ATS Statement 2025 (Eur Respir J 2025;66:2500158)
+    confident_diagnosis_probability: ">=90%"
+    provisional_diagnosis_probability: "51-89%"
+    unclassifiable_ild: "完成充分多学科评估后，无任何单一诊断概率超过 50%"
+  ppf:
+    source: ATS/ERS/JRS/ALAT Clinical Practice Guideline 2022
+    population: non-IPF fibrotic ILD
+    assessment_window: past year
+    required_components: 2
+    components:
+      symptoms: worsening respiratory symptoms
+      physiology:
+        fvc_absolute_decline_percent_predicted: ">5"
+        dlco_absolute_decline_percent_predicted: ">10"
+      radiology: radiological evidence of disease progression
+    require_no_alternative_explanation: true

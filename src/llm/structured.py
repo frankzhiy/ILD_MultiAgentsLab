@@ -10,9 +10,16 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class StructuredGenerationError(RuntimeError):
-    def __init__(self, message: str, *, attempts: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: list[dict[str, Any]],
+        stage: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.attempts = attempts
+        self.stage = stage
 
 
 def json_schema_response_format(model: type[BaseModel], name: str) -> dict:
@@ -107,6 +114,7 @@ class StructuredLLMGenerator:
                 raise StructuredGenerationError(
                     f"Structured LLM request failed on attempt {attempt_index}: {exc}",
                     attempts=attempts,
+                    stage=schema_name,
                 ) from exc
             attempt_record = {
                 "attempt": attempt_index,
@@ -125,6 +133,7 @@ class StructuredLLMGenerator:
                     "Structured LLM generation stopped because the model exhausted its output "
                     "budget before producing response content.",
                     attempts=attempts,
+                    stage=schema_name,
                 )
             try:
                 parsed = parse_llm_json(response.content)
@@ -161,6 +170,7 @@ class StructuredLLMGenerator:
             f"Structured LLM generation failed after {self.max_attempts} attempts: "
             f"{last_error}. Attempts: {summaries}",
             attempts=attempts,
+            stage=schema_name,
         )
 
     def _initial_response_format(self, schema_model: type[BaseModel], schema_name: str) -> dict:
