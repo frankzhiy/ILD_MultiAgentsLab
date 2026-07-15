@@ -69,6 +69,44 @@ def test_builds_ordered_complete_pulmonology_input_from_current_run():
     assert units["seg_004_gu_001"].may_support_diagnostic_claim is False
 
 
+def test_builds_same_complete_input_for_thoracic_radiology_with_new_roles():
+    result = build_specialty_case_input(RUN_DIR, MdtSpecialty.THORACIC_RADIOLOGY)
+
+    assert result.target_specialty == MdtSpecialty.THORACIC_RADIOLOGY
+    assert [
+        unit.graph_unit.graph_unit_id for segment in result.segments for unit in segment.units
+    ] == [
+        "seg_001_gu_001",
+        "seg_001_gu_002",
+        "seg_002_gu_001",
+        "seg_002_gu_002",
+        "seg_003_gu_001",
+        "seg_003_gu_002",
+        "seg_003_gu_003",
+        "seg_003_gu_004",
+        "seg_004_gu_001",
+        "seg_005_gu_001",
+        "seg_006_gu_001",
+    ]
+    assert result.summary.model_dump() == {
+        "segment_count": 6,
+        "unit_count": 11,
+        "owned_unit_count": 1,
+        "shared_context_unit_count": 4,
+        "collaborative_context_unit_count": 1,
+        "reference_only_unit_count": 5,
+        "available_locator_count": 11,
+        "degraded_locator_count": 0,
+    }
+
+    units = {
+        unit.graph_unit.graph_unit_id: unit for segment in result.segments for unit in segment.units
+    }
+    assert units["seg_003_gu_003"].evidence_role == EvidenceRole.COLLABORATIVE_CONTEXT
+    assert units["seg_004_gu_001"].evidence_role == EvidenceRole.OWNED
+    assert units["seg_005_gu_001"].evidence_role == EvidenceRole.REFERENCE_ONLY
+
+
 def test_rejects_misaligned_unit_ids(tmp_path):
     copy_semantic_outputs(tmp_path)
     path = tmp_path / f"{CASE_ID}_primary_frames.json"
