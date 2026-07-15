@@ -8,6 +8,9 @@ from pydantic import BaseModel, ValidationError
 import src.agents.semantic_graphing.agent as agent_module
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent
 from src.agents.semantic_graphing.document_classifier import DocumentClassifier
+from src.agents.semantic_graphing.graph_unit_extractor import (
+    normalize_and_validate_graph_units,
+)
 from src.llm.base import LLMMessage, LLMResponse
 from src.llm.chatanywhere_client import ChatAnywhereClient
 from src.llm.deepseek_client import DeepSeekClient
@@ -58,6 +61,83 @@ def test_mdt_specialty_contains_only_the_five_supported_categories():
         "rheumatology",
         "shared_context",
     }
+
+
+def test_graph_unit_prompt_keeps_event_boundary_but_routes_only_chest_imaging():
+    prompt = Path("src/prompts/semantic_graphing/graph_unit_extraction.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "专科路由变化也不是切分依据" in prompt
+    assert "肺功能、超声心动图、下肢血管超声及其他非胸部影像不属于胸部影像科" in prompt
+    assert "CTPA 文字结论由影像科解释" in prompt
+
+
+def test_graph_unit_validation_rejects_non_thoracic_tests_routed_to_radiology():
+    text = "术前肺功能提示通气障碍，超声心动图示肺动脉压升高，双下肢超声未见血栓。"
+    segment = ClassifiedSegment(
+        segment_id="seg_001",
+        text=text,
+        unit_type=DiscourseUnitType.CLINICAL_EPISODE,
+        clinical_frame="preoperative_assessment",
+        start_char=0,
+        end_char=len(text),
+        confidence=1,
+        rationale="test",
+    )
+    result = SegmentGraphUnits(
+        segment_id=segment.segment_id,
+        graph_units=[
+            GraphUnit(
+                graph_unit_id="seg_001_gu_001",
+                segment_id=segment.segment_id,
+                text=text,
+                source_type=SourceType.PULMONARY_FUNCTION_FINDINGS,
+                mdt_specialty=[
+                    MdtSpecialty.PULMONOLOGY,
+                    MdtSpecialty.THORACIC_RADIOLOGY,
+                ],
+                rationale="test",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="non-thoracic tests"):
+        normalize_and_validate_graph_units(result, segment)
+
+
+def test_graph_unit_validation_accepts_mixed_event_with_ctpa():
+    text = "术后低氧，超声心动图示肺动脉压升高，CTPA未见中央型肺栓塞。"
+    segment = ClassifiedSegment(
+        segment_id="seg_001",
+        text=text,
+        unit_type=DiscourseUnitType.CLINICAL_EPISODE,
+        clinical_frame="postoperative_hypoxemia",
+        start_char=0,
+        end_char=len(text),
+        confidence=1,
+        rationale="test",
+    )
+    result = SegmentGraphUnits(
+        segment_id=segment.segment_id,
+        graph_units=[
+            GraphUnit(
+                graph_unit_id="seg_001_gu_001",
+                segment_id=segment.segment_id,
+                text=text,
+                source_type=SourceType.PRESENT_ILLNESS,
+                mdt_specialty=[
+                    MdtSpecialty.PULMONOLOGY,
+                    MdtSpecialty.THORACIC_RADIOLOGY,
+                ],
+                rationale="test",
+            )
+        ],
+    )
+
+    normalized = normalize_and_validate_graph_units(result, segment)
+
+    assert normalized.graph_units[0].text == text
 
 
 class FakeHTTPResponse:

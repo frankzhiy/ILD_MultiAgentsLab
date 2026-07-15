@@ -48,7 +48,6 @@ from src.utils.config import load_yaml
 
 RUN_DIR = "outputs/runs/20260714_163246_76-IPF_step2_step3"
 CONFIG = "configs/agents/pulmonology/agent.yaml"
-PPF_SOURCE = "ATS/ERS/JRS/ALAT Clinical Practice Guideline 2022"
 
 
 class FakeLLM:
@@ -355,7 +354,6 @@ def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():
         recent_worsening="not_assessable",
         acute_exacerbation_status="not_assessable",
         ppf_status="not_assessable",
-        rule_source=PPF_SOURCE,
         assessment_window="past year",
         components=[
             ProgressionComponent(
@@ -395,26 +393,7 @@ def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():
     }
     assert result.specialist_dependencies[0].specialty == MdtSpecialty.THORACIC_RADIOLOGY
     assert result.reference_observations[0].related_evidence[0].quote
-
-
-def test_configured_ppf_rule_source_is_enforced():
-    case = case_input()
-    stages = initial_stages(case)
-    pulmonary_data = stages[1].model_dump(mode="json")
-    pulmonary_data["progression_assessment"] = {
-        "recent_worsening": "not_assessable",
-        "acute_exacerbation_status": "not_assessable",
-        "ppf_status": "not_assessable",
-        "rule_source": "mixed rule",
-        "assessment_window": "past year",
-        "reasoning_summary": "纵向资料不足。",
-    }
-    pulmonary = InitialPulmonaryAssessment.model_validate(pulmonary_data)
-    llm = FakeLLM([llm_payload(stages[0]), llm_payload(pulmonary), llm_payload(pulmonary)])
-    agent = PulmonologyAgent.from_config(CONFIG, llm)
-
-    with pytest.raises(Exception, match="PPF rule_source"):
-        agent.initial_assessment(case)
+    assert "rule_source" not in result.progression_assessment.model_dump(mode="json")
 
 
 def test_initial_report_shows_clinical_results_and_coverage_audit(tmp_path):

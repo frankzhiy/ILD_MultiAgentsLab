@@ -1,8 +1,26 @@
+import re
+
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.semantic_graphing.document import ClassifiedSegment
-from src.schemas.semantic_graphing.graph_unit import SegmentGraphUnits
+from src.schemas.semantic_graphing.graph_unit import MdtSpecialty, SegmentGraphUnits
 from src.utils.config import load_text, render_template
+
+
+_THORACIC_MODALITY_RE = re.compile(
+    r"(?:HRCT|CTPA|肺动脉CT|胸部CT|肺部CT|肺CT|胸片|胸部X线|高分辨率CT)",
+    re.IGNORECASE,
+)
+_GENERIC_CT_WITH_CHEST_RE = re.compile(
+    r"(?:CT|X线|影像).{0,30}(?:双肺|肺野|肺叶|肺段|胸膜|纵隔|肺门|支气管|肺动脉|胸腔)|"
+    r"(?:双肺|肺野|肺叶|肺段|胸膜|纵隔|肺门|支气管|肺动脉|胸腔).{0,30}(?:CT|X线|影像)",
+    re.IGNORECASE,
+)
+_NON_THORACIC_TEST_RE = re.compile(
+    r"(?:肺功能|FEV1|FVC|DLCO|超声心动图|心脏彩超|下肢(?:动脉|静脉|血管)?超声|"
+    r"双下肢|腹部彩超|甲状腺超声|关节超声)",
+    re.IGNORECASE,
+)
 
 
 class SegmentGraphUnitExtractor:
@@ -106,6 +124,8 @@ def normalize_and_validate_graph_units(
         )
         cursor = end
 
+        _validate_thoracic_radiology_routing(normalized_units[-1])
+
     if unmatched:
         raise ValueError(
             "The following graph units are not exact continuous substrings of "
@@ -124,6 +144,22 @@ def normalize_and_validate_graph_units(
     normalized = result.model_copy(update={"graph_units": normalized_units})
     require_complete_graph_unit_offsets(normalized)
     return normalized
+
+
+def _validate_thoracic_radiology_routing(unit) -> None:
+    """Reject the observed false-positive route without guessing ambiguous cases."""
+
+    if MdtSpecialty.THORACIC_RADIOLOGY not in unit.mdt_specialty:
+        return
+    has_chest_imaging = bool(
+        _THORACIC_MODALITY_RE.search(unit.text)
+        or _GENERIC_CT_WITH_CHEST_RE.search(unit.text)
+    )
+    if _NON_THORACIC_TEST_RE.search(unit.text) and not has_chest_imaging:
+        raise ValueError(
+            f"Graph unit {unit.graph_unit_id} routes non-thoracic tests to "
+            "thoracic_radiology without chest CT/HRCT/CTPA/chest-radiograph evidence"
+        )
 
 
 def require_complete_graph_unit_offsets(result: SegmentGraphUnits) -> None:

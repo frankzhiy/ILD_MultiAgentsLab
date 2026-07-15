@@ -202,11 +202,18 @@ class ProgressionAssessment(BaseModel):
     ppf_status: Literal[
         "meets_criteria", "does_not_meet_criteria", "not_assessable", "not_applicable"
     ]
-    rule_source: str = Field(min_length=1)
     assessment_window: str = Field(min_length=1)
     components: list[ProgressionComponent] = Field(default_factory=list)
     alternative_explanations: list[str] = Field(default_factory=list)
     reasoning_summary: str = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_rule_source(cls, value):
+        if isinstance(value, dict) and "rule_source" in value:
+            value = dict(value)
+            value.pop("rule_source")
+        return value
 
     @model_validator(mode="after")
     def unique_components(self):
@@ -330,7 +337,6 @@ class PulmonologyInitialAssessment(PulmonologyClinicalState):
                 "recent_worsening": "not_assessable",
                 "acute_exacerbation_status": "not_assessable",
                 "ppf_status": "not_assessable",
-                "rule_source": "legacy output: rule source not recorded",
                 "assessment_window": "legacy output: assessment window not recorded",
                 "components": [
                     {

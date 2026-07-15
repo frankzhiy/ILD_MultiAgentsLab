@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import sys
 import time
+from typing import Iterator
+
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+except ImportError:  # pragma: no cover - fallback for minimal environments
+    Console = None
+    Progress = None
+    SpinnerColumn = None
+    TextColumn = None
+    TimeElapsedColumn = None
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -13,6 +25,9 @@ if str(ROOT) not in sys.path:
 
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input  # noqa: E402
 from src.agents.thoracic_radiology.agent import ThoracicRadiologyAgent  # noqa: E402
+from src.agents.thoracic_radiology.evidence_projection import (  # noqa: E402
+    build_radiology_working_input,
+)
 from src.agents.thoracic_radiology.models import (  # noqa: E402
     SpecialistOpinion,
     ThoracicRadiologyDiscussionInput,
@@ -30,18 +45,17 @@ from src.utils.config import load_yaml  # noqa: E402
 CONFIG_PATH = ROOT / "configs/agents/thoracic_radiology/agent.yaml"
 RUNS_DIR = ROOT / "outputs/runs"
 STAGE_LABELS = {
-    "initial_source_reconstruction": "首轮 1/3：来源与可评价性",
-    "initial_morphologic_assessment": "首轮 2/3：描述派生形态评估",
-    "initial_imaging_formulation": "首轮 3/3：影像模式与疾病关联",
-    "discussion_evidence_mapping": "会中 1/3：专科证据映射",
-    "discussion_imaging_update": "会中 2/3：七域影像状态更新",
-    "discussion_consult_response": "会中 3/3：影像科会诊响应",
+    "initial_case_reconstruction": "首轮 1/2：资料归一与任务路由",
+    "initial_consult_formulation": "首轮 2/2：问题驱动影像会诊",
+    "discussion_evidence_mapping": "会中 1/2：专科证据映射",
+    "discussion_update_and_response": "会中 2/2：选择性更新与响应",
 }
 
 
 class ProgressReporter:
     def __init__(self) -> None:
         self.started_at = time.perf_counter()
+        self.console = Console() if Console is not None else None
 
     @staticmethod
     def format_seconds(seconds: float) -> str:
@@ -52,7 +66,38 @@ class ProgressReporter:
 
     def log(self, message: str) -> None:
         elapsed = self.format_seconds(time.perf_counter() - self.started_at)
-        print(f"[{elapsed}] {message}", flush=True)
+        text = f"[{elapsed}] {message}"
+        if self.console is not None:
+            self.console.print(text, markup=False)
+        else:
+            print(text, flush=True)
+
+    @contextmanager
+    def step(self, label: str) -> Iterator[None]:
+        started = time.perf_counter()
+        self.log(f"开始：{label}")
+        progress = None
+        if Progress is not None and self.console is not None:
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                TimeElapsedColumn(),
+                console=self.console,
+                transient=True,
+            )
+            progress.start()
+            progress.add_task(f"正在进行：{label}", total=None)
+        try:
+            yield
+        except BaseException:
+            if progress is not None:
+                progress.stop()
+            self.log(f"失败：{label}")
+            raise
+        if progress is not None:
+            progress.stop()
+        duration = self.format_seconds(time.perf_counter() - started)
+        self.log(f"完成：{label}，耗时 {duration}")
 
     def total_elapsed(self) -> str:
         return self.format_seconds(time.perf_counter() - self.started_at)
@@ -66,13 +111,29 @@ class ProgressReporter:
         elif event == "llm_attempt_started":
             self.log(f"{stage} · 第 {attempt} 次 LLM 请求开始")
         elif event == "llm_attempt_completed":
-            self.log(f"{stage} · 第 {attempt} 次 LLM 响应完成，耗时 {duration}")
+            token_text = ""
+            if "prompt_tokens" in payload:
+                token_text = (
+                    f"，输入 {payload['prompt_tokens']} tokens，"
+                    f"输出 {payload.get('completion_tokens', 0)} tokens，"
+                    f"缓存 {payload.get('cached_tokens', 0)} tokens"
+                )
+            self.log(f"{stage} · 第 {attempt} 次 LLM 响应完成，耗时 {duration}{token_text}")
+        elif event == "llm_attempt_failed":
+            self.log(f"{stage} · 第 {attempt} 次 LLM 请求失败，耗时 {duration}")
+        elif event == "validation_completed":
+            self.log(f"{stage} · JSON 解析与本地校验通过，耗时 {duration}")
         elif event == "validation_failed":
             retry = "，将重新请求 LLM" if payload.get("will_retry") else ""
-            self.log(f"{stage} · 本地校验未通过{retry}")
+            self.log(f"{stage} · JSON 解析或本地校验未通过，耗时 {duration}{retry}")
         elif event in {"stage_completed", "stage_failed"}:
             result = "完成" if event == "stage_completed" else "失败"
-            self.log(f"{result}：{stage}，总耗时 {duration}")
+            self.log(
+                f"{result}：{stage}，总耗时 {duration}；"
+                f"LLM {self.format_seconds(float(payload.get('llm_duration_seconds', 0.0)))}，"
+                f"本地校验 {self.format_seconds(float(payload.get('validation_duration_seconds', 0.0)))}，"
+                f"其他 {self.format_seconds(float(payload.get('other_duration_seconds', 0.0)))}"
+            )
 
 
 def load_env_file(path: Path = ROOT / ".env") -> None:
@@ -107,7 +168,7 @@ def write_failure_trace(
     write_json(
         path,
         {
-            "schema_version": "thoracic_radiology.v1",
+            "schema_version": "thoracic_radiology.v2",
             "phase": phase,
             "failed_stage": error.stage,
             "error": str(error),
@@ -176,10 +237,15 @@ def main() -> int:
     run_dir = choose_file(discover_semantic_run_dirs(), "semantic_graphing 运行目录")
     assert run_dir is not None
     progress = ProgressReporter()
-    progress.log("准备并写入胸部影像科输入")
-    case_input = build_specialty_case_input(run_dir, MdtSpecialty.THORACIC_RADIOLOGY)
-    input_path = run_dir / f"{case_input.case_id}_thoracic_radiology_input.json"
-    write_json(input_path, case_input.model_dump(mode="json"))
+    with progress.step("准备并写入胸部影像科输入"):
+        case_input = build_specialty_case_input(run_dir, MdtSpecialty.THORACIC_RADIOLOGY)
+        input_path = run_dir / f"{case_input.case_id}_thoracic_radiology_input.json"
+        write_json(input_path, case_input.model_dump(mode="json"))
+        working_input = build_radiology_working_input(case_input)
+        working_input_path = (
+            run_dir / f"{case_input.case_id}_thoracic_radiology_working_input.json"
+        )
+        write_json(working_input_path, working_input.model_dump(mode="json"))
     progress.log(
         f"输入完成：segments={case_input.summary.segment_count} "
         f"units={case_input.summary.unit_count} owned={case_input.summary.owned_unit_count} "
@@ -187,17 +253,25 @@ def main() -> int:
         f"collaborative={case_input.summary.collaborative_context_unit_count} "
         f"reference={case_input.summary.reference_only_unit_count}"
     )
-    config = load_yaml(CONFIG_PATH)
-    agent = ThoracicRadiologyAgent.from_config(
-        CONFIG_PATH,
-        build_llm_client(config),
-        event_callback=progress.generation_event,
+    progress.log(
+        "影像科工作投影完成："
+        f"candidates={working_input.summary.radiology_candidate_unit_count} "
+        f"thoracic_units={working_input.summary.thoracic_evidence_unit_count} "
+        f"excluded={working_input.summary.excluded_candidate_unit_count}"
     )
+    with progress.step("初始化 APIYI 胸部影像科 Agent"):
+        config = load_yaml(CONFIG_PATH)
+        agent = ThoracicRadiologyAgent.from_config(
+            CONFIG_PATH,
+            build_llm_client(config),
+            event_callback=progress.generation_event,
+        )
     output_stem = f"{case_input.case_id}_thoracic_radiology"
 
     if phase == "initial":
         try:
-            result, trace = agent.initial_assessment(case_input)
+            with progress.step("LLM 按两阶段生成胸部影像科首轮评估"):
+                result, trace = agent.initial_assessment(case_input)
         except StructuredGenerationError as exc:
             failure_path = write_failure_trace(run_dir, output_stem, "initial", exc)
             progress.log(f"失败 trace：{failure_path.resolve()}")
@@ -230,14 +304,15 @@ def main() -> int:
         if not isinstance(questions, list):
             raise ValueError("chair questions JSON must be a list")
         try:
-            result, trace = agent.discussion_response(
-                ThoracicRadiologyDiscussionInput(
-                    case_input=case_input,
-                    initial_assessment=initial,
-                    specialist_opinions=opinions,
-                    chair_questions=questions,
+            with progress.step("LLM 按两阶段生成胸部影像科会中响应"):
+                result, trace = agent.discussion_response(
+                    ThoracicRadiologyDiscussionInput(
+                        case_input=case_input,
+                        initial_assessment=initial,
+                        specialist_opinions=opinions,
+                        chair_questions=questions,
+                    )
                 )
-            )
         except StructuredGenerationError as exc:
             failure_path = write_failure_trace(run_dir, output_stem, "discussion", exc)
             progress.log(f"失败 trace：{failure_path.resolve()}")
@@ -247,9 +322,10 @@ def main() -> int:
     output = run_dir / f"{output_stem}_{suffix}.json"
     trace_output = run_dir / f"{output_stem}_{suffix}_trace.json"
     report_output = run_dir / f"{output_stem}_{suffix}.html"
-    write_json(output, result.model_dump(mode="json"))
-    write_json(trace_output, trace)
-    render_thoracic_radiology_report(result, case_input, report_output)
+    with progress.step("写入 JSON、trace 和 HTML 报告"):
+        write_json(output, result.model_dump(mode="json"))
+        write_json(trace_output, trace)
+        render_thoracic_radiology_report(result, case_input, report_output)
     progress.log(f"JSON 结果：{output.resolve()}")
     progress.log(f"Trace：{trace_output.resolve()}")
     progress.log(f"HTML 报告：{report_output.resolve()}")

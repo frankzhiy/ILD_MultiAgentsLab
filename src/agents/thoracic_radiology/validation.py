@@ -1,180 +1,36 @@
-"""Thoracic-radiology-specific validation rules."""
+"""Validation and exact proposition resolution for thoracic-radiology v2."""
+
+from __future__ import annotations
 
 from collections.abc import Iterable
 
 from src.agents.common.validation import (
-    authorized_evidence,
     case_units,
-    iter_named_lists,
+    iter_evidence_pointers,
     require_specialty_input,
-    resolve_evidence_pointers,
-    validate_authorized_pointers,
     validate_chair_question_order,
-    validate_pointers,
-    validate_specialist_opinions as validate_common_specialist_opinions,
-    validate_used_opinions,
+)
+from src.agents.thoracic_radiology.evidence_projection import (
+    RadiologyWorkingInput,
+    build_radiology_working_input,
 )
 from src.agents.thoracic_radiology.models import (
-    ALL_DOMAINS,
-    ConditionalImagingClassification,
-    DiscussionConsultOutput,
+    ChairAnswer,
     DiscussionEvidenceMap,
-    DiscussionStateUpdate,
+    DiscussionUpdateAndConsult,
     EvidencePointer,
-    InitialImagingFormulation,
-    InitialMorphologicAssessment,
-    InitialSourceReconstruction,
-    LongitudinalImagingAssessment,
-    MorphologicPatternAssessment,
-    ThoracicRadiologyClinicalState,
+    InitialCaseReconstruction,
+    InitialConsultFormulation,
+    RadiologyTask,
+    RadiologyTaskAssessment,
+    ResolvedPropositionQuote,
+    SpecialistOpinion,
     ThoracicRadiologyDiscussionInput,
     ThoracicRadiologyDiscussionResponse,
     ThoracicRadiologyInitialAssessment,
 )
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
-from src.schemas.specialty_agent_input import SpecialtyCaseInput, SpecialtyUnitInput
-
-
-def validate_initial_assessment(
-    result: ThoracicRadiologyInitialAssessment,
-    case_input: SpecialtyCaseInput,
-    clinical_rules: dict | None = None,
-) -> ThoracicRadiologyInitialAssessment:
-    if result.case_id and result.case_id != case_input.case_id:
-        raise ValueError(f"Assessment case_id {result.case_id} does not match {case_input.case_id}")
-    result.case_id = case_input.case_id
-    _resolve_evidence_pointers(result, case_input)
-    _validate_no_initial_opinions(result)
-    _validate_state(result, case_input, {}, clinical_rules)
-    return result
-
-
-def validate_discussion_response(
-    result: ThoracicRadiologyDiscussionResponse,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-    clinical_rules: dict | None = None,
-) -> ThoracicRadiologyDiscussionResponse:
-    case_input = discussion_input.case_input
-    if result.case_id and result.case_id != case_input.case_id:
-        raise ValueError(f"Discussion case_id {result.case_id} does not match {case_input.case_id}")
-    result.case_id = case_input.case_id
-    _resolve_evidence_pointers(result, case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    validate_used_opinions(result.specialist_opinions_used, opinions)
-    _validate_state(result.updated_state, case_input, opinions, clinical_rules)
-    _validate_domain_changes(result.domain_changes, case_input, opinions)
-    _validate_observation_immutability(result, discussion_input, opinions)
-    _validate_mapped_findings(result.mapped_findings, case_input, opinions)
-    _validate_generic_items(result.unresolved_conflicts, case_input, opinions)
-    _validate_chair_answers(result.chair_answers, discussion_input, opinions)
-    required_opinion_ids = {
-        opinion_id
-        for opinion_ids in iter_named_lists(result, "specialist_opinion_ids")
-        for opinion_id in opinion_ids
-    }
-    required_opinion_ids.update(item.opinion_id for item in result.mapped_findings)
-    missing_used = required_opinion_ids - set(result.specialist_opinions_used)
-    if missing_used:
-        raise ValueError(
-            f"specialist_opinions_used omits opinions used by the response: {sorted(missing_used)}"
-        )
-    return result
-
-
-def validate_source_stage(
-    result: InitialSourceReconstruction, case_input: SpecialtyCaseInput
-) -> InitialSourceReconstruction:
-    _resolve_evidence_pointers(result, case_input)
-    _validate_no_initial_opinions(result)
-    _validate_source_state(result.source_state, case_input, {})
-    _validate_related_items(result.direct_review_requests, case_input)
-    return result
-
-
-def validate_morphology_stage(
-    result: InitialMorphologicAssessment,
-    case_input: SpecialtyCaseInput,
-    clinical_rules: dict | None,
-) -> InitialMorphologicAssessment:
-    _resolve_evidence_pointers(result, case_input)
-    _validate_no_initial_opinions(result)
-    _validate_observation_state(result.observation_state, case_input, {})
-    if result.longitudinal_assessment:
-        _validate_radiology_items([result.longitudinal_assessment], case_input, {})
-        _validate_longitudinal_rule(result.longitudinal_assessment, clinical_rules)
-    _validate_related_items(result.direct_review_requests, case_input)
-    return result
-
-
-def validate_formulation_stage(
-    result: InitialImagingFormulation,
-    case_input: SpecialtyCaseInput,
-    clinical_rules: dict | None,
-) -> InitialImagingFormulation:
-    _resolve_evidence_pointers(result, case_input)
-    _validate_no_initial_opinions(result)
-    if result.morphologic_pattern:
-        _validate_radiology_items([result.morphologic_pattern], case_input, {})
-        _validate_pattern_rule(result.morphologic_pattern, clinical_rules)
-    _validate_generic_items(result.conditional_classifications, case_input, {})
-    _validate_conditional_rules(result.conditional_classifications, clinical_rules)
-    _validate_generic_items(result.disease_associations, case_input, {})
-    _validate_generic_items(result.discordances, case_input, {})
-    _validate_related_items(
-        [
-            *result.specialist_dependencies,
-            *result.direct_review_requests,
-            *result.missing_data,
-        ],
-        case_input,
-    )
-    for question in result.specialist_dependencies:
-        if question.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist question cannot target shared_context")
-    return result
-
-
-def validate_evidence_map(
-    result: DiscussionEvidenceMap,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-) -> DiscussionEvidenceMap:
-    _resolve_evidence_pointers(result, discussion_input.case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    validate_used_opinions(result.specialist_opinions_used, opinions)
-    _validate_mapped_findings(result.mapped_findings, discussion_input.case_input, opinions)
-    mapped_ids = {item.opinion_id for item in result.mapped_findings}
-    if not mapped_ids.issubset(result.specialist_opinions_used):
-        raise ValueError("specialist_opinions_used must include every mapped opinion_id")
-    _validate_generic_items(result.unresolved_conflicts, discussion_input.case_input, opinions)
-    return result
-
-
-def validate_state_update(
-    result: DiscussionStateUpdate,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-    clinical_rules: dict | None,
-) -> DiscussionStateUpdate:
-    _resolve_evidence_pointers(result, discussion_input.case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    _validate_state(result.updated_state, discussion_input.case_input, opinions, clinical_rules)
-    _validate_domain_changes(result.domain_changes, discussion_input.case_input, opinions)
-    response = ThoracicRadiologyDiscussionResponse(
-        updated_state=result.updated_state,
-        domain_changes=result.domain_changes,
-    )
-    _validate_observation_immutability(response, discussion_input, opinions)
-    return result
-
-
-def validate_consult_output(
-    result: DiscussionConsultOutput,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-) -> DiscussionConsultOutput:
-    _resolve_evidence_pointers(result, discussion_input.case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    _validate_chair_answers(result.chair_answers, discussion_input, opinions)
-    _validate_generic_items(result.unresolved_conflicts, discussion_input.case_input, opinions)
-    return result
+from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
 def require_radiology_input(case_input: SpecialtyCaseInput) -> None:
@@ -185,305 +41,581 @@ def require_radiology_input(case_input: SpecialtyCaseInput) -> None:
     )
 
 
+def resolve_proposition_pointers(value: object, case_input: SpecialtyCaseInput) -> None:
+    """Resolve exact proposition quotes while retaining legacy evidence-ID support."""
+
+    units = case_units(case_input)
+    evidence_to_unit: dict[str, object] = {}
+    for unit in units.values():
+        for block in unit.clinical_propositions.evidence_blocks:
+            if block.evidence_id in evidence_to_unit:
+                raise ValueError(f"Duplicate evidence_id in specialty input: {block.evidence_id}")
+            evidence_to_unit[block.evidence_id] = unit
+
+    for pointer in iter_evidence_pointers(value, EvidencePointer):
+        unit = _pointer_unit(pointer, units, evidence_to_unit)
+        pointer.graph_unit_id = unit.graph_unit.graph_unit_id
+        pointer.segment_id = unit.graph_unit.segment_id
+        propositions = {
+            item.proposition_id: item for item in unit.clinical_propositions.propositions
+        }
+        if pointer.proposition_ids:
+            missing = sorted(set(pointer.proposition_ids) - set(propositions))
+            if missing:
+                raise ValueError(
+                    f"Evidence pointer {pointer.graph_unit_id} has unknown proposition_ids: "
+                    f"{missing}"
+                )
+            ordered = [
+                item
+                for item in unit.clinical_propositions.propositions
+                if item.proposition_id in set(pointer.proposition_ids)
+            ]
+            pointer.proposition_ids = [item.proposition_id for item in ordered]
+            pointer.resolved_quotes = [
+                ResolvedPropositionQuote(
+                    proposition_id=item.proposition_id,
+                    evidence_ids=item.evidence.evidence_ids,
+                    quote=item.evidence.quote,
+                )
+                for item in ordered
+            ]
+            evidence_ids = {
+                evidence_id
+                for item in ordered
+                for evidence_id in item.evidence.evidence_ids
+            }
+            pointer.evidence_ids = [
+                block.evidence_id
+                for block in unit.clinical_propositions.evidence_blocks
+                if block.evidence_id in evidence_ids
+            ]
+            exact_node_ids = {
+                f"{pointer.graph_unit_id}::{item.proposition_id}" for item in ordered
+            }
+            pointer.node_ids = [
+                node.node_id
+                for node in unit.local_graph.nodes
+                if node.node_id in exact_node_ids
+            ]
+            pointer.quote = "\n".join(item.evidence.quote for item in ordered)
+        else:
+            known_evidence = {
+                block.evidence_id: block.text
+                for block in unit.clinical_propositions.evidence_blocks
+            }
+            missing = sorted(set(pointer.evidence_ids) - set(known_evidence))
+            if missing:
+                raise ValueError(
+                    f"Evidence pointer has unknown evidence_ids: {missing}"
+                )
+            selected = set(pointer.evidence_ids)
+            pointer.evidence_ids = [
+                block.evidence_id
+                for block in unit.clinical_propositions.evidence_blocks
+                if block.evidence_id in selected
+            ]
+            pointer.node_ids = [
+                node.node_id
+                for node in unit.local_graph.nodes
+                if selected.intersection(node.evidence.evidence_ids)
+            ]
+            pointer.quote = "".join(known_evidence[item] for item in pointer.evidence_ids)
+
+
+def validate_case_reconstruction(
+    result: InitialCaseReconstruction,
+    case_input: SpecialtyCaseInput,
+    working_input: RadiologyWorkingInput | None = None,
+) -> InitialCaseReconstruction:
+    working_input = working_input or build_radiology_working_input(case_input)
+    resolve_proposition_pointers(result, case_input)
+    _validate_reconstruction(result, case_input, working_input)
+    return result
+
+
+def validate_initial_formulation(
+    result: InitialConsultFormulation,
+    reconstruction: InitialCaseReconstruction,
+    case_input: SpecialtyCaseInput,
+    working_input: RadiologyWorkingInput | None = None,
+) -> InitialConsultFormulation:
+    working_input = working_input or build_radiology_working_input(case_input)
+    resolve_proposition_pointers(result, case_input)
+    _validate_formulation(result, reconstruction, case_input, working_input, {})
+    return result
+
+
+def validate_initial_assessment(
+    result: ThoracicRadiologyInitialAssessment,
+    case_input: SpecialtyCaseInput,
+    clinical_rules: dict | None = None,
+) -> ThoracicRadiologyInitialAssessment:
+    del clinical_rules
+    if result.case_id != case_input.case_id:
+        raise ValueError(
+            f"Assessment case_id {result.case_id} does not match {case_input.case_id}"
+        )
+    working_input = build_radiology_working_input(case_input)
+    if result.legacy_import:
+        _upgrade_legacy_initial(result, working_input)
+    resolve_proposition_pointers(result, case_input)
+    _validate_reconstruction(result.reconstruction, case_input, working_input)
+    _validate_formulation(result, result.reconstruction, case_input, working_input, {})
+    return result
+
+
 def validate_specialist_opinions(
     discussion_input: ThoracicRadiologyDiscussionInput,
 ) -> None:
-    validate_common_specialist_opinions(discussion_input, EvidencePointer)
+    resolve_proposition_pointers(discussion_input.specialist_opinions, discussion_input.case_input)
+    units = case_units(discussion_input.case_input)
+    opinion_ids = [item.opinion_id for item in discussion_input.specialist_opinions]
+    _require_unique(opinion_ids, "specialist opinion")
+    for opinion in discussion_input.specialist_opinions:
+        if opinion.specialty == MdtSpecialty.SHARED_CONTEXT:
+            raise ValueError("A specialist opinion cannot use shared_context as its specialty")
+        for claim in opinion.claims:
+            for pointer in claim.evidence:
+                unit = units[pointer.graph_unit_id]
+                specialties = unit.graph_unit.mdt_specialty
+                if (
+                    opinion.specialty not in specialties
+                    and MdtSpecialty.SHARED_CONTEXT not in specialties
+                ):
+                    raise ValueError(
+                        f"Opinion {opinion.opinion_id} cites unit {pointer.graph_unit_id} "
+                        f"outside {opinion.specialty}'s evidence scope"
+                    )
 
 
-def _resolve_evidence_pointers(value: object, case_input: SpecialtyCaseInput) -> None:
-    resolve_evidence_pointers(value, case_input, EvidencePointer)
+def validate_evidence_map(
+    result: DiscussionEvidenceMap,
+    discussion_input: ThoracicRadiologyDiscussionInput,
+) -> DiscussionEvidenceMap:
+    resolve_proposition_pointers(result, discussion_input.case_input)
+    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
+    _require_known_unique(result.specialist_opinions_used, opinions, "used opinion")
+    working = build_radiology_working_input(discussion_input.case_input)
+    for item in result.mapped_findings:
+        opinion = opinions.get(item.opinion_id)
+        if opinion is None:
+            raise ValueError(f"Unknown mapped opinion_id: {item.opinion_id}")
+        if item.target_layer == "reported_content":
+            if opinion.specialty != MdtSpecialty.THORACIC_RADIOLOGY:
+                raise ValueError(
+                    "Only a thoracic radiology opinion may target reported_content"
+                )
+            _validate_projection_pointers(item.evidence, working)
+        _validate_authorized_by_opinions(
+            item.evidence, [item.opinion_id], opinions
+        )
+    mapped_ids = {item.opinion_id for item in result.mapped_findings}
+    if not mapped_ids.issubset(result.specialist_opinions_used):
+        raise ValueError("specialist_opinions_used must include every mapped opinion_id")
+    return result
 
 
-def _validate_state(
-    state: ThoracicRadiologyClinicalState,
-    case_input: SpecialtyCaseInput,
-    opinions: dict,
-    clinical_rules: dict | None,
-) -> None:
-    state.case_id = case_input.case_id
-    _validate_source_state(state.source_state, case_input, opinions)
-    _validate_observation_state(state.observation_state, case_input, opinions)
-    interpretation = state.interpretation_state
-    if interpretation.morphologic_pattern:
-        _validate_radiology_items([interpretation.morphologic_pattern], case_input, opinions)
-        _validate_pattern_rule(interpretation.morphologic_pattern, clinical_rules)
-    if interpretation.longitudinal_assessment:
-        _validate_radiology_items([interpretation.longitudinal_assessment], case_input, opinions)
-        _validate_longitudinal_rule(interpretation.longitudinal_assessment, clinical_rules)
-    _validate_generic_items(interpretation.conditional_classifications, case_input, opinions)
-    _validate_conditional_rules(interpretation.conditional_classifications, clinical_rules)
-    _validate_generic_items(interpretation.disease_associations, case_input, opinions)
-    _validate_generic_items(interpretation.discordances, case_input, opinions)
-    _validate_related_items(
-        [*state.specialist_dependencies, *state.direct_review_requests, *state.missing_data],
-        case_input,
+def validate_update_and_consult(
+    result: DiscussionUpdateAndConsult,
+    discussion_input: ThoracicRadiologyDiscussionInput,
+) -> DiscussionUpdateAndConsult:
+    resolve_proposition_pointers(result, discussion_input.case_input)
+    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
+    working = build_radiology_working_input(discussion_input.case_input)
+    _validate_reported_content_update(result, opinions, working)
+    _require_unique([str(item.task) for item in result.task_updates], "task update")
+    for update in result.task_updates:
+        if update.updated_assessment.task != update.task:
+            raise ValueError("Task update task must match updated_assessment.task")
+        _validate_task_assessment(
+            update.updated_assessment,
+            discussion_input.initial_assessment.reconstruction,
+            working,
+            opinions,
+        )
+        _validate_authorized_by_opinions(
+            update.supporting_evidence,
+            update.specialist_opinion_ids,
+            opinions,
+        )
+    _validate_chair_answers(result.chair_answers, discussion_input, opinions)
+    return result
+
+
+def validate_discussion_response(
+    result: ThoracicRadiologyDiscussionResponse,
+    discussion_input: ThoracicRadiologyDiscussionInput,
+    clinical_rules: dict | None = None,
+) -> ThoracicRadiologyDiscussionResponse:
+    del clinical_rules
+    if result.case_id != discussion_input.case_input.case_id:
+        raise ValueError(
+            f"Discussion case_id {result.case_id} does not match "
+            f"{discussion_input.case_input.case_id}"
+        )
+    resolve_proposition_pointers(result, discussion_input.case_input)
+    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
+    _require_known_unique(result.specialist_opinions_used, opinions, "used opinion")
+    working = build_radiology_working_input(discussion_input.case_input)
+    _validate_reconstruction(
+        result.updated_assessment.reconstruction,
+        discussion_input.case_input,
+        working,
     )
-    for question in state.specialist_dependencies:
+    _validate_formulation(
+        result.updated_assessment,
+        result.updated_assessment.reconstruction,
+        discussion_input.case_input,
+        working,
+        opinions,
+    )
+    _require_unique([str(item.task) for item in result.task_changes], "task change")
+    _validate_chair_answers(result.chair_answers, discussion_input, opinions)
+    used_by_result = {
+        opinion_id
+        for update in result.task_changes
+        for opinion_id in update.specialist_opinion_ids
+    }
+    used_by_result.update(item.opinion_id for item in result.mapped_findings)
+    used_by_result.update(
+        opinion_id
+        for answer in result.chair_answers
+        for opinion_id in answer.specialist_opinion_ids
+    )
+    if not used_by_result.issubset(result.specialist_opinions_used):
+        raise ValueError(
+            "specialist_opinions_used omits opinions used by the discussion response"
+        )
+    return result
+
+
+def _pointer_unit(pointer, units, evidence_to_unit):
+    if pointer.graph_unit_id:
+        unit = units.get(pointer.graph_unit_id)
+        if unit is None:
+            raise ValueError(
+                f"Unknown graph_unit_id in evidence pointer: {pointer.graph_unit_id}"
+            )
+        if pointer.evidence_ids:
+            mismatched = [
+                item
+                for item in pointer.evidence_ids
+                if item not in evidence_to_unit or evidence_to_unit[item] is not unit
+            ]
+            if mismatched:
+                raise ValueError(
+                    f"Evidence IDs do not belong to {pointer.graph_unit_id}: {mismatched}"
+                )
+        return unit
+    referenced = {
+        evidence_to_unit[item].graph_unit.graph_unit_id
+        for item in pointer.evidence_ids
+        if item in evidence_to_unit
+    }
+    missing = sorted(set(pointer.evidence_ids) - set(evidence_to_unit))
+    if missing:
+        raise ValueError(f"Evidence pointer has unknown evidence_ids: {missing}")
+    if len(referenced) != 1:
+        raise ValueError(
+            "Legacy evidence pointer evidence_ids must belong to exactly one graph unit"
+        )
+    return units[next(iter(referenced))]
+
+
+def _validate_reconstruction(
+    result: InitialCaseReconstruction,
+    case_input: SpecialtyCaseInput,
+    working: RadiologyWorkingInput,
+) -> None:
+    del case_input
+    for exam in result.examinations:
+        if exam.body_scope not in {"thoracic", "mixed", "uncertain"}:
+            raise ValueError("v2 examinations must remain within thoracic-radiology scope")
+        _validate_projection_pointers(exam.source_evidence, working)
+    for statement in result.reported_statements:
+        _validate_projection_pointers(statement.evidence, working)
+    _validate_all_pointers(result.orientation.context_evidence)
+    if any(item.task == RadiologyTask.CONDITIONAL_IPF_HRCT for item in result.task_plan):
+        item = next(
+            item for item in result.task_plan if item.task == RadiologyTask.CONDITIONAL_IPF_HRCT
+        )
+        if item.activation == "active" and not _explicit_ipf_context(working):
+            raise ValueError(
+                "conditional_ipf_hrct may be active only when the case explicitly presents "
+                "suspected/diagnosed IPF context"
+            )
+
+
+def _validate_formulation(
+    result,
+    reconstruction: InitialCaseReconstruction,
+    case_input: SpecialtyCaseInput,
+    working: RadiologyWorkingInput,
+    opinions: dict[str, SpecialistOpinion],
+) -> None:
+    del case_input
+    assessments = result.task_assessments
+    _require_unique([str(item.task) for item in assessments], "task assessment")
+    statement_ids = {item.statement_id for item in reconstruction.reported_statements}
+    for assessment in assessments:
+        unknown = set(assessment.reported_statement_ids) - statement_ids
+        if unknown:
+            raise ValueError(
+                f"Task {assessment.task} references unknown reported_statement_ids: "
+                f"{sorted(unknown)}"
+            )
+        _validate_task_assessment(assessment, reconstruction, working, opinions)
+    _validate_core_pe_wording(result.core_answer.answer, assessments)
+    coverage = result.review_coverage
+    _require_unique([str(item.domain) for item in coverage], "guide coverage domain")
+    for question in result.specialist_questions:
         if question.specialty == MdtSpecialty.SHARED_CONTEXT:
             raise ValueError("A specialist question cannot target shared_context")
+        _validate_all_pointers(question.related_evidence)
+    for action in result.action_items:
+        _validate_all_pointers(action.related_evidence)
 
 
-def _validate_source_state(state, case_input, opinions) -> None:
-    if state.overall_evaluability == "sufficient_for_pattern_assessment" and not state.examinations:
-        raise ValueError("Sufficient source evaluability requires at least one examination")
-    exam_ids = [item.exam_id for item in state.examinations]
-    if len(exam_ids) != len(set(exam_ids)):
-        raise ValueError("Imaging examinations contain duplicate exam_id values")
-    units = case_units(case_input)
-    for exam in state.examinations:
-        _validate_radiology_pointers(exam.supporting_evidence, [], units, opinions)
-        validate_pointers(exam.related_evidence, units)
-
-
-def _validate_observation_state(state, case_input, opinions) -> None:
-    items: list[object] = [
-        *state.observations,
-        state.interstitial_or_alveolar,
-        state.fibrosis_assessment,
-        state.extent_and_burden,
-        *state.ancillary_findings,
-        state.acute_overlay,
-        *state.explicit_comparisons,
-    ]
-    _validate_radiology_items([item for item in items if item is not None], case_input, opinions)
-
-
-def _validate_radiology_items(items, case_input, opinions) -> None:
-    units = case_units(case_input)
-    for item in items:
-        opinion_ids = getattr(item, "specialist_opinion_ids", [])
-        pointers = [
-            *getattr(item, "supporting_evidence", []),
-            *getattr(item, "conflicting_evidence", []),
-        ]
-        _validate_radiology_pointers(pointers, opinion_ids, units, opinions)
-        validate_pointers(getattr(item, "related_evidence", []), units)
-
-
-def _validate_generic_items(items, case_input, opinions) -> None:
-    units = case_units(case_input)
-    for item in items:
-        opinion_ids = getattr(item, "specialist_opinion_ids", [])
-        pointers = [
-            *getattr(item, "supporting_evidence", []),
-            *getattr(item, "conflicting_evidence", []),
-        ]
-        validate_authorized_pointers(
-            pointers,
-            opinion_ids,
-            units,
-            opinions,
-            _reference_only_error,
-        )
-        validate_pointers(getattr(item, "related_evidence", []), units)
-
-
-def _validate_related_items(items, case_input) -> None:
-    units = case_units(case_input)
-    for item in items:
-        validate_pointers(getattr(item, "related_evidence", []), units)
-
-
-def _validate_domain_changes(changes, case_input, opinions) -> None:
-    domains = [item.domain for item in changes]
-    if len(domains) != len(set(domains)) or set(domains) != set(ALL_DOMAINS):
-        raise ValueError("domain_changes must cover each of the seven domains exactly once")
-    units = case_units(case_input)
-    for change in changes:
-        if change.observation_delta == "updated":
-            _validate_radiology_pointers(
-                change.supporting_evidence,
-                change.specialist_opinion_ids,
-                units,
-                opinions,
-            )
-        else:
-            validate_authorized_pointers(
-                change.supporting_evidence,
-                change.specialist_opinion_ids,
-                units,
-                opinions,
-                _reference_only_error,
-            )
-
-
-def _validate_observation_immutability(result, discussion_input, opinions) -> None:
-    initial = discussion_input.initial_assessment
-    updated = result.updated_state
-    source_changed = initial.source_state.model_dump() != updated.source_state.model_dump()
-    observations_changed = (
-        initial.observation_state.model_dump() != updated.observation_state.model_dump()
-    )
-    interpretation_changed = (
-        initial.interpretation_state.model_dump() != updated.interpretation_state.model_dump()
-    )
-    observation_updates = [
-        item for item in result.domain_changes if item.observation_delta == "updated"
-    ]
-    interpretation_updates = [
-        item for item in result.domain_changes if item.interpretation_delta == "updated"
-    ]
-    if source_changed or observations_changed:
-        if not observation_updates:
-            raise ValueError("Changed source/observation state requires observation_delta=updated")
-        radiology_opinion_ids = {
-            opinion_id
-            for change in observation_updates
-            for opinion_id in change.specialist_opinion_ids
-            if opinion_id in opinions
-            and opinions[opinion_id].specialty == MdtSpecialty.THORACIC_RADIOLOGY
-        }
-        if not radiology_opinion_ids:
-            raise ValueError(
-                "Source/observation state may change only with a formal thoracic radiology claim"
-            )
-        permitted_evidence = authorized_evidence(
-            radiology_opinion_ids, opinions, radiology_only=True
-        )
-        changed_evidence = {
-            evidence_id
-            for change in observation_updates
-            for pointer in change.supporting_evidence
-            for evidence_id in pointer.evidence_ids
-        }
-        if not changed_evidence or not changed_evidence.issubset(permitted_evidence):
-            raise ValueError(
-                "Observation updates require evidence IDs cited by the formal thoracic "
-                "radiology claim"
-            )
-    elif observation_updates:
-        raise ValueError("observation_delta=updated but source/observation state is unchanged")
-    if interpretation_changed and not interpretation_updates:
-        raise ValueError("Changed interpretation state requires interpretation_delta=updated")
-    if not interpretation_changed and interpretation_updates:
-        raise ValueError("interpretation_delta=updated but interpretation state is unchanged")
-
-
-def _validate_mapped_findings(findings, case_input, opinions) -> None:
-    units = case_units(case_input)
-    for finding in findings:
-        opinion = opinions.get(finding.opinion_id)
-        if opinion is None:
-            raise ValueError(f"Unknown mapped opinion_id: {finding.opinion_id}")
-        if (
-            finding.target_layer == "observation"
-            and opinion.specialty != MdtSpecialty.THORACIC_RADIOLOGY
-        ):
-            raise ValueError("Only a thoracic radiology opinion may target observation layer")
-        validate_authorized_pointers(
-            finding.evidence,
-            [finding.opinion_id],
-            units,
-            opinions,
-            _reference_only_error,
-        )
-
-
-def _validate_chair_answers(answers, discussion_input, opinions) -> None:
-    validate_chair_question_order(answers, discussion_input.chair_questions)
-    _validate_generic_items(answers, discussion_input.case_input, opinions)
-
-
-def _validate_pattern_rule(
-    pattern: MorphologicPatternAssessment, clinical_rules: dict | None
+def _validate_task_assessment(
+    assessment: RadiologyTaskAssessment,
+    reconstruction: InitialCaseReconstruction,
+    working: RadiologyWorkingInput,
+    opinions: dict[str, SpecialistOpinion],
 ) -> None:
-    morphology_rule = (clinical_rules or {}).get("morphology") or {}
-    configured = morphology_rule.get("source")
-    if configured and pattern.framework != configured:
+    pointers = [*assessment.supporting_evidence, *assessment.conflicting_evidence]
+    if assessment.specialist_opinion_ids:
+        _validate_authorized_by_opinions(
+            pointers, assessment.specialist_opinion_ids, opinions
+        )
+    else:
+        _validate_projection_pointers(pointers, working)
+    _validate_all_pointers(assessment.related_evidence)
+    if (
+        assessment.task == RadiologyTask.ILD_MORPHOLOGIC_PATTERN
+        and assessment.answerability == "answered"
+        and assessment.confidence in {"very_high", "high"}
+        and not any(item.evidence_level == "feature_level" for item in reconstruction.examinations)
+    ):
         raise ValueError(
-            f"Pattern framework {pattern.framework!r} does not match configured {configured!r}"
+            "High-confidence morphologic pattern requires feature-level text evidence"
         )
-    recognized = set(morphology_rule.get("recognized_patterns") or [])
-    selected = [
-        item for item in [pattern.primary_pattern, *pattern.coexisting_patterns] if item is not None
-    ]
-    unknown = sorted(set(selected) - recognized) if recognized else []
-    if unknown:
-        raise ValueError(f"Unknown patterns for configured morphology framework: {unknown}")
-    if pattern.classification_status in {"confident_pattern", "provisional_pattern"}:
-        if not pattern.primary_pattern:
-            raise ValueError("Confident or provisional pattern requires primary_pattern")
-    if pattern.classification_status == "not_assessable" and pattern.primary_pattern is not None:
-        raise ValueError("not_assessable pattern cannot assign primary_pattern")
-
-
-def _validate_conditional_rules(
-    classifications: list[ConditionalImagingClassification], clinical_rules: dict | None
-) -> None:
-    ipf_rule = (clinical_rules or {}).get("ipf_hrct") or {}
-    configured_source = ipf_rule.get("source")
-    configured_categories = set(ipf_rule.get("categories") or [])
-    if len([item for item in classifications if item.protocol == "ipf_hrct_2022"]) > 1:
-        raise ValueError("ipf_hrct_2022 classification may appear at most once")
-    for item in classifications:
-        if configured_source and item.rule_source != configured_source:
-            raise ValueError(
-                f"IPF HRCT rule_source {item.rule_source!r} does not match configured "
-                f"{configured_source!r}"
+    if assessment.task == RadiologyTask.LONGITUDINAL_CHANGE:
+        if assessment.answerability in {"answered", "partially_answered"}:
+            combined = " ".join(
+                item.text for item in reconstruction.reported_statements
             )
-        if item.applicability == "applicable":
-            if not item.category:
-                raise ValueError("Applicable IPF HRCT classification requires a category")
-            if configured_categories and item.category not in configured_categories:
-                raise ValueError(f"Unknown configured IPF HRCT category: {item.category}")
-            if not item.supporting_evidence and not item.related_evidence:
+            if len(reconstruction.examinations) < 2 and not any(
+                marker in combined for marker in ("较前", "新发", "增加", "进展", "稳定", "改善")
+            ):
                 raise ValueError(
-                    "Applicable IPF HRCT classification requires applicability evidence"
+                    "Longitudinal assessment requires multiple exams or explicit comparison text"
                 )
-        elif item.category is not None:
-            raise ValueError("Non-applicable IPF HRCT classification cannot assign a category")
+    if assessment.task == RadiologyTask.TARGETED_PULMONARY_VASCULAR:
+        _validate_pe_wording(assessment.conclusion, assessment.supporting_evidence)
 
 
-def _validate_longitudinal_rule(
-    assessment: LongitudinalImagingAssessment, clinical_rules: dict | None
+def _validate_projection_pointers(
+    pointers: Iterable[EvidencePointer], working: RadiologyWorkingInput
 ) -> None:
-    configured = ((clinical_rules or {}).get("radiologic_progression") or {}).get("source")
-    if configured and assessment.rule_source != configured:
-        raise ValueError(
-            f"Radiologic progression rule_source {assessment.rule_source!r} does not match "
-            f"configured {configured!r}"
-        )
-    if assessment.status == "radiologic_progression":
-        if not assessment.progression_features or not assessment.supporting_evidence:
-            raise ValueError("Radiologic progression requires features and supporting evidence")
-    if assessment.status == "requires_comparator" and assessment.progression_features:
-        raise ValueError("requires_comparator cannot include confirmed progression features")
-    if assessment.status in {"stable", "improved", "mixed_change"}:
-        if not assessment.supporting_evidence:
-            raise ValueError(f"{assessment.status} longitudinal assessment requires evidence")
-    if assessment.acute_overlay_status == "absent" and not assessment.supporting_evidence:
-        raise ValueError("Absent acute overlay requires explicit supporting imaging evidence")
-
-
-def _validate_no_initial_opinions(value: object) -> None:
-    for opinion_ids in iter_named_lists(value, "specialist_opinion_ids"):
-        if opinion_ids:
-            raise ValueError("Initial radiology outputs cannot cite specialist_opinion_ids")
-
-
-def _validate_radiology_pointers(
-    pointers: Iterable[EvidencePointer],
-    specialist_opinion_ids: list[str],
-    units: dict[str, SpecialtyUnitInput],
-    opinions: dict,
-) -> None:
-    pointers = list(pointers)
-    validate_pointers(pointers, units)
-    permitted_evidence = authorized_evidence(specialist_opinion_ids, opinions, radiology_only=True)
+    eligible = working.eligible_statement_keys()
     for pointer in pointers:
-        unit = units[pointer.graph_unit_id]
-        if MdtSpecialty.THORACIC_RADIOLOGY in unit.graph_unit.mdt_specialty:
-            continue
-        if not set(pointer.evidence_ids).issubset(permitted_evidence):
+        if not pointer.proposition_ids:
             raise ValueError(
-                f"Unit {pointer.graph_unit_id} is not radiology-scoped and lacks an exact "
-                "formal thoracic radiology claim"
+                "v2 thoracic imaging evidence requires exact proposition_ids"
+            )
+        invalid = {
+            (pointer.graph_unit_id, proposition_id)
+            for proposition_id in pointer.proposition_ids
+            if (pointer.graph_unit_id, proposition_id) not in eligible
+        }
+        if invalid:
+            raise ValueError(
+                "Evidence pointer includes non-thoracic or ineligible propositions: "
+                f"{sorted(invalid)}"
             )
 
 
-def _reference_only_error(unit, pointer) -> str:
-    return (
-        f"Reference-only unit {pointer.graph_unit_id} requires a formal specialist "
-        "claim citing the exact same evidence IDs"
+def _upgrade_legacy_initial(
+    result: ThoracicRadiologyInitialAssessment,
+    working: RadiologyWorkingInput,
+) -> None:
+    """Convert v1 block references to eligible propositions and drop old route errors."""
+
+    eligible_by_unit = {
+        unit.graph_unit_id: [
+            statement
+            for statement in unit.statements
+            if statement.thoracic_imaging_eligible
+        ]
+        for unit in working.evidence_units
+    }
+
+    def exact(pointers: list[EvidencePointer]) -> list[EvidencePointer]:
+        mapped = []
+        for pointer in pointers:
+            if pointer.proposition_ids:
+                mapped.append(pointer)
+                continue
+            evidence_ids = set(pointer.evidence_ids)
+            pointer.proposition_ids = [
+                statement.proposition_id
+                for statement in eligible_by_unit.get(pointer.graph_unit_id, [])
+                if evidence_ids.intersection(statement.evidence_ids)
+            ]
+            if pointer.proposition_ids:
+                mapped.append(pointer)
+        return mapped
+
+    examinations = []
+    for exam in result.reconstruction.examinations:
+        exam.source_evidence = exact(exam.source_evidence)
+        if exam.source_evidence:
+            examinations.append(exam)
+    exam_ids = {exam.exam_id for exam in examinations}
+    for exam in examinations:
+        exam.possible_same_exam_as = [
+            item for item in exam.possible_same_exam_as if item in exam_ids
+        ]
+    result.reconstruction.examinations = examinations
+
+    statements = []
+    for statement in result.reconstruction.reported_statements:
+        statement.evidence = exact(statement.evidence)
+        if statement.evidence and statement.exam_id in exam_ids:
+            statements.append(statement)
+    result.reconstruction.reported_statements = statements
+    statement_ids = {item.statement_id for item in statements}
+
+    for assessment in result.task_assessments:
+        assessment.reported_statement_ids = [
+            item for item in assessment.reported_statement_ids if item in statement_ids
+        ]
+        assessment.supporting_evidence = exact(assessment.supporting_evidence)
+        assessment.conflicting_evidence = exact(assessment.conflicting_evidence)
+
+
+def _validate_all_pointers(pointers: Iterable[EvidencePointer]) -> None:
+    for pointer in pointers:
+        if not pointer.graph_unit_id or not pointer.segment_id:
+            raise ValueError("Evidence pointer has not been resolved")
+
+
+def _validate_authorized_by_opinions(
+    pointers: Iterable[EvidencePointer],
+    opinion_ids: Iterable[str],
+    opinions: dict[str, SpecialistOpinion],
+) -> None:
+    opinion_ids = list(opinion_ids)
+    _require_known_unique(opinion_ids, opinions, "specialist opinion")
+    allowed = {
+        (pointer.graph_unit_id, proposition_id)
+        for opinion_id in opinion_ids
+        for claim in opinions[opinion_id].claims
+        for pointer in claim.evidence
+        for proposition_id in pointer.proposition_ids
+    }
+    for pointer in pointers:
+        requested = {
+            (pointer.graph_unit_id, proposition_id)
+            for proposition_id in pointer.proposition_ids
+        }
+        if requested and not requested.issubset(allowed):
+            raise ValueError(
+                "Evidence is not authorized by the cited formal specialist opinions"
+            )
+
+
+def _validate_reported_content_update(result, opinions, working) -> None:
+    if not result.added_examinations and not result.added_reported_statements:
+        if result.reported_content_opinion_ids:
+            raise ValueError(
+                "reported_content_opinion_ids supplied without reported-content update"
+            )
+        return
+    _require_known_unique(
+        result.reported_content_opinion_ids, opinions, "reported-content opinion"
     )
+    if not result.reported_content_opinion_ids or any(
+        opinions[item].specialty != MdtSpecialty.THORACIC_RADIOLOGY
+        for item in result.reported_content_opinion_ids
+    ):
+        raise ValueError(
+            "New examinations or reported statements require a formal thoracic radiology opinion"
+        )
+    pointers = [
+        pointer
+        for exam in result.added_examinations
+        for pointer in exam.source_evidence
+    ] + [
+        pointer
+        for statement in result.added_reported_statements
+        for pointer in statement.evidence
+    ]
+    _validate_projection_pointers(pointers, working)
+    _validate_authorized_by_opinions(
+        pointers, result.reported_content_opinion_ids, opinions
+    )
+
+
+def _validate_chair_answers(
+    answers: list[ChairAnswer],
+    discussion_input: ThoracicRadiologyDiscussionInput,
+    opinions: dict[str, SpecialistOpinion],
+) -> None:
+    validate_chair_question_order(answers, discussion_input.chair_questions)
+    for answer in answers:
+        _validate_authorized_by_opinions(
+            answer.supporting_evidence,
+            answer.specialist_opinion_ids,
+            opinions,
+        ) if answer.specialist_opinion_ids else _validate_all_pointers(
+            answer.supporting_evidence
+        )
+
+
+def _validate_core_pe_wording(
+    answer: str, assessments: list[RadiologyTaskAssessment]
+) -> None:
+    pe = next(
+        (
+            item
+            for item in assessments
+            if item.task == RadiologyTask.TARGETED_PULMONARY_VASCULAR
+        ),
+        None,
+    )
+    if pe is not None:
+        _validate_pe_wording(answer, pe.supporting_evidence)
+
+
+def _validate_pe_wording(text: str, pointers: Iterable[EvidencePointer]) -> None:
+    quotes = " ".join(pointer.quote for pointer in pointers)
+    only_central_negative = "中央型肺栓塞" in quotes and "未见" in quotes
+    if only_central_negative and any(
+        phrase in text for phrase in ("排除肺栓塞", "未见肺栓塞", "无肺栓塞")
+    ):
+        raise ValueError(
+            "A central-PE-only negative report cannot be expanded to exclusion of all PE"
+        )
+
+
+def _explicit_ipf_context(working: RadiologyWorkingInput) -> bool:
+    return any(
+        marker in unit.text
+        for unit in working.orientation_units
+        for marker in ("疑似IPF", "特发性肺纤维化", "IPF")
+    )
+
+
+def _require_unique(values: list[str], label: str) -> None:
+    duplicates = sorted({item for item in values if values.count(item) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate {label} values: {duplicates}")
+
+
+def _require_known_unique(values: list[str], known: dict, label: str) -> None:
+    _require_unique(values, label)
+    unknown = sorted(set(values) - set(known))
+    if unknown:
+        raise ValueError(f"Unknown {label} IDs: {unknown}")

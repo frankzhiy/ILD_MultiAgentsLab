@@ -1,4 +1,6 @@
-"""Text-description-based thoracic radiology specialist agent for ILD MDT."""
+"""Problem-oriented, text-description-based thoracic-radiology specialist agent."""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -6,29 +8,30 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+from src.agents.thoracic_radiology.evidence_projection import (
+    RadiologyWorkingInput,
+    build_radiology_working_input,
+)
 from src.agents.thoracic_radiology.models import (
-    DiscussionConsultOutput,
     DiscussionEvidenceMap,
-    DiscussionStateUpdate,
-    ImagingInterpretationState,
-    InitialImagingFormulation,
-    InitialMorphologicAssessment,
-    InitialSourceReconstruction,
+    DiscussionUpdateAndConsult,
+    InitialCaseReconstruction,
+    InitialConsultFormulation,
+    RadiologyActionItem,
+    SpecialistQuestion,
     ThoracicRadiologyDiscussionInput,
     ThoracicRadiologyDiscussionResponse,
     ThoracicRadiologyInitialAssessment,
 )
 from src.agents.thoracic_radiology.validation import (
     require_radiology_input as _require_radiology_input,
-    validate_consult_output as _validate_consult_output,
+    validate_case_reconstruction as _validate_case_reconstruction,
     validate_discussion_response,
     validate_evidence_map as _validate_evidence_map,
-    validate_formulation_stage as _validate_formulation_stage,
     validate_initial_assessment,
-    validate_morphology_stage as _validate_morphology_stage,
-    validate_source_stage as _validate_source_stage,
+    validate_initial_formulation as _validate_initial_formulation,
     validate_specialist_opinions as _validate_specialist_opinions,
-    validate_state_update as _validate_state_update,
+    validate_update_and_consult as _validate_update_and_consult,
 )
 from src.llm.base import LLMClient
 from src.llm.structured import StructuredLLMGenerator
@@ -37,10 +40,10 @@ from src.utils.config import load_text, load_yaml, render_template
 
 
 SYSTEM_PROMPT = (
-    "你是严谨的 ILD 胸部影像科会诊医生，只能分析病例中的影像文字描述，"
-    "不能读取原始图像。你负责影像诊断与专业会诊，不是 MDT 主席。"
-    "所有面向人的文本字段必须使用简体中文，标准医学缩写可保留；"
-    "不得整句或整段使用英文。只返回符合 schema 的 JSON。"
+    "你是严谨的ILD胸部影像科会诊医生，只能分析病例中的影像文字描述，不能读取原始图像。"
+    "你必须先回答当前病例真正交给影像科的问题，再按资料可回答性选择任务；"
+    "原报告所见、原报告印象、临床诊断和你的影像解释必须严格分层。"
+    "所有面向人的文本字段使用简体中文，标准医学缩写可保留；只返回符合schema的JSON。"
 )
 
 
@@ -49,12 +52,10 @@ class ThoracicRadiologyAgent:
         self,
         llm: LLMClient,
         *,
-        initial_source_reconstruction_prompt_path: str | Path,
-        initial_morphologic_assessment_prompt_path: str | Path,
-        initial_imaging_formulation_prompt_path: str | Path,
+        initial_case_reconstruction_prompt_path: str | Path,
+        initial_consult_formulation_prompt_path: str | Path,
         discussion_evidence_mapping_prompt_path: str | Path,
-        discussion_imaging_update_prompt_path: str | Path,
-        discussion_consult_response_prompt_path: str | Path,
+        discussion_update_and_response_prompt_path: str | Path,
         clinical_rules: dict,
         temperature: float,
         max_tokens: int,
@@ -63,12 +64,16 @@ class ThoracicRadiologyAgent:
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.prompts = {
-            "initial_source_reconstruction": load_text(initial_source_reconstruction_prompt_path),
-            "initial_morphologic_assessment": load_text(initial_morphologic_assessment_prompt_path),
-            "initial_imaging_formulation": load_text(initial_imaging_formulation_prompt_path),
-            "discussion_evidence_mapping": load_text(discussion_evidence_mapping_prompt_path),
-            "discussion_imaging_update": load_text(discussion_imaging_update_prompt_path),
-            "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
+            "initial_case_reconstruction": load_text(
+                initial_case_reconstruction_prompt_path
+            ),
+            "initial_consult_formulation": load_text(initial_consult_formulation_prompt_path),
+            "discussion_evidence_mapping": load_text(
+                discussion_evidence_mapping_prompt_path
+            ),
+            "discussion_update_and_response": load_text(
+                discussion_update_and_response_prompt_path
+            ),
         }
         self.clinical_rules = clinical_rules
         self.generator = StructuredLLMGenerator(
@@ -93,12 +98,10 @@ class ThoracicRadiologyAgent:
     ) -> "ThoracicRadiologyAgent":
         config = load_yaml(config_path)
         prompt_keys = (
-            "initial_source_reconstruction_prompt",
-            "initial_morphologic_assessment_prompt",
-            "initial_imaging_formulation_prompt",
+            "initial_case_reconstruction_prompt",
+            "initial_consult_formulation_prompt",
             "discussion_evidence_mapping_prompt",
-            "discussion_imaging_update_prompt",
-            "discussion_consult_response_prompt",
+            "discussion_update_and_response_prompt",
         )
         missing = [key for key in prompt_keys if key not in config]
         if missing:
@@ -114,81 +117,59 @@ class ThoracicRadiologyAgent:
             event_callback=event_callback,
         )
 
+    @staticmethod
+    def build_working_input(case_input: SpecialtyCaseInput) -> RadiologyWorkingInput:
+        _require_radiology_input(case_input)
+        return build_radiology_working_input(case_input)
+
     def initial_assessment(
         self, case_input: SpecialtyCaseInput
     ) -> tuple[ThoracicRadiologyInitialAssessment, dict]:
         _require_radiology_input(case_input)
-        case_json = _json(case_input)
+        working_input = build_radiology_working_input(case_input)
+        working_json = _json(working_input)
         rules_json = _json(self.clinical_rules)
 
-        source, source_trace = self._generate(
-            stage="initial_source_reconstruction",
-            schema_model=InitialSourceReconstruction,
-            variables={"case_input": case_json, "clinical_rules": rules_json},
-            validation=lambda result: _validate_source_stage(result, case_input),
-        )
-        morphology, morphology_trace = self._generate(
-            stage="initial_morphologic_assessment",
-            schema_model=InitialMorphologicAssessment,
+        reconstruction, reconstruction_trace = self._generate(
+            stage="initial_case_reconstruction",
+            schema_model=InitialCaseReconstruction,
             variables={
-                "case_input": case_json,
-                "source_reconstruction": _json(source),
+                "working_input": working_json,
                 "clinical_rules": rules_json,
             },
-            validation=lambda result: _validate_morphology_stage(
-                result, case_input, self.clinical_rules
+            validation=lambda result: _validate_case_reconstruction(
+                result, case_input, working_input
             ),
         )
         formulation, formulation_trace = self._generate(
-            stage="initial_imaging_formulation",
-            schema_model=InitialImagingFormulation,
+            stage="initial_consult_formulation",
+            schema_model=InitialConsultFormulation,
             variables={
-                "case_input": case_json,
-                "source_reconstruction": _json(source),
-                "morphologic_assessment": _json(morphology),
+                "working_input": working_json,
+                "case_reconstruction": _json(reconstruction),
                 "clinical_rules": rules_json,
             },
-            validation=lambda result: _validate_formulation_stage(
-                result, case_input, self.clinical_rules
+            validation=lambda result: _validate_initial_formulation(
+                result, reconstruction, case_input, working_input
             ),
         )
         result = ThoracicRadiologyInitialAssessment(
             case_id=case_input.case_id,
-            domain_reviews=sorted(
-                [
-                    *source.domain_reviews,
-                    *morphology.domain_reviews,
-                    *formulation.domain_reviews,
-                ],
-                key=lambda item: list(type(item.domain)).index(item.domain),
+            reconstruction=reconstruction,
+            task_assessments=formulation.task_assessments,
+            core_answer=formulation.core_answer,
+            review_coverage=formulation.review_coverage,
+            specialist_questions=_dedupe_questions(formulation.specialist_questions),
+            action_items=_dedupe_actions(formulation.action_items),
+            limitations=_dedupe_strings(
+                [*reconstruction.limitations, *formulation.limitations]
             ),
-            source_state=source.source_state,
-            observation_state=morphology.observation_state,
-            interpretation_state=ImagingInterpretationState(
-                morphologic_pattern=formulation.morphologic_pattern,
-                conditional_classifications=formulation.conditional_classifications,
-                disease_associations=formulation.disease_associations,
-                longitudinal_assessment=morphology.longitudinal_assessment,
-                discordances=formulation.discordances,
-            ),
-            specialist_dependencies=formulation.specialist_dependencies,
-            direct_review_requests=[
-                *source.direct_review_requests,
-                *morphology.direct_review_requests,
-                *formulation.direct_review_requests,
-            ],
-            missing_data=formulation.missing_data,
-            limitations=[
-                *source.limitations,
-                *morphology.limitations,
-                *formulation.limitations,
-            ],
         )
         validate_initial_assessment(result, case_input, self.clinical_rules)
         return result, _combined_trace(
-            ("initial_source_reconstruction", source_trace),
-            ("initial_morphologic_assessment", morphology_trace),
-            ("initial_imaging_formulation", formulation_trace),
+            working_input,
+            ("initial_case_reconstruction", reconstruction_trace),
+            ("initial_consult_formulation", formulation_trace),
         )
 
     def discussion_response(
@@ -202,57 +183,76 @@ class ThoracicRadiologyAgent:
             self.clinical_rules,
         )
         _validate_specialist_opinions(discussion_input)
-        discussion_json = _json(discussion_input)
+        working_input = build_radiology_working_input(case_input)
+        compact_input = {
+            "case_id": case_input.case_id,
+            "working_input": working_input,
+            "initial_assessment": discussion_input.initial_assessment,
+            "specialist_opinions": discussion_input.specialist_opinions,
+            "chair_questions": discussion_input.chair_questions,
+        }
+        compact_json = _json(compact_input)
         rules_json = _json(self.clinical_rules)
 
         evidence_map, map_trace = self._generate(
             stage="discussion_evidence_mapping",
             schema_model=DiscussionEvidenceMap,
-            variables={"discussion_input": discussion_json, "clinical_rules": rules_json},
+            variables={
+                "discussion_input": compact_json,
+                "clinical_rules": rules_json,
+            },
             validation=lambda result: _validate_evidence_map(result, discussion_input),
         )
         update, update_trace = self._generate(
-            stage="discussion_imaging_update",
-            schema_model=DiscussionStateUpdate,
+            stage="discussion_update_and_response",
+            schema_model=DiscussionUpdateAndConsult,
             variables={
-                "discussion_input": discussion_json,
+                "discussion_input": compact_json,
                 "evidence_map": _json(evidence_map),
                 "clinical_rules": rules_json,
             },
-            validation=lambda result: _validate_state_update(
-                result, discussion_input, self.clinical_rules
+            validation=lambda result: _validate_update_and_consult(
+                result, discussion_input
             ),
         )
-        consult, consult_trace = self._generate(
-            stage="discussion_consult_response",
-            schema_model=DiscussionConsultOutput,
-            variables={
-                "discussion_input": discussion_json,
-                "updated_state": _json(update.updated_state),
-                "state_delta": _json(update.domain_changes),
-                "clinical_rules": rules_json,
-            },
-            validation=lambda result: _validate_consult_output(result, discussion_input),
+        updated_assessment = _merge_discussion_update(
+            discussion_input.initial_assessment, update
+        )
+        used_opinions = _dedupe_strings(
+            [
+                *evidence_map.specialist_opinions_used,
+                *update.reported_content_opinion_ids,
+                *[
+                    opinion_id
+                    for item in update.task_updates
+                    for opinion_id in item.specialist_opinion_ids
+                ],
+                *[
+                    opinion_id
+                    for item in update.chair_answers
+                    for opinion_id in item.specialist_opinion_ids
+                ],
+            ]
         )
         result = ThoracicRadiologyDiscussionResponse(
             case_id=case_input.case_id,
-            updated_state=update.updated_state,
-            domain_changes=update.domain_changes,
-            specialist_opinions_used=evidence_map.specialist_opinions_used,
+            updated_assessment=updated_assessment,
+            task_changes=update.task_updates,
+            specialist_opinions_used=used_opinions,
             mapped_findings=evidence_map.mapped_findings,
-            chair_answers=consult.chair_answers,
+            chair_answers=update.chair_answers,
             unresolved_conflicts=[
                 *evidence_map.unresolved_conflicts,
-                *consult.unresolved_conflicts,
+                *update.unresolved_conflicts,
             ],
-            imaging_recommendations=consult.imaging_recommendations,
-            limitations=consult.limitations,
+            imaging_recommendations=_dedupe_strings(update.imaging_recommendations),
+            limitations=_dedupe_strings(update.limitations),
         )
         validate_discussion_response(result, discussion_input, self.clinical_rules)
         return result, _combined_trace(
+            working_input,
             ("discussion_evidence_mapping", map_trace),
-            ("discussion_imaging_update", update_trace),
-            ("discussion_consult_response", consult_trace),
+            ("discussion_update_and_response", update_trace),
         )
 
     def _generate(self, *, stage, schema_model, variables, validation):
@@ -274,6 +274,70 @@ class ThoracicRadiologyAgent:
         )
 
 
+def _merge_discussion_update(
+    initial: ThoracicRadiologyInitialAssessment,
+    update: DiscussionUpdateAndConsult,
+) -> ThoracicRadiologyInitialAssessment:
+    reconstruction_data = initial.reconstruction.model_dump(mode="python")
+    reconstruction_data["examinations"] = [
+        *initial.reconstruction.examinations,
+        *update.added_examinations,
+    ]
+    reconstruction_data["reported_statements"] = [
+        *initial.reconstruction.reported_statements,
+        *update.added_reported_statements,
+    ]
+    reconstruction = InitialCaseReconstruction.model_validate(reconstruction_data)
+    assessments = {item.task: item for item in initial.task_assessments}
+    for item in update.task_updates:
+        assessments[item.task] = item.updated_assessment
+    return ThoracicRadiologyInitialAssessment(
+        case_id=initial.case_id,
+        reconstruction=reconstruction,
+        task_assessments=list(assessments.values()),
+        core_answer=update.updated_core_answer,
+        review_coverage=update.review_coverage or initial.review_coverage,
+        specialist_questions=_dedupe_questions(
+            [*initial.specialist_questions, *update.specialist_questions]
+        ),
+        action_items=_dedupe_actions([*initial.action_items, *update.action_items]),
+        limitations=_dedupe_strings([*initial.limitations, *update.limitations]),
+    )
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for item in items:
+        normalized = "".join(item.split()).rstrip("。；;，,")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(item)
+    return result
+
+
+def _dedupe_questions(items: list[SpecialistQuestion]) -> list[SpecialistQuestion]:
+    seen = set()
+    result = []
+    for item in items:
+        key = (item.specialty, "".join(item.question.split()).rstrip("？?。"))
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def _dedupe_actions(items: list[RadiologyActionItem]) -> list[RadiologyActionItem]:
+    seen = set()
+    result = []
+    for item in items:
+        key = "".join(item.action.split()).rstrip("。；;，,")
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 def _json(value: object) -> str:
     def serializable(item):
         if isinstance(item, BaseModel):
@@ -287,8 +351,9 @@ def _json(value: object) -> str:
     return json.dumps(serializable(value), ensure_ascii=False, indent=2)
 
 
-def _combined_trace(*stages) -> dict:
+def _combined_trace(working_input: RadiologyWorkingInput, *stages) -> dict:
     return {
-        "schema_version": "thoracic_radiology.v1",
+        "schema_version": "thoracic_radiology.v2",
+        "working_input_summary": working_input.summary.model_dump(mode="json"),
         "stages": [{"stage": name, **trace} for name, trace in stages],
     }

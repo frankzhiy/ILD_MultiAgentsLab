@@ -35,7 +35,8 @@ def validate_initial_assessment(
         raise ValueError(f"Assessment case_id {result.case_id} does not match {case_input.case_id}")
     result.case_id = case_input.case_id
     _resolve_evidence_pointers(result, case_input)
-    _validate_clinical_state(result, case_input, {}, clinical_rules)
+    del clinical_rules
+    _validate_clinical_state(result, case_input, {})
     return result
 
 
@@ -51,7 +52,8 @@ def validate_discussion_response(
     _resolve_evidence_pointers(result, case_input)
     opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
     validate_used_opinions(result.specialist_opinions_used, opinions)
-    _validate_clinical_state(result.updated_state, case_input, opinions, clinical_rules)
+    del clinical_rules
+    _validate_clinical_state(result.updated_state, case_input, opinions)
     _validate_domain_changes(result.domain_changes, case_input, opinions)
     _validate_mapped_findings(result.mapped_findings, case_input, opinions)
     _validate_clinical_items(result.unresolved_conflicts, case_input, opinions)
@@ -93,7 +95,7 @@ def validate_initial_stage(
         validate_pointers(question.related_evidence, units)
     for observation in getattr(result, "reference_observations", []):
         validate_pointers(observation.related_evidence, units)
-    _validate_ppf_rule(progression, clinical_rules)
+    del clinical_rules
     for question in getattr(result, "specialist_dependencies", []):
         if question.specialty == MdtSpecialty.SHARED_CONTEXT:
             raise ValueError("A specialist question cannot target shared_context")
@@ -119,12 +121,8 @@ def validate_state_update(
 ) -> DiscussionStateUpdate:
     _resolve_evidence_pointers(result, discussion_input.case_input)
     opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    _validate_clinical_state(
-        result.updated_state,
-        discussion_input.case_input,
-        opinions,
-        clinical_rules,
-    )
+    del clinical_rules
+    _validate_clinical_state(result.updated_state, discussion_input.case_input, opinions)
     _validate_domain_changes(result.domain_changes, discussion_input.case_input, opinions)
     return result
 
@@ -156,7 +154,6 @@ def _validate_clinical_state(
     state: PulmonologyClinicalState,
     case_input: SpecialtyCaseInput,
     opinions: dict,
-    clinical_rules: dict | None,
 ) -> None:
     state.case_id = case_input.case_id
     items: list[object] = [
@@ -186,9 +183,6 @@ def _validate_clinical_state(
         validate_pointers(question.related_evidence, units)
     for observation in state.reference_observations:
         validate_pointers(observation.related_evidence, units)
-    _validate_ppf_rule(state.progression_assessment, clinical_rules)
-
-
 def _validate_clinical_items(items, case_input, opinions) -> None:
     units = case_units(case_input)
     for item in items:
@@ -233,16 +227,6 @@ def _validate_mapped_findings(findings, case_input, opinions) -> None:
 def _validate_chair_answers(answers, discussion_input, opinions) -> None:
     validate_chair_question_order(answers, discussion_input.chair_questions)
     _validate_clinical_items(answers, discussion_input.case_input, opinions)
-
-
-def _validate_ppf_rule(progression, clinical_rules: dict | None) -> None:
-    if not progression or not clinical_rules:
-        return
-    configured = (clinical_rules.get("ppf") or {}).get("source")
-    if configured and progression.rule_source != configured:
-        raise ValueError(
-            f"PPF rule_source {progression.rule_source!r} does not match configured {configured!r}"
-        )
 
 
 def _pulmonology_authorization_error(unit, pointer) -> str:

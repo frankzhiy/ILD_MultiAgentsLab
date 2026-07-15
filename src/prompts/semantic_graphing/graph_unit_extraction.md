@@ -13,6 +13,7 @@
 - 一次诊疗接触事件指患者与某一医疗场所或医疗行为的一次完整接触；该次接触中发生的就诊、检查、结果、当场处置与即时反应，共同构成一个事件核，保留在同一个 graph unit。
 - 一段连续病程叙事指在两次诊疗接触之间，围绕症状本身展开的连续叙述，包括起病、演变、加重、自我应对及其主观感受；它们围绕同一条症状主线连续推进时，合并为同一个 graph unit。
 - 判断切分点的唯一标准是「事件核是否切换」，而不是「功能类型是否变化」。同一个事件核内部出现多种功能时，不因功能变化而拆开。
+- 专科路由变化也不是切分依据。同一事件核内同时包含多个专科可解读内容时，保留为一个 graph unit，mdt_specialty 取这些内容所需专科的并集。
 
 修饰成分不独立成块（强制）：
 - 下列成分是某个 event nucleus 的修饰语，必须并入它所修饰的 graph unit，禁止单独成块：
@@ -69,8 +70,8 @@ mdt_specialty（该 graph unit 应送给哪些 ILD MDT 专科会诊）：
 - 这是一个列表，至少一个值；同一块证据可以同时送给多个专科。
 - 你要阅读这块内容的实际含义来判断，而不是机械套用 source_type。
 - 可选专科：
-  - pulmonology：肺功能、呼吸症状与病程、暴露与用药、氧合、BAL/支气管镜及肺部治疗反应。
-  - thoracic_radiology：胸部影像。HRCT/CT/胸片的影像所见与影像模式（UIP/NSIP/OP/HP 等）。
+  - pulmonology：肺功能、呼吸症状与病程、暴露与用药、氧合、BAL/支气管镜、肺循环临床问题及肺部治疗反应。
+  - thoracic_radiology：仅限需要解读的胸部影像文字内容，包括 HRCT、胸部 CT、CTPA、胸片的检查信息、影像所见、正式影像印象与影像模式（UIP/NSIP/OP/HP 等）。
   - pathology：病理。活检、TBLC、外科肺活检的形态学发现。
   - rheumatology：风湿免疫。自身抗体、关节/雷诺/皮疹/肌肉等 CTD-ILD 肺外表现。
   - shared_context：广播背景。人口学信息、主诉等本身没有专科解读价值、但所有专科都需要知道的背景信息。
@@ -79,10 +80,13 @@ mdt_specialty（该 graph unit 应送给哪些 ILD MDT 专科会诊）：
   - “ANA 1:320、肌炎抗体阳性” → source_type=ctd_related_findings, mdt_specialty=[rheumatology]；“KL-6 升高” → source_type=laboratory_findings, mdt_specialty=[pulmonology]；两者同段 → [rheumatology, pulmonology]。
   - “BALF 淋巴细胞比例升高” → source_type=bronchoscopy_findings, mdt_specialty=[pulmonology]。
   - “关节晨僵，外院 CT 示纤维化” → [rheumatology, thoracic_radiology]。
+  - “术前肺功能提示通气障碍，超声心动图示肺动脉压升高，双下肢超声未见血栓” → [pulmonology]，不含 thoracic_radiology。
+  - “术后低氧，CTPA 未见中央型肺栓塞” → [pulmonology, thoracic_radiology]：低氧和肺栓塞临床问题由呼吸科解释，CTPA 文字结论由影像科解释；仍按同一诊疗事件保留为一个 graph unit。
   - “养鸟史 10 年” → [pulmonology]。
   - “父亲患肺纤维化” → source_type=family_history, mdt_specialty=[shared_context]。
   - “55 岁男性”、“主诉咳嗽 3 月” → [shared_context]。
 - 不要把 source_type 机械映射成专科；同一个 source_type（如 laboratory_findings、present_illness）可能根据内容路由到不同专科。
+- 不要因为文本属于“检查结果”就自动加入 thoracic_radiology。肺功能、超声心动图、下肢血管超声及其他非胸部影像不属于胸部影像科；只有同一 graph unit 内还存在可独立解读的胸部影像内容时才加入 thoracic_radiology。
 
 允许的 status：
 - present
@@ -103,7 +107,9 @@ mdt_specialty（该 graph unit 应送给哪些 ILD MDT 专科会诊）：
 严格要求：
 - 只切分当前 segment，不要重新切分整个文档。
 - 每个 graph unit 必须对应一个 clinical event nucleus，不要切到 finding 级。
-- 每个 graph unit 的 text 必须是 segment text 中的连续原文子串。- 每个 graph unit 的 mdt_specialty 必须至少有一个值，通过阅读内容判断，可以是多个。- 修饰成分（时间锚点、触发框架、症状属性、患者态度/依从）禁止单独成块，必须并入其所修饰的 event nucleus。
+- 每个 graph unit 的 text 必须是 segment text 中的连续原文子串。
+- 每个 graph unit 的 mdt_specialty 必须至少有一个值，通过阅读内容判断，可以是多个；专科标签变化本身不得触发切分。
+- 修饰成分（时间锚点、触发框架、症状属性、患者态度/依从）禁止单独成块，必须并入其所修饰的 event nucleus。
 - 禁止改写、总结、删除、补充或规范化原文。
 - graph units 必须按原文顺序排列，不能重叠。
 - 不要输出没有原文证据的信息。

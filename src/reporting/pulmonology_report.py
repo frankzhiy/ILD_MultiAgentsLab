@@ -528,8 +528,7 @@ def _progression_detail(item: Any, roles: dict[str, str]) -> str:
         f"<h3>近期变化：{escape(_value_label(item.recent_worsening))} · "
         f"PPF：{escape(_value_label(item.ppf_status))}</h3>"
         f"<p>{escape(item.reasoning_summary)}</p>"
-        f"<p><strong>规则：</strong>{escape(item.rule_source)}；"
-        f"{escape(_value_label(item.assessment_window))}</p>"
+        f"<p><strong>观察窗口：</strong>{escape(_value_label(item.assessment_window))}</p>"
         f"<p>{escape(components)}</p>{_evidence_panel(evidence, roles)}"
         f"{_evidence_panel(related, roles, '相关上下文（不支持结论）')}</article>"
     )

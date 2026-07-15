@@ -11,12 +11,10 @@ temperature: 0.0
 max_tokens: 12000
 max_attempts: 3
 retry_backoff_seconds: 3
-initial_source_reconstruction_prompt: src/prompts/thoracic_radiology/initial_source_reconstruction.md
-initial_morphologic_assessment_prompt: src/prompts/thoracic_radiology/initial_morphologic_assessment.md
-initial_imaging_formulation_prompt: src/prompts/thoracic_radiology/initial_imaging_formulation.md
+initial_case_reconstruction_prompt: src/prompts/thoracic_radiology/initial_case_reconstruction.md
+initial_consult_formulation_prompt: src/prompts/thoracic_radiology/initial_consult_formulation.md
 discussion_evidence_mapping_prompt: src/prompts/thoracic_radiology/discussion_evidence_mapping.md
-discussion_imaging_update_prompt: src/prompts/thoracic_radiology/discussion_imaging_update.md
-discussion_consult_response_prompt: src/prompts/thoracic_radiology/discussion_consult_response.md
+discussion_update_and_response_prompt: src/prompts/thoracic_radiology/discussion_update_and_response.md
 
 clinical_rules:
   morphology:
