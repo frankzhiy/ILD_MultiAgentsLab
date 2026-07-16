@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
-from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
@@ -48,9 +48,11 @@ class EvidencePointer(BaseModel):
 
     evidence_ids: list[str] = Field(
         min_length=1,
+        json_schema_extra={"maxItems": 1},
         description=(
-            "来自同一个 graph unit 的 evidence block ID。判断涉及多个 graph unit 时，"
-            "每个 unit 分别创建一个 EvidencePointer；其余定位信息由程序补全。"
+            "只填写一个 evidence block ID；判断涉及多个证据时创建多个 "
+            "EvidencePointer。"
+            "其余定位信息由程序补全。"
         ),
     )
     segment_id: SkipJsonSchema[str] = ""
@@ -131,7 +133,7 @@ class DataGap(BaseModel):
 class SpecialistQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    specialty: MdtSpecialty
+    specialty: SpecialistTarget
     question: str = Field(min_length=1)
     why_it_matters: str = Field(min_length=1)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
@@ -288,7 +290,13 @@ class DiagnosticFormulation(BaseModel):
         "unclassifiable_ild",
         "insufficient_data",
     ]
-    leading_diagnosis: str | None = None
+    leading_diagnosis: str | None = Field(
+        default=None,
+        description=(
+            "classification_status 不是 insufficient_data 时必须填写非空主导诊断；"
+            "insufficient_data 时可以为 null。"
+        ),
+    )
     confidence: ClinicalConfidence
     morphologic_pattern: ClinicalAssessmentItem | None = Field(
         default=None,
@@ -535,7 +543,7 @@ class SpecialistClaim(BaseModel):
 class SpecialistOpinion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    specialty: MdtSpecialty
+    specialty: SpecialistTarget
     opinion_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
     claims: list[SpecialistClaim] = Field(default_factory=list)

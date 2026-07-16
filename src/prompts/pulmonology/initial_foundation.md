@@ -16,7 +16,7 @@
 - `segment.text` 与 `graph_unit.text` 是逐字病例原文；`evidence_blocks` 只提供可引用的 evidence ID 与对应原文，不产生原文之外的新事实。
 - 证据权限以每个 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `collaborative_context` 只表示该 unit 分别路由给一个或多个专科，二者使用权完全相同；加上 `shared_context`，都可用于相应判断并进入 `supporting_evidence` 或 `conflicting_evidence`。不得仅因 unit 同时路由给其他专科而降低其权限。`reference_only` 只能用于理解病例、`related_evidence`、待确认观察或专科问题。
 - 缺失信息不等于阴性信息，“未提及”不等于“未做”。不要补写原文没有的症状、暴露、检查或时间点。
-- 每项实际形成的临床判断都应引用相应证据。每个 EvidencePointer 只填写 `evidence_ids`，且同一个 EvidencePointer 中的 ID 必须全部属于同一个 graph unit；判断涉及多个 unit 时，拆成多个 EvidencePointer。逐字复制 evidence block ID，不要填写 segment_id、graph_unit_id、node_ids 或 quote。
+- 每项实际形成的临床判断都应引用相应证据。每个 EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个 EvidencePointer。逐字复制 evidence block ID，不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - `related_evidence` 只解释限制、defer 或问题背景，不支持临床结论；其中可以引用任意角色的相关证据。不可评价或等待专科时，不要把相关上下文误放进 `supporting_evidence`。
 - 本阶段没有正式专科意见可供整合，所有 `specialist_opinion_ids` 必须为空列表。
 - 只生成 schema 要求的结构化、可审计判断及简短理由；不要输出自由形式的长篇思维过程。

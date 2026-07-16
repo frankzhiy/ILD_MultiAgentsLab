@@ -7,6 +7,8 @@ from src.agents.common.evidence_projection import (
     build_specialty_evidence_prompt_input,
     build_specialty_working_input,
 )
+from src.agents.common.prompt_contract import specialty_output_contract
+from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.pulmonology.models import (
     DiscussionConsultOutput,
     DiscussionEvidenceMap,
@@ -49,6 +51,17 @@ _RULE_KEYS_BY_STAGE = {
     "discussion_evidence_mapping": (),
     "discussion_state_update": ("diagnostic_confidence", "ppf"),
     "discussion_consult_response": ("diagnostic_confidence", "ppf"),
+}
+
+_CONTRACT_RULES_BY_STAGE = {
+    "initial_diagnostic_formulation": (
+        "diagnostic_formulation.classification_status 不是 insufficient_data 时，"
+        "leading_diagnosis 必须是非空字符串。",
+    ),
+    "discussion_state_update": (
+        "updated_state.diagnostic_formulation.classification_status 不是 insufficient_data 时，"
+        "leading_diagnosis 必须是非空字符串。",
+    ),
 }
 
 
@@ -134,12 +147,14 @@ class PulmonologyAgent:
         case_json = _json(build_specialty_working_input(case_input))
         evidence_json = _json(build_specialty_evidence_prompt_input(case_input))
         rules_json = _json(self.clinical_rules)
+        pointer_constraints = diagnostic_evidence_schema_constraints(case_input)
 
         foundation, foundation_trace = self._generate(
             stage="initial_foundation",
             schema_model=InitialFoundation,
             variables={"case_input": case_json, "clinical_rules": rules_json},
             validation=lambda result: _validate_initial_stage(result, case_input),
+            pointer_constraints=pointer_constraints,
         )
         pulmonary, pulmonary_trace = self._generate(
             stage="initial_pulmonary_assessment",
@@ -152,6 +167,7 @@ class PulmonologyAgent:
             validation=lambda result: _validate_initial_stage(
                 result, case_input, self.clinical_rules
             ),
+            pointer_constraints=pointer_constraints,
         )
         formulation, formulation_trace = self._generate(
             stage="initial_diagnostic_formulation",
@@ -163,6 +179,7 @@ class PulmonologyAgent:
                 "clinical_rules": rules_json,
             },
             validation=lambda result: _validate_initial_stage(result, case_input),
+            pointer_constraints=pointer_constraints,
         )
         result = PulmonologyInitialAssessment(
             case_id=case_input.case_id,
@@ -224,6 +241,10 @@ class PulmonologyAgent:
             }
         )
         rules_json = _json(self.clinical_rules)
+        pointer_constraints = diagnostic_evidence_schema_constraints(
+            case_input,
+            discussion_input.specialist_opinions,
+        )
 
         evidence_map, map_trace = self._generate(
             stage="discussion_evidence_mapping",
@@ -233,6 +254,7 @@ class PulmonologyAgent:
                 "clinical_rules": rules_json,
             },
             validation=lambda result: _validate_evidence_map(result, discussion_input),
+            pointer_constraints=pointer_constraints,
         )
         state_update, update_trace = self._generate(
             stage="discussion_state_update",
@@ -245,6 +267,7 @@ class PulmonologyAgent:
             validation=lambda result: _validate_state_update(
                 result, discussion_input, self.clinical_rules
             ),
+            pointer_constraints=pointer_constraints,
         )
         consult, consult_trace = self._generate(
             stage="discussion_consult_response",
@@ -256,6 +279,7 @@ class PulmonologyAgent:
                 "clinical_rules": rules_json,
             },
             validation=lambda result: _validate_consult_output(result, discussion_input),
+            pointer_constraints=pointer_constraints,
         )
         result = PulmonologyDiscussionResponse(
             case_id=case_input.case_id,
@@ -278,7 +302,15 @@ class PulmonologyAgent:
             ("discussion_consult_response", consult_trace),
         )
 
-    def _generate(self, *, stage, schema_model, variables, validation):
+    def _generate(
+        self,
+        *,
+        stage,
+        schema_model,
+        variables,
+        validation,
+        pointer_constraints=None,
+    ):
         guideline_context, allowed_chunks, retrieval_trace = (
             self.guideline_runtime.prepare(stage)
             if self.guideline_runtime
@@ -294,7 +326,11 @@ class PulmonologyAgent:
                 }
             ),
         }
-        output_schema = prompt_schema_json(schema_model)
+        output_schema = (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if self.generator.response_format_mode == "json_schema"
+            else prompt_schema_json(schema_model)
+        )
         prompt = render_template(
             self.prompts[stage],
             {
@@ -304,6 +340,13 @@ class PulmonologyAgent:
         )
         if allowed_chunks:
             prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+        contract = specialty_output_contract(
+            pointer_style="evidence_id",
+            initial_stage=stage.startswith("initial_"),
+            partitioned_evidence=stage != "initial_foundation",
+            extra_rules=_CONTRACT_RULES_BY_STAGE.get(stage, ()),
+        )
+        prompt = f"{prompt}\n\n{contract}"
 
         def validate_with_guidelines(result):
             result = validation(result)
@@ -318,6 +361,7 @@ class PulmonologyAgent:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
+            pointer_field_constraints=pointer_constraints,
         )
         trace["guideline_retrieval"] = retrieval_trace
         trace["prompt_components"] = {

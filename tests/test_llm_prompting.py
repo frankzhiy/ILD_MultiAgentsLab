@@ -1,9 +1,24 @@
 import json
 
+import pytest
+
+from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.pulmonology.models import EvidencePointer as PulmonologyPointer
+from src.agents.pulmonology.models import InitialPulmonaryAssessment
+from src.agents.pulmonology.models import SpecialistQuestion as PulmonologyQuestion
+from src.agents.pulmonology.models import SpecialistOpinion as PulmonologyOpinion
+from src.agents.rheumatology.models import SpecialistQuestion as RheumatologyQuestion
+from src.agents.rheumatology.models import SpecialistOpinion as RheumatologyOpinion
 from src.agents.thoracic_radiology.models import EvidencePointer as RadiologyPointer
+from src.agents.thoracic_radiology.models import SpecialistQuestion as RadiologyQuestion
+from src.agents.thoracic_radiology.models import SpecialistOpinion as RadiologyOpinion
 from src.guidelines.models import GuidelineEvidencePointer
 from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.structured import (
+    StructuredGenerationError,
+    StructuredLLMGenerator,
+    json_schema_response_format,
+)
 
 
 def test_prompt_json_removes_program_filled_fields_recursively():
@@ -44,3 +59,87 @@ def test_prompt_schema_is_compact_and_keeps_required_structure():
     assert '"evidence_ids"' in schema
     assert '"graph_unit_id"' not in schema
     assert '"title"' not in schema
+
+
+def test_specialist_output_schemas_exclude_shared_context():
+    for model in (
+        PulmonologyQuestion,
+        RheumatologyQuestion,
+        RadiologyQuestion,
+        PulmonologyOpinion,
+        RheumatologyOpinion,
+        RadiologyOpinion,
+    ):
+        schema = model.model_json_schema()
+        assert schema["$defs"]["SpecialistTarget"]["enum"] == [
+            "pulmonology",
+            "thoracic_radiology",
+            "pathology",
+            "rheumatology",
+        ]
+
+
+def test_strict_response_schema_requires_every_property_and_has_atomic_pointers():
+    response_format = json_schema_response_format(
+        InitialPulmonaryAssessment, "initial_pulmonary_assessment"
+    )
+    schema = response_format["json_schema"]["schema"]
+    pointer = schema["$defs"]["EvidencePointer"]["properties"]["evidence_ids"]
+
+    assert response_format["json_schema"]["strict"] is True
+    assert schema["required"] == list(schema["properties"])
+    assert "default" not in schema["properties"]["limitations"]
+    assert pointer["minItems"] == pointer["maxItems"] == 1
+
+
+def test_final_contract_distinguishes_partitioned_and_working_inputs():
+    working = specialty_output_contract(
+        pointer_style="evidence_id", initial_stage=True
+    )
+    partitioned = specialty_output_contract(
+        pointer_style="evidence_id",
+        initial_stage=True,
+        partitioned_evidence=True,
+    )
+
+    assert "may_support_diagnostic_claim=true" in working
+    assert "diagnostic_evidence_units" in partitioned
+    assert "context_only_evidence_units" in partitioned
+    assert partitioned.endswith("specialist_opinion_ids 必须为空列表。")
+
+    discussion = specialty_output_contract(
+        pointer_style="evidence_id",
+        initial_stage=False,
+        partitioned_evidence=True,
+    )
+    assert "获得授权后必须同时填写对应 specialist_opinion_id" in discussion
+
+
+def test_declared_json_schema_support_does_not_silently_downgrade():
+    class RejectingLLM:
+        def __init__(self):
+            self.formats = []
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            self.formats.append(response_format)
+            raise RuntimeError("provider rejected json_schema")
+
+    llm = RejectingLLM()
+    generator = StructuredLLMGenerator(
+        llm,
+        temperature=0,
+        max_tokens=100,
+        max_attempts=2,
+        response_format_mode="json_schema",
+    )
+
+    with pytest.raises(StructuredGenerationError, match="provider rejected json_schema"):
+        generator.generate(
+            schema_model=PulmonologyPointer,
+            schema_name="pointer",
+            system_prompt="system",
+            user_prompt="user",
+        )
+
+    assert len(llm.formats) == 1
+    assert llm.formats[0]["type"] == "json_schema"

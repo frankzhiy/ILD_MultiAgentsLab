@@ -7,6 +7,7 @@ from src.agents.common.validation import (
     require_specialty_input,
     resolve_evidence_pointers,
     validate_authorized_pointers,
+    validate_authorized_items,
     validate_chair_question_order,
     validate_pointers,
     validate_specialist_opinions as validate_common_specialist_opinions,
@@ -135,19 +136,13 @@ def _validate_context_fields(value, case_input) -> None:
     for gap in getattr(value, "missing_data", []):
         validate_pointers(gap.related_evidence, units)
     for question in getattr(value, "specialist_dependencies", []):
-        if question.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist question cannot target shared_context")
         validate_pointers(question.related_evidence, units)
     for observation in getattr(value, "reference_observations", []):
         validate_pointers(observation.related_evidence, units)
 
 
 def _validate_items(items, case_input, opinions) -> None:
-    units = case_units(case_input)
-    for item in items:
-        pointers = [*getattr(item, "supporting_evidence", []), *getattr(item, "conflicting_evidence", [])]
-        validate_authorized_pointers(pointers, getattr(item, "specialist_opinion_ids", []), units, opinions, _authorization_error)
-        validate_pointers(getattr(item, "related_evidence", []), units)
+    validate_authorized_items(items, case_input, opinions, _authorization_error)
 
 
 def _validate_changes(changes, case_input, opinions) -> None:

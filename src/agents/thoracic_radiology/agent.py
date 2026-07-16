@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.thoracic_radiology.evidence_projection import (
     RadiologyWorkingInput,
     build_radiology_evidence_prompt_input,
     build_radiology_reconstruction_prompt_input,
     build_radiology_working_input,
+    radiology_proposition_schema_constraints,
 )
 from src.agents.thoracic_radiology.models import (
     DiscussionEvidenceMap,
@@ -158,6 +160,7 @@ class ThoracicRadiologyAgent:
             build_radiology_evidence_prompt_input(working_input)
         )
         rules_json = _json(self.clinical_rules)
+        pointer_constraints = radiology_proposition_schema_constraints(working_input)
 
         reconstruction, reconstruction_trace = self._generate(
             stage="initial_case_reconstruction",
@@ -169,6 +172,7 @@ class ThoracicRadiologyAgent:
             validation=lambda result: _validate_case_reconstruction(
                 result, case_input, working_input
             ),
+            pointer_constraints=pointer_constraints,
         )
         formulation, formulation_trace = self._generate(
             stage="initial_consult_formulation",
@@ -181,6 +185,7 @@ class ThoracicRadiologyAgent:
             validation=lambda result: _validate_initial_formulation(
                 result, reconstruction, case_input, working_input
             ),
+            pointer_constraints=pointer_constraints,
         )
         result = ThoracicRadiologyInitialAssessment(
             case_id=case_input.case_id,
@@ -224,6 +229,7 @@ class ThoracicRadiologyAgent:
         }
         compact_json = _json(compact_input)
         rules_json = _json(self.clinical_rules)
+        pointer_constraints = radiology_proposition_schema_constraints(working_input)
 
         evidence_map, map_trace = self._generate(
             stage="discussion_evidence_mapping",
@@ -233,6 +239,7 @@ class ThoracicRadiologyAgent:
                 "clinical_rules": rules_json,
             },
             validation=lambda result: _validate_evidence_map(result, discussion_input),
+            pointer_constraints=pointer_constraints,
         )
         update, update_trace = self._generate(
             stage="discussion_update_and_response",
@@ -245,6 +252,7 @@ class ThoracicRadiologyAgent:
             validation=lambda result: _validate_update_and_consult(
                 result, discussion_input
             ),
+            pointer_constraints=pointer_constraints,
         )
         updated_assessment = _merge_discussion_update(
             discussion_input.initial_assessment, update
@@ -286,7 +294,15 @@ class ThoracicRadiologyAgent:
             ("discussion_update_and_response", update_trace),
         )
 
-    def _generate(self, *, stage, schema_model, variables, validation):
+    def _generate(
+        self,
+        *,
+        stage,
+        schema_model,
+        variables,
+        validation,
+        pointer_constraints=None,
+    ):
         guideline_context, allowed_chunks, retrieval_trace = (
             self.guideline_runtime.prepare(stage)
             if self.guideline_runtime
@@ -302,7 +318,11 @@ class ThoracicRadiologyAgent:
                 }
             ),
         }
-        output_schema = prompt_schema_json(schema_model)
+        output_schema = (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if self.generator.response_format_mode == "json_schema"
+            else prompt_schema_json(schema_model)
+        )
         prompt = render_template(
             self.prompts[stage],
             {
@@ -312,6 +332,11 @@ class ThoracicRadiologyAgent:
         )
         if allowed_chunks:
             prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+        contract = specialty_output_contract(
+            pointer_style="radiology_proposition",
+            initial_stage=stage.startswith("initial_"),
+        )
+        prompt = f"{prompt}\n\n{contract}"
 
         def validate_with_guidelines(result):
             result = validation(result)
@@ -326,6 +351,7 @@ class ThoracicRadiologyAgent:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
+            pointer_field_constraints=pointer_constraints,
         )
         trace["guideline_retrieval"] = retrieval_trace
         trace["prompt_components"] = {

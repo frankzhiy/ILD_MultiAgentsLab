@@ -7,6 +7,7 @@ from src.agents.common.validation import (
     require_specialty_input,
     resolve_evidence_pointers,
     validate_authorized_pointers,
+    validate_authorized_items,
     validate_chair_question_order,
     validate_pointers,
     validate_specialist_opinions as validate_common_specialist_opinions,
@@ -96,9 +97,6 @@ def validate_initial_stage(
     for observation in getattr(result, "reference_observations", []):
         validate_pointers(observation.related_evidence, units)
     del clinical_rules
-    for question in getattr(result, "specialist_dependencies", []):
-        if question.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist question cannot target shared_context")
     return result
 
 
@@ -178,24 +176,16 @@ def _validate_clinical_state(
     for gap in state.missing_data:
         validate_pointers(gap.related_evidence, units)
     for question in state.specialist_dependencies:
-        if question.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist question cannot target shared_context")
         validate_pointers(question.related_evidence, units)
     for observation in state.reference_observations:
         validate_pointers(observation.related_evidence, units)
 def _validate_clinical_items(items, case_input, opinions) -> None:
-    units = case_units(case_input)
-    for item in items:
-        pointers = list(getattr(item, "supporting_evidence", []))
-        pointers.extend(getattr(item, "conflicting_evidence", []))
-        validate_authorized_pointers(
-            pointers,
-            getattr(item, "specialist_opinion_ids", []),
-            units,
-            opinions,
-            _pulmonology_authorization_error,
-        )
-        validate_pointers(getattr(item, "related_evidence", []), units)
+    validate_authorized_items(
+        items,
+        case_input,
+        opinions,
+        _pulmonology_authorization_error,
+    )
 
 
 def _validate_domain_changes(changes, case_input, opinions) -> None:

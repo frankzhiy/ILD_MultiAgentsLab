@@ -173,8 +173,6 @@ def validate_specialist_opinions(
     opinion_ids = [item.opinion_id for item in discussion_input.specialist_opinions]
     _require_unique(opinion_ids, "specialist opinion")
     for opinion in discussion_input.specialist_opinions:
-        if opinion.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist opinion cannot use shared_context as its specialty")
         for claim in opinion.claims:
             for pointer in claim.evidence:
                 unit = units[pointer.graph_unit_id]
@@ -370,8 +368,6 @@ def _validate_formulation(
     coverage = result.review_coverage
     _require_unique([str(item.domain) for item in coverage], "guide coverage domain")
     for question in result.specialist_questions:
-        if question.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist question cannot target shared_context")
         _validate_all_pointers(question.related_evidence)
     for action in result.action_items:
         _validate_all_pointers(action.related_evidence)

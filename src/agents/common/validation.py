@@ -53,6 +53,8 @@ def resolve_evidence_pointers(
                 raise ValueError(f"Duplicate evidence_id in specialty input: {block.evidence_id}")
             evidence_index[block.evidence_id] = (unit, block.text)
 
+    _split_evidence_pointers_by_unit(value, pointer_type, evidence_index)
+
     for pointer in iter_evidence_pointers(value, pointer_type):
         if not pointer.evidence_ids:
             raise ValueError("Evidence pointer must include at least one evidence_id")
@@ -90,6 +92,47 @@ def resolve_evidence_pointers(
             for node in unit.local_graph.nodes
             if selected_ids.intersection(node.evidence.evidence_ids)
         ]
+
+
+def _split_evidence_pointers_by_unit(
+    value: object,
+    pointer_type: type[BaseModel],
+    evidence_index: dict[str, tuple[SpecialtyUnitInput, str]],
+) -> None:
+    """Normalize a model's pointer lists so each pointer addresses one graph unit."""
+
+    if isinstance(value, BaseModel):
+        for field_name in type(value).model_fields:
+            _split_evidence_pointers_by_unit(
+                getattr(value, field_name), pointer_type, evidence_index
+            )
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _split_evidence_pointers_by_unit(item, pointer_type, evidence_index)
+        return
+    if not isinstance(value, list):
+        return
+
+    normalized = []
+    for item in value:
+        if not isinstance(item, pointer_type):
+            _split_evidence_pointers_by_unit(item, pointer_type, evidence_index)
+            normalized.append(item)
+            continue
+        if not item.evidence_ids:
+            normalized.append(item)
+            continue
+        grouped: dict[str, list[str]] = {}
+        for evidence_id in item.evidence_ids:
+            indexed = evidence_index.get(evidence_id)
+            key = indexed[0].graph_unit.graph_unit_id if indexed else f"unknown:{evidence_id}"
+            grouped.setdefault(key, []).append(evidence_id)
+        normalized.extend(
+            item.model_copy(deep=True, update={"evidence_ids": evidence_ids})
+            for evidence_ids in grouped.values()
+        )
+    value[:] = normalized
 
 
 def iter_evidence_pointers(value: object, pointer_type: type[BaseModel]) -> Iterator[BaseModel]:
@@ -162,6 +205,37 @@ def authorized_evidence(
     }
 
 
+def diagnostic_evidence_schema_constraints(
+    case_input: SpecialtyCaseInput,
+    specialist_opinions: Iterable[BaseModel] = (),
+) -> dict[str, list[dict[str, set[str]]]]:
+    units = case_units(case_input).values()
+    all_evidence = {
+        block.evidence_id
+        for unit in units
+        for block in unit.clinical_propositions.evidence_blocks
+    }
+    allowed = {
+        block.evidence_id
+        for unit in units
+        if unit.may_support_diagnostic_claim
+        for block in unit.clinical_propositions.evidence_blocks
+    }
+    allowed.update(
+        evidence_id
+        for opinion in specialist_opinions
+        for claim in opinion.claims
+        for pointer in claim.evidence
+        for evidence_id in pointer.evidence_ids
+    )
+    alternatives = [{"evidence_ids": allowed}]
+    return {
+        "supporting_evidence": alternatives,
+        "conflicting_evidence": alternatives,
+        "related_evidence": [{"evidence_ids": all_evidence}],
+    }
+
+
 def validate_authorized_pointers(
     pointers: Iterable[BaseModel],
     specialist_opinion_ids: list[str],
@@ -172,12 +246,45 @@ def validate_authorized_pointers(
     pointers = list(pointers)
     validate_pointers(pointers, units)
     authorized = authorized_evidence(specialist_opinion_ids, opinions)
+    errors = []
     for pointer in pointers:
         unit = units[pointer.graph_unit_id]
         if unit.may_support_diagnostic_claim:
             continue
         if not set(pointer.evidence_ids).issubset(authorized):
-            raise ValueError(error_message(unit, pointer))
+            errors.append(error_message(unit, pointer))
+    if errors:
+        raise ValueError("\n".join(dict.fromkeys(errors)))
+
+
+def validate_authorized_items(
+    items: Iterable[object],
+    case_input: SpecialtyCaseInput,
+    opinions: dict,
+    error_message: Callable[[SpecialtyUnitInput, BaseModel], str],
+) -> None:
+    units = case_units(case_input)
+    errors = []
+    for item in items:
+        pointers = [
+            *getattr(item, "supporting_evidence", []),
+            *getattr(item, "conflicting_evidence", []),
+        ]
+        try:
+            validate_authorized_pointers(
+                pointers,
+                getattr(item, "specialist_opinion_ids", []),
+                units,
+                opinions,
+                error_message,
+            )
+            validate_pointers(getattr(item, "related_evidence", []), units)
+        except ValueError as exc:
+            errors.extend(str(exc).splitlines())
+    if errors:
+        raise ValueError(
+            "证据校验发现以下全部问题：\n- " + "\n- ".join(dict.fromkeys(errors))
+        )
 
 
 def validate_specialist_opinions(
@@ -193,8 +300,6 @@ def validate_specialist_opinions(
     if len(opinion_ids) != len(set(opinion_ids)):
         raise ValueError("Specialist opinions contain duplicate opinion_id values")
     for opinion in discussion_input.specialist_opinions:
-        if opinion.specialty == MdtSpecialty.SHARED_CONTEXT:
-            raise ValueError("A specialist opinion cannot use shared_context as its specialty")
         for claim in opinion.claims:
             validate_pointers(claim.evidence, units)
             for pointer in claim.evidence:

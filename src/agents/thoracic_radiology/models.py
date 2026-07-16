@@ -9,7 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
-from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
@@ -237,7 +237,7 @@ class ReviewDomainCoverage(BaseModel):
 class SpecialistQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    specialty: MdtSpecialty
+    specialty: SpecialistTarget
     question: str = Field(min_length=1)
     why_it_matters: str = Field(min_length=1)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
@@ -325,7 +325,7 @@ class SpecialistClaim(BaseModel):
 class SpecialistOpinion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    specialty: MdtSpecialty
+    specialty: SpecialistTarget
     opinion_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
     claims: list[SpecialistClaim] = Field(default_factory=list)

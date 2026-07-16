@@ -55,6 +55,7 @@ _ALLOWED_USES = {
         "specialist_question",
     ],
     EvidenceRole.SHARED_CONTEXT: [
+        "diagnostic_support",
         "contextual_support",
         "clinical_interpretation",
         "specialist_question",
@@ -196,7 +197,9 @@ def build_specialty_case_input(
                     segment_index=segment_index,
                     unit_index=unit_index,
                     evidence_role=role,
-                    may_support_diagnostic_claim=role != EvidenceRole.REFERENCE_ONLY,
+                    may_support_diagnostic_claim=(
+                        "diagnostic_support" in _ALLOWED_USES[role]
+                    ),
                     allowed_uses=_ALLOWED_USES[role],
                     locator_status=locator_status,
                     graph_unit=unit,

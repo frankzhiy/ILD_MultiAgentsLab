@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
-from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
@@ -47,9 +47,10 @@ class EvidencePointer(BaseModel):
 
     evidence_ids: list[str] = Field(
         min_length=1,
+        json_schema_extra={"maxItems": 1},
         description=(
-            "仅可包含同一个 graph unit 的 evidence block ID。"
-            "一个判断需要多个 graph unit 时，必须创建多个 EvidencePointer。"
+            "只填写一个 evidence block ID；一个判断需要多个证据时创建多个 "
+            "EvidencePointer。"
         ),
     )
     segment_id: SkipJsonSchema[str] = ""
@@ -102,7 +103,16 @@ class RheumaticDiseaseFormulation(ClinicalAssessmentItem):
         "autoimmune_features_insufficient",
         "insufficient_data",
     ]
-    leading_diagnosis: str | None = None
+    leading_diagnosis: str | None = Field(
+        default=None,
+        description=(
+            "classification_status 为 established_rheumatic_disease、"
+            "provisional_rheumatic_disease、overlap_rheumatic_disease、"
+            "undifferentiated_autoimmune_state 或 ipaf_classification_possible 时，"
+            "必须填写非空工作诊断；仅 autoimmune_features_insufficient 和 "
+            "insufficient_data 可以为 null。"
+        ),
+    )
     differential_diagnoses: list[DifferentialDiagnosis] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -152,7 +162,7 @@ class DataGap(BaseModel):
 class SpecialistQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    specialty: MdtSpecialty
+    specialty: SpecialistTarget
     question: str = Field(min_length=1)
     why_it_matters: str = Field(min_length=1)
     related_evidence: list[EvidencePointer] = Field(default_factory=list)
@@ -301,7 +311,7 @@ class SpecialistClaim(BaseModel):
 
 class SpecialistOpinion(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    specialty: MdtSpecialty
+    specialty: SpecialistTarget
     opinion_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
     claims: list[SpecialistClaim] = Field(default_factory=list)

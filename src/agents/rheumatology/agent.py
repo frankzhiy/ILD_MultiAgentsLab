@@ -7,6 +7,8 @@ from src.agents.common.evidence_projection import (
     build_specialty_evidence_prompt_input,
     build_specialty_working_input,
 )
+from src.agents.common.prompt_contract import specialty_output_contract
+from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.rheumatology.models import (
     DiscussionConsultOutput,
     DiscussionEvidenceMap,
@@ -68,6 +70,21 @@ _RULE_KEYS_BY_STAGE = {
         "diagnostic_confidence",
         "ctd_ild_diagnosis",
         "specialist_boundaries",
+    ),
+}
+
+_CONTRACT_RULES_BY_STAGE = {
+    "initial_autoimmune_assessment": (
+        "rheumatic_disease_formulation.classification_status 为 established_rheumatic_disease、"
+        "provisional_rheumatic_disease、overlap_rheumatic_disease、"
+        "undifferentiated_autoimmune_state 或 ipaf_classification_possible 时，"
+        "leading_diagnosis 必须是非空字符串。",
+    ),
+    "discussion_state_update": (
+        "updated_state.rheumatic_disease_formulation.classification_status 为 "
+        "established_rheumatic_disease、provisional_rheumatic_disease、"
+        "overlap_rheumatic_disease、undifferentiated_autoimmune_state 或 "
+        "ipaf_classification_possible 时，leading_diagnosis 必须是非空字符串。",
     ),
 }
 
@@ -148,15 +165,18 @@ class RheumatologyAgent:
         case_json = _json(build_specialty_working_input(case_input))
         evidence_json = _json(build_specialty_evidence_prompt_input(case_input))
         rules_json = _json(self.clinical_rules)
+        pointer_constraints = diagnostic_evidence_schema_constraints(case_input)
         reconstruction, reconstruction_trace = self._generate(
             "initial_case_reconstruction", InitialCaseReconstruction,
             {"case_input": case_json, "clinical_rules": rules_json},
             lambda result: validate_initial_stage(result, case_input),
+            pointer_constraints,
         )
         autoimmune, autoimmune_trace = self._generate(
             "initial_autoimmune_assessment", InitialAutoimmuneAssessment,
             {"case_input": evidence_json, "case_reconstruction": _json(reconstruction), "clinical_rules": rules_json},
             lambda result: validate_initial_stage(result, case_input, self.clinical_rules),
+            pointer_constraints,
         )
         formulation, formulation_trace = self._generate(
             "initial_consult_formulation", InitialConsultFormulation,
@@ -167,6 +187,7 @@ class RheumatologyAgent:
                 "clinical_rules": rules_json,
             },
             lambda result: validate_initial_stage(result, case_input, self.clinical_rules),
+            pointer_constraints,
         )
         result = RheumatologyInitialAssessment(
             case_id=case_input.case_id,
@@ -206,15 +227,21 @@ class RheumatologyAgent:
             }
         )
         rules_json = _json(self.clinical_rules)
+        pointer_constraints = diagnostic_evidence_schema_constraints(
+            case,
+            discussion_input.specialist_opinions,
+        )
         evidence_map, map_trace = self._generate(
             "discussion_evidence_mapping", DiscussionEvidenceMap,
             {"discussion_input": discussion_json, "clinical_rules": rules_json},
             lambda result: validate_evidence_map(result, discussion_input),
+            pointer_constraints,
         )
         state_update, update_trace = self._generate(
             "discussion_state_update", DiscussionStateUpdate,
             {"discussion_input": discussion_json, "evidence_map": _json(evidence_map), "clinical_rules": rules_json},
             lambda result: validate_state_update(result, discussion_input, self.clinical_rules),
+            pointer_constraints,
         )
         consult, consult_trace = self._generate(
             "discussion_consult_response", DiscussionConsultOutput,
@@ -225,6 +252,7 @@ class RheumatologyAgent:
                 "clinical_rules": rules_json,
             },
             lambda result: validate_consult_output(result, discussion_input),
+            pointer_constraints,
         )
         result = RheumatologyDiscussionResponse(
             case_id=case.case_id,
@@ -244,7 +272,14 @@ class RheumatologyAgent:
             ("discussion_consult_response", consult_trace),
         )
 
-    def _generate(self, stage, schema_model, variables, validation):
+    def _generate(
+        self,
+        stage,
+        schema_model,
+        variables,
+        validation,
+        pointer_constraints=None,
+    ):
         guideline_context, allowed_chunks, retrieval_trace = (
             self.guideline_runtime.prepare(stage)
             if self.guideline_runtime
@@ -260,13 +295,24 @@ class RheumatologyAgent:
                 }
             ),
         }
-        output_schema = prompt_schema_json(schema_model)
+        output_schema = (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if self.generator.response_format_mode == "json_schema"
+            else prompt_schema_json(schema_model)
+        )
         prompt = render_template(
             self.prompts[stage],
             {"output_schema": output_schema, **variables},
         )
         if allowed_chunks:
             prompt = f"{prompt}\n\n{PROMPT_RULES}\n\n本轮检索到的指南片段：\n{guideline_context}"
+        contract = specialty_output_contract(
+            pointer_style="evidence_id",
+            initial_stage=stage.startswith("initial_"),
+            partitioned_evidence=stage != "initial_case_reconstruction",
+            extra_rules=_CONTRACT_RULES_BY_STAGE.get(stage, ()),
+        )
+        prompt = f"{prompt}\n\n{contract}"
 
         def validate_with_guidelines(result):
             result = validation(result)
@@ -281,6 +327,7 @@ class RheumatologyAgent:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
+            pointer_field_constraints=pointer_constraints,
         )
         trace["guideline_retrieval"] = retrieval_trace
         trace["prompt_components"] = {

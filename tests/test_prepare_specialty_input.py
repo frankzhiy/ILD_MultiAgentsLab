@@ -77,6 +77,11 @@ def test_builds_ordered_complete_pulmonology_input_from_current_run():
     assert len(units["seg_003_gu_003"].graph_unit.mdt_specialty) == 2
     assert units["seg_004_gu_001"].evidence_role == EvidenceRole.REFERENCE_ONLY
     assert units["seg_004_gu_001"].may_support_diagnostic_claim is False
+    assert all(
+        unit.may_support_diagnostic_claim
+        == ("diagnostic_support" in unit.allowed_uses)
+        for unit in units.values()
+    )
 
 
 def test_working_input_preserves_verbatim_sources_without_semantic_graph_payloads():
@@ -119,6 +124,10 @@ def test_later_specialty_and_radiology_stage_payloads_are_bounded():
     full_working = prompt_json(build_specialty_working_input(pulmonary))
     later = prompt_json(build_specialty_evidence_prompt_input(pulmonary))
     assert len(later) < len(full_working) * 0.6
+    later_value = json.loads(later)
+    assert "units" not in later_value
+    assert later_value["diagnostic_evidence_units"]
+    assert later_value["context_only_evidence_units"]
 
     radiology = build_specialty_case_input(RUN_DIR, MdtSpecialty.THORACIC_RADIOLOGY)
     audit = build_radiology_working_input(radiology)

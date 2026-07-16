@@ -55,9 +55,11 @@ class FakeLLM:
     def __init__(self, responses):
         self.responses = list(responses)
         self.prompts = []
+        self.response_formats = []
 
     def complete(self, messages, *, temperature, max_tokens, response_format=None):
         self.prompts.append(messages)
+        self.response_formats.append(response_format)
         content = json.dumps(self.responses.pop(0), ensure_ascii=False)
         return LLMResponse(
             content=content,
@@ -224,6 +226,34 @@ def test_pulmonology_yaml_builds_apiyi_client(monkeypatch):
     assert isinstance(client, APIYIClient)
     assert client.model == "gpt-5.6-luna"
     assert client.base_url == "https://api.apiyi.com/v1"
+    assert client.supports_json_schema is True
+
+
+def test_strict_schema_mode_keeps_schema_out_of_prompt_and_appends_contract():
+    stage = InitialFoundation(
+        domain_reviews=[
+            review(PulmonologyDomain.CLINICAL_PHENOTYPE),
+            review(PulmonologyDomain.SECONDARY_CAUSES),
+        ]
+    )
+    llm = FakeLLM([llm_payload(stage)])
+    llm.supports_json_schema = True
+    agent = PulmonologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
+
+    agent._generate(
+        stage="initial_foundation",
+        schema_model=InitialFoundation,
+        variables={"case_input": "{}", "clinical_rules": "{}"},
+        validation=lambda result: result,
+    )
+
+    prompt = llm.prompts[0][1].content
+    assert llm.response_formats[0]["type"] == "json_schema"
+    assert "由 API 的严格 JSON Schema response_format 提供" in prompt
+    assert '"$defs"' not in prompt
+    assert prompt.rstrip().endswith(
+        "本轮没有正式专科意见，所有 specialist_opinion_ids 必须为空列表。"
+    )
 
 
 def test_initial_assessment_runs_three_ordered_stages():
@@ -273,10 +303,9 @@ def test_stage_schema_exposes_only_evidence_ids_for_pointer():
     schema = InitialFoundation.model_json_schema()
 
     assert set(schema["$defs"]["EvidencePointer"]["properties"]) == {"evidence_ids"}
-    assert (
-        "来自同一个 graph unit"
-        in schema["$defs"]["EvidencePointer"]["properties"]["evidence_ids"]["description"]
-    )
+    evidence_ids = schema["$defs"]["EvidencePointer"]["properties"]["evidence_ids"]
+    assert evidence_ids["maxItems"] == 1
+    assert "只填写一个" in evidence_ids["description"]
     review_schema = schema["$defs"]["InitialFoundationReview"]
     assert {"domain", "status", "rationale"}.issubset(review_schema["required"])
     assert set(review_schema["properties"]["status"]["enum"]) == {
@@ -352,7 +381,7 @@ def test_mixed_specialty_context_has_owned_evidence_authorization():
     )
 
 
-def test_one_evidence_pointer_cannot_mix_graph_units():
+def test_program_splits_one_evidence_pointer_across_graph_units():
     case = case_input()
     owned = [
         unit
@@ -366,8 +395,14 @@ def test_one_evidence_pointer_cannot_mix_graph_units():
         owned[1].clinical_propositions.evidence_blocks[0].evidence_id,
     ]
 
-    with pytest.raises(ValueError, match="belong to one graph unit"):
-        validate_initial_assessment(invalid, case)
+    validated = validate_initial_assessment(invalid, case)
+
+    pointers = validated.clinical_phenotype.supporting_evidence
+    assert len(pointers) == 2
+    assert {pointer.graph_unit_id for pointer in pointers} == {
+        owned[0].graph_unit.graph_unit_id,
+        owned[1].graph_unit.graph_unit_id,
+    }
 
 
 def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():

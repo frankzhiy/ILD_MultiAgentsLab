@@ -34,6 +34,15 @@ class MdtSpecialty(StrEnum):
     SHARED_CONTEXT = "shared_context"
 
 
+class SpecialistTarget(StrEnum):
+    """A real specialty that can receive a consultation question."""
+
+    PULMONOLOGY = "pulmonology"
+    THORACIC_RADIOLOGY = "thoracic_radiology"
+    PATHOLOGY = "pathology"
+    RHEUMATOLOGY = "rheumatology"
+
+
 class GraphUnit(BaseModel):
     graph_unit_id: str = Field(description="Stable graph-unit id, such as seg_001_gu_001.")
     segment_id: str = Field(description="Parent segment id.")

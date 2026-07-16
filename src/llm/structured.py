@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -22,9 +23,17 @@ class StructuredGenerationError(RuntimeError):
         self.stage = stage
 
 
-def json_schema_response_format(model: type[BaseModel], name: str) -> dict:
+def json_schema_response_format(
+    model: type[BaseModel],
+    name: str,
+    *,
+    pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
+) -> dict:
     schema = model.model_json_schema()
     _remove_program_computed_offsets(schema)
+    _prepare_strict_schema(schema)
+    if pointer_field_constraints:
+        _apply_pointer_field_constraints(schema, pointer_field_constraints)
     return {
         "type": "json_schema",
         "json_schema": {
@@ -65,6 +74,7 @@ class StructuredLLMGenerator:
         system_prompt: str,
         user_prompt: str,
         extra_validation: Callable[[T], T] | None = None,
+        pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
     ) -> tuple[T, dict]:
         stage_started = time.perf_counter()
         self._emit("stage_started", {"stage": schema_name})
@@ -73,7 +83,11 @@ class StructuredLLMGenerator:
             LLMMessage(role="user", content=user_prompt),
         ]
         attempts: list[dict] = []
-        response_format = self._initial_response_format(schema_model, schema_name)
+        response_format = self._initial_response_format(
+            schema_model,
+            schema_name,
+            pointer_field_constraints,
+        )
 
         last_error = None
         for attempt_index in range(1, self.max_attempts + 1):
@@ -105,24 +119,6 @@ class StructuredLLMGenerator:
                         "error": str(exc),
                     },
                 )
-                if (
-                    response_format
-                    and response_format.get("type") == "json_schema"
-                    and not _is_retryable_transport_error(exc)
-                ):
-                    response_format = {"type": "json_object"}
-                    last_error = exc
-                    attempts.append(
-                        {
-                            "attempt": attempt_index,
-                            "transport_error": str(exc),
-                            "fallback": "json_object",
-                            "llm_duration_seconds": round(llm_duration, 3),
-                            "validation_duration_seconds": 0.0,
-                            "duration_seconds": round(llm_duration, 3),
-                        }
-                    )
-                    continue
                 attempts.append(
                     {
                         "attempt": attempt_index,
@@ -276,9 +272,18 @@ class StructuredLLMGenerator:
         if self.event_callback is not None:
             self.event_callback(event, payload)
 
-    def _initial_response_format(self, schema_model: type[BaseModel], schema_name: str) -> dict:
+    def _initial_response_format(
+        self,
+        schema_model: type[BaseModel],
+        schema_name: str,
+        pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None,
+    ) -> dict:
         if self.response_format_mode == "json_schema":
-            return json_schema_response_format(schema_model, schema_name)
+            return json_schema_response_format(
+                schema_model,
+                schema_name,
+                pointer_field_constraints=pointer_field_constraints,
+            )
         if self.response_format_mode == "json_object":
             return {"type": "json_object"}
         raise ValueError(f"Unsupported response_format_mode: {self.response_format_mode}")
@@ -353,3 +358,77 @@ def _remove_program_computed_offsets(value: Any) -> None:
     elif isinstance(value, list):
         for item in value:
             _remove_program_computed_offsets(item)
+
+
+def _prepare_strict_schema(value: Any) -> None:
+    """Normalize Pydantic output for strict structured-output providers."""
+
+    if isinstance(value, dict):
+        value.pop("default", None)
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            value["required"] = list(properties)
+            value["additionalProperties"] = False
+        for item in value.values():
+            _prepare_strict_schema(item)
+    elif isinstance(value, list):
+        for item in value:
+            _prepare_strict_schema(item)
+
+
+def _apply_pointer_field_constraints(
+    schema: dict[str, Any],
+    constraints: dict[str, list[dict[str, set[str]]]],
+) -> None:
+    """Inline pointer schemas with request-specific allowed locator values."""
+
+    definitions = schema.get("$defs", {})
+
+    def pointer_schema(value: dict[str, Any]) -> dict[str, Any]:
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            return deepcopy(definitions[reference.removeprefix("#/$defs/")])
+        return deepcopy(value)
+
+    def constrain(value: Any) -> None:
+        if isinstance(value, dict):
+            properties = value.get("properties")
+            if isinstance(properties, dict):
+                for field_name, alternatives in constraints.items():
+                    field_schema = properties.get(field_name)
+                    if not isinstance(field_schema, dict):
+                        continue
+                    item_schema = field_schema.get("items")
+                    if not isinstance(item_schema, dict):
+                        continue
+                    usable = [
+                        alternative
+                        for alternative in alternatives
+                        if alternative and all(allowed for allowed in alternative.values())
+                    ]
+                    if not usable:
+                        field_schema["maxItems"] = 0
+                        continue
+                    choices = []
+                    for alternative in usable:
+                        choice = pointer_schema(item_schema)
+                        choice_properties = choice.get("properties", {})
+                        for property_name, allowed in alternative.items():
+                            property_schema = choice_properties[property_name]
+                            allowed_values = sorted(allowed)
+                            if property_schema.get("type") == "array":
+                                property_schema.setdefault("items", {})["enum"] = allowed_values
+                                property_schema["minItems"] = 1
+                            else:
+                                property_schema["enum"] = allowed_values
+                        choices.append(choice)
+                    field_schema["items"] = (
+                        choices[0] if len(choices) == 1 else {"anyOf": choices}
+                    )
+            for item in value.values():
+                constrain(item)
+        elif isinstance(value, list):
+            for item in value:
+                constrain(item)
+
+    constrain(schema)

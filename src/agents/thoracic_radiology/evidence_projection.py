@@ -19,6 +19,7 @@ from src.schemas.semantic_graphing.graph_unit import (
     GraphUnitCertainty,
     GraphUnitStatus,
     MdtSpecialty,
+    SpecialistTarget,
 )
 from src.schemas.specialty_agent_input import EvidenceRole, SpecialtyCaseInput
 
@@ -115,7 +116,7 @@ class RadiologyWorkingInput(BaseModel):
 
     schema_version: str = "thoracic_radiology.working_input.v2"
     case_id: str
-    target_specialty: MdtSpecialty
+    target_specialty: SpecialistTarget
     source_run_dir: str
     orientation_units: list[OrientationUnit] = Field(default_factory=list)
     evidence_units: list[ProjectedEvidenceUnit] = Field(default_factory=list)
@@ -282,6 +283,27 @@ def build_radiology_evidence_prompt_input(
     return {
         "case_id": working_input.case_id,
         "imaging_evidence": _radiology_evidence_view(working_input),
+    }
+
+
+def radiology_proposition_schema_constraints(
+    working_input: RadiologyWorkingInput,
+) -> dict[str, list[dict[str, set[str]]]]:
+    alternatives = [
+        {
+            "graph_unit_id": {unit.graph_unit_id},
+            "proposition_ids": {
+                statement.proposition_id
+                for statement in unit.statements
+                if statement.thoracic_imaging_eligible
+            },
+        }
+        for unit in working_input.evidence_units
+    ]
+    alternatives = [item for item in alternatives if item["proposition_ids"]]
+    return {
+        "supporting_evidence": alternatives,
+        "conflicting_evidence": alternatives,
     }
 
 

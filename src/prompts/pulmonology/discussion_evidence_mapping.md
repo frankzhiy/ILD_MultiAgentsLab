@@ -13,7 +13,7 @@
 - `evidence_blocks` 是逐字病例原文，也是定位和引用依据。
 - `collaborative_context` 与 `owned` 的使用权完全相同，不因同一 unit 还路由给其他专科而增加限制。`reference_only` 原始 unit 只有在正式专科意见明确提出 claim 并精确引用相应 evidence ID 时，才可通过该 claim 进行后续整合。
 - 每个映射必须在 `opinion_id` 保留正式专科意见 ID；不得编造意见 ID、claim 或证据。某条专科意见未覆盖的问题必须保持未覆盖。
-- EvidencePointer 只填写 `evidence_ids`，同一个指针中的 ID 必须全部属于同一个 graph unit；涉及多个 unit 时拆成多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
+- EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - “专科未评论”不等于阴性，“没有新证据”不等于维持结论的新增支持证据。
 - 此阶段只输出结构化映射和简短理由，不输出自由形式的长篇思维过程。
 

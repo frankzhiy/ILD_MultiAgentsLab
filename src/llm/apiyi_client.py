@@ -38,6 +38,7 @@ class APIYIClient(LLMClient):
             base_url=str(config["base_url"]),
             timeout_seconds=int(config.get("timeout_seconds", 300)),
             request_options=dict(request_options),
+            supports_json_schema=bool(config.get("supports_json_schema", False)),
         )
 
     def complete(

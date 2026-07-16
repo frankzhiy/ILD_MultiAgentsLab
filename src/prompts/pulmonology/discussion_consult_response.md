@@ -16,7 +16,7 @@
 证据与权限规则：
 - 所有临床判断必须来自更新后的 state、delta 和输入中的正式专科意见。`collaborative_context` 与 `owned` 的使用权完全相同，不需要额外授权；`reference_only` 原始 unit 只有经正式专科 claim 授权后才能支撑判断。
 - 使用正式专科 claim 时，在相关输出项中保留准确的 `specialist_opinion_ids`。
-- EvidencePointer 只填写 `evidence_ids`，同一个指针中的 ID 必须全部属于同一个 graph unit；涉及多个 unit 时拆成多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。仅说明限制或 defer 的上下文放入 `related_evidence`，不得伪装成结论支持证据。
+- EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。仅说明限制或 defer 的上下文放入 `related_evidence`，不得伪装成结论支持证据。
 - 决策相关缺口已由 `updated_state.missing_data` 承载；响应中的诊断性建议只能引用这些缺口及其决策价值，不得另造检查清单。“未提及”不等于“未做”，related evidence 只是缺口背景，不证明信息缺失。
 - 只输出 schema 要求的结构化专业响应和简短理由，不输出自由形式的长篇思维过程。
 

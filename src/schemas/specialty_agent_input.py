@@ -9,7 +9,11 @@ from src.schemas.semantic_graphing.clinical_proposition import (
     GraphUnitClinicalPropositions,
 )
 from src.schemas.semantic_graphing.document import ClassifiedSegment
-from src.schemas.semantic_graphing.graph_unit import GraphUnit, MdtSpecialty
+from src.schemas.semantic_graphing.graph_unit import (
+    GraphUnit,
+    MdtSpecialty,
+    SpecialistTarget,
+)
 from src.schemas.semantic_graphing.local_graph import GraphUnitLocalGraph
 from src.schemas.semantic_graphing.primary_frame import GraphUnitPrimaryFrame
 from src.schemas.semantic_graphing.proposition_validation import (
@@ -68,7 +72,7 @@ class SpecialtyCaseInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     case_id: str = Field(min_length=1)
-    target_specialty: MdtSpecialty
+    target_specialty: SpecialistTarget
     source_run_dir: str = Field(min_length=1)
     segments: list[SpecialtySegmentInput] = Field(default_factory=list)
     summary: SpecialtyCaseSummary

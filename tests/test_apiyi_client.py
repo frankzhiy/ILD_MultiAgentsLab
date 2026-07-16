@@ -28,7 +28,7 @@ def test_multi_agent_config_builds_apiyi_client(monkeypatch):
     assert isinstance(client, APIYIClient)
     assert client.model == "gpt-5.6-luna"
     assert client.base_url == "https://api.apiyi.com/v1"
-    assert client.request_options == {"thinking": {"type": "disabled"}}
+    assert client.request_options == {"reasoning_effort": "none"}
 
 
 def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
@@ -39,7 +39,7 @@ def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
 
     assert isinstance(client, APIYIClient)
     assert client.model == "gpt-5.6-luna"
-    assert client.request_options == {"thinking": {"type": "disabled"}}
+    assert client.request_options == {"reasoning_effort": "none"}
 
 
 def test_apiyi_sends_provider_options_without_implicit_json_mode(monkeypatch):
@@ -72,6 +72,44 @@ def test_apiyi_sends_provider_options_without_implicit_json_mode(monkeypatch):
     assert "response_format" not in captured["payload"]
     assert captured["timeout"] == 42
     assert response.content == "ok"
+
+
+def test_apiyi_forwards_explicit_json_schema(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("src.llm.apiyi_client.urllib.request.urlopen", fake_urlopen)
+    client = APIYIClient(
+        api_key="secret",
+        model="model",
+        base_url="https://apiyi.example/v1",
+        supports_json_schema=True,
+    )
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "probe",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    client.complete(
+        [LLMMessage(role="user", content="test")],
+        temperature=0,
+        max_tokens=20,
+        response_format=response_format,
+    )
+
+    assert captured["payload"]["response_format"] == response_format
 
 
 def test_apiyi_rejects_non_mapping_request_options(monkeypatch):

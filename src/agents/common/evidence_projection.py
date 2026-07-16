@@ -8,6 +8,7 @@ from src.schemas.semantic_graphing.graph_unit import (
     GraphUnitCertainty,
     GraphUnitStatus,
     MdtSpecialty,
+    SpecialistTarget,
 )
 from src.schemas.specialty_agent_input import (
     EvidenceRole,
@@ -64,7 +65,7 @@ class SpecialtyWorkingInput(BaseModel):
 
     schema_version: str = "specialty_working_input.v1"
     case_id: str
-    target_specialty: MdtSpecialty
+    target_specialty: SpecialistTarget
     segments: list[WorkingSegment]
     summary: SpecialtyCaseSummary
 
@@ -113,20 +114,26 @@ def build_specialty_working_input(case_input: SpecialtyCaseInput) -> SpecialtyWo
 def build_specialty_evidence_prompt_input(case_input: SpecialtyCaseInput) -> dict:
     """Evidence lookup for later stages; blocks preserve all graph-unit source text."""
 
+    units = [
+        {
+            "graph_unit_id": unit.graph_unit.graph_unit_id,
+            "source_type": unit.graph_unit.source_type,
+            "temporal_anchor": unit.graph_unit.temporal_anchor,
+            "evidence_role": unit.evidence_role,
+            "may_support_diagnostic_claim": unit.may_support_diagnostic_claim,
+            "allowed_uses": unit.allowed_uses,
+            "evidence_blocks": unit.clinical_propositions.evidence_blocks,
+        }
+        for segment in case_input.segments
+        for unit in segment.units
+    ]
     return {
         "case_id": case_input.case_id,
         "target_specialty": case_input.target_specialty,
-        "units": [
-            {
-                "graph_unit_id": unit.graph_unit.graph_unit_id,
-                "source_type": unit.graph_unit.source_type,
-                "temporal_anchor": unit.graph_unit.temporal_anchor,
-                "evidence_role": unit.evidence_role,
-                "may_support_diagnostic_claim": unit.may_support_diagnostic_claim,
-                "allowed_uses": unit.allowed_uses,
-                "evidence_blocks": unit.clinical_propositions.evidence_blocks,
-            }
-            for segment in case_input.segments
-            for unit in segment.units
+        "diagnostic_evidence_units": [
+            unit for unit in units if unit["may_support_diagnostic_claim"]
+        ],
+        "context_only_evidence_units": [
+            unit for unit in units if not unit["may_support_diagnostic_claim"]
         ],
     }
