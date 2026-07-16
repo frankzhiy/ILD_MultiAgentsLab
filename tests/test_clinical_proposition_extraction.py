@@ -429,6 +429,44 @@ def test_extractor_retries_nonverbatim_proposition_evidence_with_actionable_guid
     assert result.propositions[1].evidence.quote == "二尖瓣、三尖瓣返流"
 
 
+def test_extractor_derives_contiguous_owned_evidence_ids_from_source_text():
+    text = "主因胸闷1年余。入院。\n患者诉1年前出现胸闷。"
+    response = {
+        "event_modifiers": [],
+        "propositions": [
+            {
+                "proposition_type": "symptom",
+                "concept_text": "胸闷",
+                "status": "present",
+                "certainty": "high",
+                "attribution": None,
+                "modifiers": [
+                    {
+                        "modifier_type": "duration",
+                        "value_text": "1年",
+                        "evidence": ref("患者诉1年前出现胸闷", 3),
+                    }
+                ],
+                "evidence": ref("主因胸闷1年余", 1),
+            }
+        ],
+    }
+    llm = CapturingLLM(response)
+    extractor = ClinicalPropositionExtractor(
+        llm,
+        "src/prompts/semantic_graphing/clinical_proposition_extraction.md",
+        temperature=0,
+        max_tokens=1000,
+    )
+
+    result, trace = extractor.extract_unit(make_unit(text), make_frame())
+
+    modifier = result.propositions[0].modifiers[0]
+    assert modifier.evidence.evidence_ids == ["seg_001_gu_001_ev_001"]
+    assert modifier.evidence.quote == "1年"
+    assert len(trace["attempts"]) == 1
+
+
 def test_dense_unit_text_is_split_into_exact_contiguous_chunks():
     text = "检查：" + ("项目1，项目2，项目3；" * 100) + "结束。"
 

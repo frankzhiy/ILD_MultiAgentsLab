@@ -19,6 +19,7 @@ graph unit 是一个 clinical event nucleus 的连续原文证据块，不是 fi
 - thoracic_radiology 只用于胸部 CT/HRCT/CTPA/胸片文字；肺功能、超声心动图、下肢血管超声及其他非胸部影像不属于胸部影像科。
 - CTPA 文字结论由影像科解释，相关低氧/肺栓塞临床问题同时属于呼吸科。
 - ANA/ENA/肌炎抗体及关节、雷诺、皮疹、肌肉表现属于风湿科；BAL、肺功能、暴露、氧合和呼吸病程属于呼吸科；人口学/主诉可用 shared_context。
+- 肺活检、组织学、细胞学、病理报告、标本充分性、特殊染色、免疫组化和分子病理结果属于 pathology；临床医师引用的病理结论可同时路由给相关临床专科。
 - status：present, absent, possible, historical, planned, performed, not_performed, unknown。
 - certainty：high, moderate, low, unknown。
 

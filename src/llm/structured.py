@@ -360,20 +360,33 @@ def _remove_program_computed_offsets(value: Any) -> None:
             _remove_program_computed_offsets(item)
 
 
-def _prepare_strict_schema(value: Any) -> None:
+def _prepare_strict_schema(
+    value: Any,
+    definitions: dict[str, Any] | None = None,
+) -> None:
     """Normalize Pydantic output for strict structured-output providers."""
 
     if isinstance(value, dict):
+        if definitions is None:
+            definitions = value.get("$defs", {})
+        reference = value.get("$ref")
+        if isinstance(reference, str) and len(value) > 1 and reference.startswith("#/$defs/"):
+            referenced = definitions.get(reference.removeprefix("#/$defs/"))
+            if isinstance(referenced, dict):
+                siblings = {key: item for key, item in value.items() if key != "$ref"}
+                value.clear()
+                value.update(deepcopy(referenced))
+                value.update(siblings)
         value.pop("default", None)
         properties = value.get("properties")
         if isinstance(properties, dict):
             value["required"] = list(properties)
             value["additionalProperties"] = False
         for item in value.values():
-            _prepare_strict_schema(item)
+            _prepare_strict_schema(item, definitions)
     elif isinstance(value, list):
         for item in value:
-            _prepare_strict_schema(item)
+            _prepare_strict_schema(item, definitions)
 
 
 def _apply_pointer_field_constraints(

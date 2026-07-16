@@ -40,6 +40,7 @@ def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
     assert isinstance(client, APIYIClient)
     assert client.model == "gpt-5.6-luna"
     assert client.request_options == {"reasoning_effort": "none"}
+    assert client.supports_json_schema is True
 
 
 def test_apiyi_sends_provider_options_without_implicit_json_mode(monkeypatch):

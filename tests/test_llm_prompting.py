@@ -3,6 +3,9 @@ import json
 import pytest
 
 from src.agents.common.prompt_contract import specialty_output_contract
+from src.agents.semantic_graphing.clinical_proposition_extractor import (
+    ExtractedGraphUnitClinicalPropositions,
+)
 from src.agents.pulmonology.models import EvidencePointer as PulmonologyPointer
 from src.agents.pulmonology.models import InitialPulmonaryAssessment
 from src.agents.pulmonology.models import SpecialistQuestion as PulmonologyQuestion
@@ -90,6 +93,27 @@ def test_strict_response_schema_requires_every_property_and_has_atomic_pointers(
     assert schema["required"] == list(schema["properties"])
     assert "default" not in schema["properties"]["limitations"]
     assert pointer["minItems"] == pointer["maxItems"] == 1
+
+
+def test_strict_response_schema_has_no_ref_sibling_keywords():
+    schema = json_schema_response_format(
+        ExtractedGraphUnitClinicalPropositions,
+        "graph_unit_clinical_propositions",
+    )["json_schema"]["schema"]
+
+    def ref_nodes(value):
+        if isinstance(value, dict):
+            if "$ref" in value:
+                yield value
+            for item in value.values():
+                yield from ref_nodes(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from ref_nodes(item)
+
+    references = list(ref_nodes(schema))
+    assert references
+    assert all(set(reference) == {"$ref"} for reference in references)
 
 
 def test_final_contract_distinguishes_partitioned_and_working_inputs():

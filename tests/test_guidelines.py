@@ -44,7 +44,7 @@ def test_catalog_has_unique_existing_sources():
 
 def test_agent_yaml_uses_only_canonical_guideline_ids():
     catalog_ids = set(load_catalog(GUIDELINE_DIR / "catalog.yaml"))
-    for specialty in ("pulmonology", "thoracic_radiology", "rheumatology"):
+    for specialty in ("pulmonology", "thoracic_radiology", "pathology", "rheumatology"):
         config = load_yaml(Path("configs/agents") / specialty / "agent.yaml")
         referenced = set(config["guideline_retrieval"]["scope"])
         for rule in config["clinical_rules"].values():

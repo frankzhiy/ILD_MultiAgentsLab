@@ -16,6 +16,7 @@ from src.schemas.semantic_graphing.clinical_proposition import (
     ClinicalModifier,
     ClinicalProposition,
     EvidenceBlock,
+    EvidenceReference,
     GraphUnitClinicalPropositions,
     render_clinical_proposition_catalog,
 )
@@ -204,24 +205,62 @@ def _attach_evidence_blocks(
 ) -> GraphUnitClinicalPropositions:
     modifier_index = 1
 
-    def normalized_modifier(item: ClinicalModifier) -> ClinicalModifier:
+    def normalized_modifier(
+        item: ClinicalModifier,
+        owner_evidence: EvidenceReference | None = None,
+    ) -> ClinicalModifier:
         nonlocal modifier_index
+        evidence = _canonicalize_evidence_reference(item.evidence, evidence_blocks)
+        if owner_evidence is not None and not (
+            set(evidence.evidence_ids) & set(owner_evidence.evidence_ids)
+        ):
+            evidence = _canonicalize_evidence_reference(
+                evidence,
+                evidence_blocks,
+                allowed_ids=set(owner_evidence.evidence_ids),
+            )
+            if not set(evidence.evidence_ids) & set(owner_evidence.evidence_ids):
+                evidence = _canonicalize_evidence_reference(
+                    evidence,
+                    evidence_blocks,
+                    allowed_ids=set(owner_evidence.evidence_ids),
+                    quote=item.value_text,
+                )
         normalized = ClinicalModifier(
-            **item.model_dump(exclude={"modifier_id"}),
+            **item.model_dump(exclude={"modifier_id", "evidence"}),
             modifier_id=f"mod_{modifier_index:03d}",
+            evidence=evidence,
         )
         modifier_index += 1
         return normalized
 
     event_modifiers = [normalized_modifier(item) for item in result.event_modifiers]
-    propositions = [
-        ClinicalProposition(
-            **item.model_dump(exclude={"proposition_id", "modifiers"}),
-            proposition_id=f"prop_{index:03d}",
-            modifiers=[normalized_modifier(modifier) for modifier in item.modifiers],
+    propositions = []
+    for index, item in enumerate(result.propositions, start=1):
+        evidence = _canonicalize_evidence_reference(item.evidence, evidence_blocks)
+        attribution = item.attribution
+        if attribution is not None:
+            attribution = attribution.model_copy(
+                update={
+                    "evidence": _canonicalize_evidence_reference(
+                        attribution.evidence,
+                        evidence_blocks,
+                    )
+                }
+            )
+        propositions.append(
+            ClinicalProposition(
+                **item.model_dump(
+                    exclude={"proposition_id", "modifiers", "evidence", "attribution"}
+                ),
+                proposition_id=f"prop_{index:03d}",
+                attribution=attribution,
+                modifiers=[
+                    normalized_modifier(modifier, evidence) for modifier in item.modifiers
+                ],
+                evidence=evidence,
+            )
         )
-        for index, item in enumerate(result.propositions, start=1)
-    ]
     return GraphUnitClinicalPropositions(
         graph_unit_id=unit.graph_unit_id,
         primary_frame=primary_frame.primary_frame,
@@ -229,6 +268,48 @@ def _attach_evidence_blocks(
         event_modifiers=event_modifiers,
         propositions=propositions,
     )
+
+
+def _canonicalize_evidence_reference(
+    evidence: EvidenceReference,
+    evidence_blocks: list[EvidenceBlock],
+    *,
+    allowed_ids: set[str] | None = None,
+    quote: str | None = None,
+) -> EvidenceReference:
+    """Derive redundant evidence IDs from an exact source quote when possible."""
+
+    quote = evidence.quote if quote is None else quote
+    text = "".join(block.text for block in evidence_blocks)
+    preferred_ids = set(evidence.evidence_ids)
+    candidates = []
+    start = 0
+    while (position := text.find(quote, start)) >= 0:
+        end = position + len(quote)
+        offset = 0
+        evidence_ids = []
+        for block in evidence_blocks:
+            block_end = offset + len(block.text)
+            if offset < end and block_end > position:
+                evidence_ids.append(block.evidence_id)
+            offset = block_end
+        if evidence_ids and (
+            allowed_ids is None or set(evidence_ids).issubset(allowed_ids)
+        ):
+            candidates.append((evidence_ids, position))
+        start = position + 1
+
+    if not candidates:
+        return evidence
+    evidence_ids, _ = max(
+        candidates,
+        key=lambda item: (
+            len(set(item[0]) & preferred_ids),
+            -len(item[0]),
+            -item[1],
+        ),
+    )
+    return evidence.model_copy(update={"evidence_ids": evidence_ids, "quote": quote})
 
 
 def _merge_chunk_results(

@@ -6,7 +6,7 @@ guidelines:
     year: 2025
     language: en
     file: ers-eular_ctd-ild_cpg_2025.pdf
-    specialties: [pulmonology, rheumatology]
+    specialties: [pulmonology, pathology, rheumatology]
 
   - guideline_id: ers-ats-iip-classification-2025
     title: ERS/ATS 间质性肺炎国际多学科分类更新声明
@@ -15,7 +15,7 @@ guidelines:
     year: 2025
     language: en
     file: ers-ats_iip-classification_statement_2025.pdf
-    specialties: [pulmonology, thoracic_radiology, rheumatology]
+    specialties: [pulmonology, thoracic_radiology, pathology, rheumatology]
 
   - guideline_id: ats-ers-jrs-alat-ipf-ppf-2022
     title: ATS/ERS/JRS/ALAT IPF 更新及进展性肺纤维化临床实践指南
@@ -24,7 +24,7 @@ guidelines:
     year: 2022
     language: en
     file: ats-ers-jrs-alat_ipf-ppf_cpg_2022.pdf
-    specialties: [pulmonology, thoracic_radiology]
+    specialties: [pulmonology, thoracic_radiology, pathology]
 
   - guideline_id: cra-ctd-ild-2022-zh
     title: 结缔组织病相关间质性肺疾病诊疗规范
@@ -33,7 +33,7 @@ guidelines:
     year: 2022
     language: zh
     file: cra_ctd-ild_standard_2022_zh.pdf
-    specialties: [pulmonology, rheumatology]
+    specialties: [pulmonology, pathology, rheumatology]
 
   - guideline_id: cts-ild-mdd-2023-zh
     title: 间质性肺疾病多学科讨论规范中国专家共识
@@ -42,7 +42,7 @@ guidelines:
     year: 2023
     language: zh
     file: cts_ild-mdd_consensus_2023_zh.pdf
-    specialties: [pulmonology, thoracic_radiology, rheumatology]
+    specialties: [pulmonology, thoracic_radiology, pathology, rheumatology]
 
   - guideline_id: acr-chest-sard-ild-2023
     title: ACR/CHEST 系统性自身免疫性风湿病相关 ILD 筛查与监测指南
@@ -51,4 +51,4 @@ guidelines:
     year: 2023
     language: en
     file: acr-chest_sard-ild_screening-monitoring_2023.pdf
-    specialties: [pulmonology, rheumatology]
+    specialties: [pulmonology, pathology, rheumatology]

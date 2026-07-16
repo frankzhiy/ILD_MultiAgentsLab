@@ -4,6 +4,7 @@ base_url: https://api.apiyi.com/v1
 api_key_env: APIYI_API_KEY
 request_options:
   reasoning_effort: none
+supports_json_schema: true
 timeout_seconds: 300
 temperature: 0.0
 max_concurrency: 6
