@@ -145,7 +145,13 @@ def test_initial_assessment_aggregates_three_stages_and_renders_report(tmp_path)
         "initial_case_reconstruction", "initial_autoimmune_assessment", "initial_consult_formulation"
     ]
     report = render_rheumatology_report(result, case, tmp_path / "report.html")
-    assert "风湿免疫科 首轮评估" in report.read_text(encoding="utf-8")
+    html = report.read_text(encoding="utf-8")
+    resolved = result.case_orientation.supporting_evidence[0]
+    assert "风湿免疫科 首轮评估" in html
+    assert "片段 ·" in html and resolved.segment_id in html
+    assert "证据 ·" in html and resolved.evidence_ids[0] in html
+    assert "节点 ·" in html and resolved.node_ids[0] in html
+    assert resolved.quote in html
 
 
 def test_initial_stage_schema_excludes_discussion_statuses_and_other_domains():

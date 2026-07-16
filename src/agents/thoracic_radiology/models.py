@@ -220,6 +220,10 @@ class CoreConsultAnswer(BaseModel):
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     decision_impact: str = Field(min_length=1)
     decisive_next_step: str | None = None
+    supporting_evidence: SkipJsonSchema[list[EvidencePointer]] = Field(
+        default_factory=list
+    )
+    related_evidence: SkipJsonSchema[list[EvidencePointer]] = Field(default_factory=list)
 
 
 class ReviewDomainCoverage(BaseModel):

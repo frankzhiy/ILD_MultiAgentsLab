@@ -52,9 +52,21 @@ def report_nav() -> str:
 def render_reasoning_audit(result: BaseModel, roles: dict[str, str], report_path: str | Path) -> str:
     cards = []
     for item in _reasoning_items(result):
-        title = _first_text(item, "assessment", "conclusion", "answer", "updated_view") or type(item).__name__
+        title = _first_text(
+            item,
+            "assessment",
+            "conclusion",
+            "answer",
+            "updated_view",
+            "missing_information",
+            "question",
+            "action",
+            "observation",
+        ) or type(item).__name__
         confidence = _first_text(item, "confidence", "answerability", "change_status") or "未标注"
-        reasoning = _first_text(item, "reasoning_summary", "reason", "rationale") or "未提供推理摘要。"
+        reasoning = _first_text(
+            item, "reasoning_summary", "why_it_matters", "reason", "rationale"
+        ) or "未提供推理摘要。"
         support = _case_panel("支持病例证据", getattr(item, "supporting_evidence", []), roles, "support")
         conflict = _case_panel("冲突病例证据", getattr(item, "conflicting_evidence", []), roles, "conflict")
         context = _case_panel(
@@ -91,9 +103,14 @@ def render_guideline_audit(result: BaseModel, report_path: str | Path) -> str:
 def _reasoning_items(value: object) -> Iterator[BaseModel]:
     if isinstance(value, BaseModel):
         fields = type(value).model_fields
+        has_case_evidence = any(
+            getattr(value, name, [])
+            for name in ("supporting_evidence", "conflicting_evidence", "related_evidence")
+            if name in fields
+        )
         if "reasoning_summary" in fields or (
             "reason" in fields and ("updated_view" in fields or "answer" in fields)
-        ):
+        ) or has_case_evidence:
             yield value
         for field_name in fields:
             yield from _reasoning_items(getattr(value, field_name))
@@ -124,14 +141,27 @@ def _case_panel(title: str, pointers, roles: dict[str, str], kind: str) -> str:
 def _case_evidence(pointer, roles: dict[str, str]) -> str:
     unit = getattr(pointer, "graph_unit_id", "")
     segment = getattr(pointer, "segment_id", "")
-    ids = getattr(pointer, "proposition_ids", []) or getattr(pointer, "evidence_ids", [])
+    evidence_ids = getattr(pointer, "evidence_ids", [])
+    node_ids = getattr(pointer, "node_ids", [])
+    proposition_ids = getattr(pointer, "proposition_ids", [])
     quotes = getattr(pointer, "resolved_quotes", [])
     quote = " ".join(item.quote for item in quotes) or getattr(pointer, "quote", "")
-    locator = f"{segment} · {unit} · {roles.get(unit, 'unknown')} · {', '.join(ids)}"
+    locators = [
+        f"片段 · {segment or '无'}",
+        f"单元 · {unit or '无'}",
+        f"角色 · {roles.get(unit, 'unknown')}",
+        f"证据 · {', '.join(evidence_ids) or '无'}",
+        f"节点 · {', '.join(node_ids) or '无'}",
+    ]
+    if proposition_ids:
+        locators.append(f"命题 · {', '.join(proposition_ids)}")
     return (
         '<div class="audit-evidence">'
-        f'<code class="audit-locator">{escape(locator)}</code>'
-        f'<blockquote>{escape(quote or "未解析到原文")}</blockquote></div>'
+        + "".join(
+            f'<code class="audit-locator">{escape(locator)}</code>'
+            for locator in locators
+        )
+        + f'<blockquote>{escape(quote or "未解析到原文")}</blockquote></div>'
     )
 
 

@@ -47,7 +47,7 @@ def render_thoracic_radiology_report(
     phase = "首轮评估" if is_initial else "会中响应"
     body = "".join(
         [
-            _hero(case_input.case_id, phase, state),
+            _hero(case_input.case_id, phase, state, roles),
             report_nav(),
             _orientation_section(state, roles),
             _source_section(state, roles),
@@ -85,7 +85,7 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;border-botto
 </style></head><body><main>{body}<footer>ILD多学科团队 · 胸部影像科文字描述分析</footer></main></body></html>"""
 
 
-def _hero(case_id, phase, state) -> str:
+def _hero(case_id, phase, state, roles) -> str:
     core = state.core_answer
     return (
         f'<header><div class="eyebrow">Thoracic Radiology · {escape(phase)}</div>'
@@ -99,6 +99,8 @@ def _hero(case_id, phase, state) -> str:
             if core.decisive_next_step
             else ""
         )
+        + _evidence(core.supporting_evidence, roles, "核心回答证据")
+        + _evidence(core.related_evidence, roles, "核心回答相关背景")
         + "</div><div class=\"grid\">"
         + _metric("核心信度", core.confidence)
         + _metric("已识别胸部检查", len(state.reconstruction.examinations))
@@ -303,12 +305,20 @@ def _evidence(
         )
         if not quote_html and pointer.quote:
             quote_html = f'<div class="quote">{escape(pointer.quote)}</div>'
-        locator = ", ".join(pointer.proposition_ids or pointer.evidence_ids)
+        locators = [
+            f"片段 · {pointer.segment_id or '无'}",
+            f"单元 · {pointer.graph_unit_id or '无'}",
+            f"角色 · {roles.get(pointer.graph_unit_id, 'unknown')}",
+            f"证据 · {', '.join(pointer.evidence_ids) or '无'}",
+            f"节点 · {', '.join(pointer.node_ids) or '无'}",
+        ]
+        if pointer.proposition_ids:
+            locators.append(f"命题 · {', '.join(pointer.proposition_ids)}")
         blocks.append(
             '<div class="evidence">'
-            f"<strong>{escape(title)}</strong> · <code>{escape(pointer.graph_unit_id)} · "
-            f"{escape(roles.get(pointer.graph_unit_id, 'unknown'))} · {escape(locator)}</code>"
-            f"{quote_html}</div>"
+            f"<strong>{escape(title)}</strong>"
+            + "".join(f"<code>{escape(locator)}</code>" for locator in locators)
+            + f"{quote_html}</div>"
         )
     return "".join(blocks)
 

@@ -407,7 +407,15 @@ def test_initial_assessment_aggregates_three_stages_and_renders(tmp_path):
         "initial_consult_formulation",
     ]
     report = render_pathology_report(result, case, tmp_path / "report.html")
-    assert "病理科首轮评估" in report.read_text(encoding="utf-8")
+    html = report.read_text(encoding="utf-8")
+    resolved = result.pathology_formulation.supporting_evidence[0]
+    assert "病理科首轮评估" in html
+    assert "片段 ·" in html and resolved.segment_id in html
+    assert "证据 ·" in html and resolved.evidence_ids[0] in html
+    assert "节点 ·" in html
+    expected_node = resolved.node_ids[0] if resolved.node_ids else "节点 · 无"
+    assert expected_node in html
+    assert resolved.quote in html
 
 
 def test_no_material_state_cannot_contain_pattern_findings():

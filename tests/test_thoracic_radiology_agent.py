@@ -701,3 +701,10 @@ def test_initial_report_leads_with_core_answer_and_keeps_guide_as_audit(tmp_path
     assert "七问处理状态" not in html
     assert "双肺间质增粗纹理走形杂乱" in html
     assert html.index("核心回答") < html.index("影像审阅覆盖")
+    pointer = result.core_answer.supporting_evidence[0]
+    assert "核心回答证据" in html
+    assert "片段 ·" in html and pointer.segment_id in html
+    assert "证据 ·" in html and pointer.evidence_ids[0] in html
+    assert "节点 ·" in html and pointer.node_ids[0] in html
+    assert "命题 ·" in html and pointer.proposition_ids[0] in html
+    assert pointer.quote in html

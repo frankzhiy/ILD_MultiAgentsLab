@@ -364,6 +364,7 @@ def _validate_formulation(
                 f"{sorted(unknown)}"
             )
         _validate_task_assessment(assessment, reconstruction, working, opinions)
+    _populate_core_evidence(result.core_answer, assessments)
     _validate_core_pe_wording(result.core_answer.answer, assessments)
     coverage = result.review_coverage
     _require_unique([str(item.domain) for item in coverage], "guide coverage domain")
@@ -371,6 +372,33 @@ def _validate_formulation(
         _validate_all_pointers(question.related_evidence)
     for action in result.action_items:
         _validate_all_pointers(action.related_evidence)
+
+
+def _populate_core_evidence(core, assessments: list[RadiologyTaskAssessment]) -> None:
+    selected = [item for item in assessments if item.priority == "primary"] or assessments
+    core.supporting_evidence = _dedupe_pointers(
+        pointer for item in selected for pointer in item.supporting_evidence
+    )
+    core.related_evidence = _dedupe_pointers(
+        pointer
+        for item in selected
+        for pointer in [*item.conflicting_evidence, *item.related_evidence]
+    )
+
+
+def _dedupe_pointers(pointers: Iterable[EvidencePointer]) -> list[EvidencePointer]:
+    unique = []
+    seen = set()
+    for pointer in pointers:
+        key = (
+            pointer.graph_unit_id,
+            tuple(pointer.proposition_ids),
+            tuple(pointer.evidence_ids),
+        )
+        if key not in seen:
+            seen.add(key)
+            unique.append(pointer.model_copy(deep=True))
+    return unique
 
 
 def _validate_task_assessment(
