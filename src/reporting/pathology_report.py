@@ -107,7 +107,7 @@ def render_pathology_report(
 .hero-inner{{max-width:1180px;margin:auto;padding:42px 24px 38px}}.hero h1{{margin:8px 0 5px;font-size:34px}}.metrics{{display:flex;flex-wrap:wrap;gap:9px;margin-top:20px}}.metric{{padding:5px 11px;border:1px solid #ffffff38;border-radius:999px;background:#ffffff16;font-size:12px}}
 section{{padding:22px;margin:18px 0}}h2{{font-size:20px;margin:0 0 12px}}dl{{margin:0}}dt{{font-weight:750;margin-top:10px}}dd{{margin:2px 0 0;color:#475569}}.empty{{color:#64748b}}
 </style></head><body>
-<header class="hero"><div class="hero-inner"><div style="font-size:12px;letter-spacing:.13em;opacity:.72">ILD 多学科团队 · 病理科</div><h1>{escape(case_input.case_id)} · 病理科{title}</h1><div>病理来源、标本代表性、形态模式与疾病诊断严格分层</div><div class="metrics"><span class="metric">片段 {summary.segment_count}</span><span class="metric">单元 {summary.unit_count}</span><span class="metric">主责 {summary.owned_unit_count}</span><span class="metric">共享 {summary.shared_context_unit_count}</span><span class="metric">跨专科 {summary.collaborative_context_unit_count}</span></div></div></header>
+<header class="hero"><div class="hero-inner"><div style="font-size:12px;letter-spacing:.13em;opacity:.72">ILD 多学科团队 · 病理科</div><h1>{escape(case_input.case_id)} · 病理科{title}</h1><div>病理来源、标本代表性、形态模式与疾病诊断严格分层</div><div class="metrics"><span class="metric">片段 {summary.segment_count}</span><span class="metric">单元 {summary.unit_count}</span><span class="metric">主责 {summary.owned_unit_count}</span><span class="metric">共享 {summary.shared_context_unit_count}</span></div></div></header>
 {report_nav()}<main>{''.join(sections)}{audit}</main></body></html>""",
         encoding="utf-8",
     )

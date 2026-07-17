@@ -296,7 +296,6 @@ def _compact_specialty(
             for key in (
                 "owned_unit_count",
                 "shared_context_unit_count",
-                "collaborative_context_unit_count",
                 "reference_only_unit_count",
             )
         },

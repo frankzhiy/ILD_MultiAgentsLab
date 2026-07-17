@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.schemas.semantic_graphing.clinical_proposition import EvidenceBlock, EvidenceReference
 from src.schemas.semantic_graphing.graph_unit import GraphUnitCertainty, GraphUnitStatus
@@ -21,7 +21,6 @@ class GraphNodeType(StrEnum):
 class GraphEdgeType(StrEnum):
     ORGANIZES_AS = "organizes_as"
     CONTAINS_PROPOSITION = "contains_proposition"
-    HAS_EVENT_MODIFIER = "has_event_modifier"
     HAS_MODIFIER = "has_modifier"
     ATTRIBUTED_TO = "attributed_to"
 
@@ -73,6 +72,30 @@ class GraphUnitLocalGraph(BaseModel):
     nodes: list[LocalGraphNode] = Field(default_factory=list)
     edges: list[LocalGraphEdge] = Field(default_factory=list)
     build_issues: list[LocalGraphBuildIssue] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_event_modifier_nodes(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        def field(item: Any, name: str) -> Any:
+            return item.get(name) if isinstance(item, dict) else getattr(item, name)
+
+        event_modifier_ids = {
+            field(edge, "target_node_id")
+            for edge in data.get("edges", [])
+            if field(edge, "edge_type") == "has_event_modifier"
+        }
+        if not event_modifier_ids:
+            return data
+        return {
+            **data,
+            "edges": [
+                edge for edge in data["edges"] if field(edge, "edge_type") != "has_event_modifier"
+            ],
+            "nodes": [node for node in data["nodes"] if field(node, "node_id") not in event_modifier_ids],
+        }
 
 
 class SegmentLocalGraphs(BaseModel):

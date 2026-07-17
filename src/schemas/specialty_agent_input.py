@@ -24,7 +24,6 @@ from src.schemas.semantic_graphing.proposition_validation import (
 class EvidenceRole(StrEnum):
     OWNED = "owned"
     SHARED_CONTEXT = "shared_context"
-    COLLABORATIVE_CONTEXT = "collaborative_context"
     REFERENCE_ONLY = "reference_only"
 
 
@@ -62,7 +61,6 @@ class SpecialtyCaseSummary(BaseModel):
     unit_count: int = Field(ge=0)
     owned_unit_count: int = Field(ge=0)
     shared_context_unit_count: int = Field(ge=0)
-    collaborative_context_unit_count: int = Field(default=0, ge=0)
     reference_only_unit_count: int = Field(ge=0)
     available_locator_count: int = Field(ge=0)
     degraded_locator_count: int = Field(ge=0)

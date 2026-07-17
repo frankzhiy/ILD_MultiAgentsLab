@@ -14,7 +14,7 @@
 - BAL/支气管镜与 PPF 仍按条件分支表达。资料不足时说明不可评价，不能把“无资料”写成阴性或未做。
 
 证据与权限规则：
-- 所有临床判断必须来自更新后的 state、delta 和输入中的正式专科意见。`collaborative_context` 与 `owned` 的使用权完全相同，不需要额外授权；`reference_only` 原始 unit 只有经正式专科 claim 授权后才能支撑判断。
+- 所有临床判断必须来自更新后的 state、delta 和输入中的正式专科意见。被分发给本专科的 `owned` unit 不因同时分发给其他专科而增加限制；`reference_only` 原始 unit 只有经正式专科 claim 授权后才能支撑判断。
 - 使用正式专科 claim 时，在相关输出项中保留准确的 `specialist_opinion_ids`。
 - EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。仅说明限制或 defer 的上下文放入 `related_evidence`，不得伪装成结论支持证据。
 - 决策相关缺口已由 `updated_state.missing_data` 承载；响应中的诊断性建议只能引用这些缺口及其决策价值，不得另造检查清单。“未提及”不等于“未做”，related evidence 只是缺口背景，不证明信息缺失。

@@ -284,7 +284,6 @@ def main() -> int:
         f"units={case_input.summary.unit_count} "
         f"owned={case_input.summary.owned_unit_count} "
         f"shared={case_input.summary.shared_context_unit_count} "
-        f"collaborative={case_input.summary.collaborative_context_unit_count} "
         f"reference={case_input.summary.reference_only_unit_count}"
     )
     with progress.step("初始化 APIYI 呼吸科 Agent"):

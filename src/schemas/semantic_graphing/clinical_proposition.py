@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.schemas.semantic_graphing.graph_unit import GraphUnitCertainty, GraphUnitStatus
 from src.schemas.semantic_graphing.primary_frame import PrimaryFrame
@@ -32,7 +32,7 @@ class PropositionType(StrEnum):
 
 
 class ModifierType(StrEnum):
-    """Closed set of clinically meaningful proposition or event modifiers."""
+    """Closed set of clinically meaningful proposition modifiers."""
 
     TIME = "time"
     ONSET = "onset"
@@ -119,7 +119,7 @@ class ClinicalAttribution(BaseModel):
 
 
 class ClinicalModifier(BaseModel):
-    """Clinically meaningful modifier owned by one proposition or event."""
+    """Clinically meaningful modifier owned by one proposition."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -181,7 +181,7 @@ class ClinicalProposition(BaseModel):
 
 
 class GraphUnitClinicalPropositions(BaseModel):
-    """Clinical propositions and event-level modifiers for one graph unit."""
+    """Clinical propositions for one graph unit."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -193,16 +193,19 @@ class GraphUnitClinicalPropositions(BaseModel):
         min_length=1,
         description="Program-generated ordered evidence blocks reconstructing the graph-unit text.",
     )
-    event_modifiers: list[ClinicalModifier] = Field(
-        default_factory=list,
-        description="Modifiers applying to the event nucleus as a whole, not to one proposition.",
-    )
     propositions: list[ClinicalProposition] = Field(
         min_length=1,
         description="All independently referable clinical statements grounded in the unit.",
     )
     notes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_event_modifiers(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "event_modifiers" in data:
+            return {key: value for key, value in data.items() if key != "event_modifiers"}
+        return data
 
 
 class SegmentClinicalPropositions(BaseModel):

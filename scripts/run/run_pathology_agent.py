@@ -164,7 +164,6 @@ def main() -> int:
     progress.log(
         f"病理科输入完成：units={case.summary.unit_count} "
         f"owned={case.summary.owned_unit_count} shared={case.summary.shared_context_unit_count} "
-        f"collaborative={case.summary.collaborative_context_unit_count} "
         f"reference={case.summary.reference_only_unit_count}"
     )
 

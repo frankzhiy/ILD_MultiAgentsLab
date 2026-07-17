@@ -8,7 +8,6 @@ from src.schemas.semantic_graphing.clinical_proposition import (
     EvidenceBlock,
     EvidenceReference,
     GraphUnitClinicalPropositions,
-    ModifierType,
     PropositionType,
 )
 from src.schemas.semantic_graphing.graph_unit import DocumentGraphUnits, GraphUnit
@@ -27,26 +26,6 @@ from src.schemas.semantic_graphing.proposition_validation import (
     ValidationSeverity,
 )
 
-
-_LOCAL_MODIFIER_TYPES = {
-    ModifierType.QUANTITY,
-    ModifierType.INTENSITY,
-    ModifierType.VALUE,
-    ModifierType.UNIT,
-    ModifierType.RANGE,
-    ModifierType.TREND,
-    ModifierType.COLOR,
-    ModifierType.CONSISTENCY,
-    ModifierType.QUALITY,
-    ModifierType.ANATOMICAL_SITE,
-    ModifierType.LATERALITY,
-    ModifierType.DOSE,
-    ModifierType.ROUTE,
-    ModifierType.SCHEDULE,
-    ModifierType.RESPONSE,
-    ModifierType.PURPOSE,
-    ModifierType.METHOD,
-}
 
 _EXPECTED_PROPOSITION_TYPES: dict[PrimaryFrame, set[PropositionType]] = {
     PrimaryFrame.SYMPTOM_EPISODE: {
@@ -342,45 +321,6 @@ class ClinicalPropositionValidator:
                         )
                     )
 
-        proposition_modifier_signatures = set(shared_modifier_evidence)
-        event_modifier_signatures: set[tuple] = set()
-        for modifier in propositions.event_modifiers:
-            _validate_modifier(modifier, propositions.evidence_blocks, modifier_ids, issues)
-            referenced_evidence_ids.update(modifier.evidence.evidence_ids)
-            if modifier.modifier_type in _LOCAL_MODIFIER_TYPES:
-                issues.append(
-                    _issue(
-                        "possible_local_modifier_at_event_level",
-                        ValidationSeverity.WARNING,
-                        f"{modifier.modifier_type} usually belongs to a specific proposition.",
-                        modifier_id=modifier.modifier_id,
-                    )
-                )
-            modifier_signature = (
-                tuple(modifier.evidence.evidence_ids),
-                modifier.evidence.quote,
-                modifier.value_text,
-            )
-            if modifier_signature in event_modifier_signatures:
-                issues.append(
-                    _issue(
-                        "duplicate_event_modifier",
-                        ValidationSeverity.ERROR,
-                        "An identical event modifier is repeated.",
-                        modifier_id=modifier.modifier_id,
-                    )
-                )
-            event_modifier_signatures.add(modifier_signature)
-            if modifier_signature in proposition_modifier_signatures:
-                issues.append(
-                    _issue(
-                        "modifier_has_multiple_ownership_levels",
-                        ValidationSeverity.ERROR,
-                        "The same modifier evidence is assigned at both event and proposition levels.",
-                        modifier_id=modifier.modifier_id,
-                    )
-                )
-
         for (_, _, value_text), owners in shared_modifier_evidence.items():
             if len(set(owners)) > 1:
                 issues.append(
@@ -410,7 +350,6 @@ class ClinicalPropositionValidator:
         )
         metrics = PropositionValidationMetrics(
             proposition_count=len(propositions.propositions),
-            event_modifier_count=len(propositions.event_modifiers),
             proposition_modifier_count=proposition_modifier_count,
             attributed_proposition_count=sum(
                 proposition.attribution is not None for proposition in propositions.propositions

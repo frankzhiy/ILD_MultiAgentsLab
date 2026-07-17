@@ -60,11 +60,6 @@ _ALLOWED_USES = {
         "clinical_interpretation",
         "specialist_question",
     ],
-    EvidenceRole.COLLABORATIVE_CONTEXT: [
-        "diagnostic_support",
-        "clinical_interpretation",
-        "specialist_question",
-    ],
     EvidenceRole.REFERENCE_ONLY: [
         "case_orientation",
         "related_evidence",
@@ -228,7 +223,6 @@ def build_specialty_case_input(
             unit_count=unit_count,
             owned_unit_count=role_counts[EvidenceRole.OWNED],
             shared_context_unit_count=role_counts[EvidenceRole.SHARED_CONTEXT],
-            collaborative_context_unit_count=role_counts[EvidenceRole.COLLABORATIVE_CONTEXT],
             reference_only_unit_count=role_counts[EvidenceRole.REFERENCE_ONLY],
             available_locator_count=locator_counts["available"],
             degraded_locator_count=locator_counts["degraded"],
@@ -286,12 +280,10 @@ def _evidence_role(
     specialties: list[MdtSpecialty],
     target: MdtSpecialty,
 ) -> EvidenceRole:
-    if specialties == [target]:
-        return EvidenceRole.OWNED
     if MdtSpecialty.SHARED_CONTEXT in specialties:
         return EvidenceRole.SHARED_CONTEXT
     if target in specialties:
-        return EvidenceRole.COLLABORATIVE_CONTEXT
+        return EvidenceRole.OWNED
     return EvidenceRole.REFERENCE_ONLY
 
 

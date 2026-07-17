@@ -187,9 +187,7 @@ def _render_html(
             for unit in seg.units:
                 propositions_by_unit[unit.graph_unit_id] = unit
                 proposition_count += len(unit.propositions)
-                modifier_count += len(unit.event_modifiers) + sum(
-                    len(proposition.modifiers) for proposition in unit.propositions
-                )
+                modifier_count += sum(len(proposition.modifiers) for proposition in unit.propositions)
 
     validation_by_unit: dict[str, Any] = {}
     if proposition_validation is not None:
@@ -508,18 +506,6 @@ def _render_clinical_propositions(unit_propositions: Any | None) -> str:
         evidence_ids = ", ".join(escape(item) for item in evidence.evidence_ids)
         return f"<code>{evidence_ids}</code> · quote: {escape(evidence.quote)}"
 
-    event_modifiers = ""
-    if unit_propositions.event_modifiers:
-        items = "".join(
-            f"<li><strong>{escape(str(modifier.modifier_type))}</strong>: "
-            f"{escape(modifier.value_text)} · {render_evidence(modifier.evidence)}</li>"
-            for modifier in unit_propositions.event_modifiers
-        )
-        event_modifiers = (
-            "<div class='event-modifiers'><strong>Event modifiers</strong>"
-            f"<ul class='modifier-list'>{items}</ul></div>"
-        )
-
     proposition_items = []
     for proposition in unit_propositions.propositions:
         modifiers = ""
@@ -546,7 +532,7 @@ def _render_clinical_propositions(unit_propositions: Any | None) -> str:
 
     return (
         "<div class='propositions'><strong>Clinical propositions</strong>"
-        f"{evidence_section}{event_modifiers}{''.join(proposition_items)}</div>"
+        f"{evidence_section}{''.join(proposition_items)}</div>"
     )
 
 
@@ -668,7 +654,6 @@ def _render_cytoscape_script() -> str:
   const edgeLabels = {
     organizes_as: "组织为",
     contains_proposition: "包含陈述",
-    has_event_modifier: "事件修饰",
     has_modifier: "修饰",
     attributed_to: "来源"
   };
@@ -745,7 +730,7 @@ def _render_cytoscape_script() -> str:
     { selector: 'edge[edge_type = "organizes_as"]', style: {
       "line-color": "#64748b", "target-arrow-color": "#475569", "width": 2
     }},
-    { selector: 'edge[edge_type = "has_modifier"], edge[edge_type = "has_event_modifier"]', style: {
+    { selector: 'edge[edge_type = "has_modifier"]', style: {
       "line-color": "#d8b4fe", "target-arrow-color": "#c084fc", "line-style": "dashed"
     }},
     { selector: 'edge[edge_type = "attributed_to"]', style: {
@@ -839,7 +824,6 @@ def _render_proposition_validation(unit_validation: Any | None) -> str:
     return (
         f"<div class='validation {state_class}'><strong>{state_label}</strong>"
         f" · propositions {metrics.proposition_count}"
-        f" · event modifiers {metrics.event_modifier_count}"
         f" · proposition modifiers {metrics.proposition_modifier_count}"
         f" · attributed propositions {metrics.attributed_proposition_count}"
         f" · evidence blocks {metrics.referenced_evidence_block_count}/{metrics.evidence_block_count}"

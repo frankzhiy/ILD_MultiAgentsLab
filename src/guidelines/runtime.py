@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterator
+from threading import Lock
+from typing import ClassVar, Iterator
 
 from pydantic import BaseModel
 
@@ -23,6 +24,9 @@ PROMPT_RULES = """
 
 
 class GuidelineRuntime:
+    _retrievers: ClassVar[dict[Path, GuidelineRetriever]] = {}
+    _retrievers_lock: ClassVar[Lock] = Lock()
+
     def __init__(
         self,
         retriever: GuidelineRetriever,
@@ -45,8 +49,14 @@ class GuidelineRuntime:
         directory = Path(settings.get("directory", "data/guidelines"))
         if not directory.is_absolute():
             directory = Path(__file__).resolve().parents[2] / directory
+        directory = directory.resolve()
+        with cls._retrievers_lock:
+            retriever = cls._retrievers.get(directory)
+            if retriever is None:
+                retriever = GuidelineRetriever(directory)
+                cls._retrievers[directory] = retriever
         return cls(
-            GuidelineRetriever(directory),
+            retriever,
             list(settings.get("scope") or []),
             dict(settings.get("queries") or {}),
             int(settings.get("limit", 6)),

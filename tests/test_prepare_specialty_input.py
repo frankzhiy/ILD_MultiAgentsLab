@@ -63,15 +63,14 @@ def test_builds_ordered_complete_pulmonology_input_from_current_run():
         "seg_006_gu_001",
     ]
     assert result.summary.unit_count == 11
-    assert result.summary.owned_unit_count == 4
+    assert result.summary.owned_unit_count == 6
     assert result.summary.shared_context_unit_count == 4
-    assert result.summary.collaborative_context_unit_count == 2
     assert result.summary.reference_only_unit_count == 1
 
     units = {
         unit.graph_unit.graph_unit_id: unit for segment in result.segments for unit in segment.units
     }
-    assert units["seg_003_gu_003"].evidence_role == EvidenceRole.COLLABORATIVE_CONTEXT
+    assert units["seg_003_gu_003"].evidence_role == EvidenceRole.OWNED
     assert units["seg_003_gu_003"].may_support_diagnostic_claim is True
     assert units["seg_003_gu_003"].allowed_uses == units["seg_003_gu_001"].allowed_uses
     assert len(units["seg_003_gu_003"].graph_unit.mdt_specialty) == 2
@@ -172,9 +171,8 @@ def test_builds_same_complete_input_for_thoracic_radiology_with_new_roles():
     assert result.summary.model_dump() == {
         "segment_count": 6,
         "unit_count": 11,
-        "owned_unit_count": 1,
+        "owned_unit_count": 2,
         "shared_context_unit_count": 4,
-        "collaborative_context_unit_count": 1,
         "reference_only_unit_count": 5,
         "available_locator_count": 11,
         "degraded_locator_count": 0,
@@ -183,7 +181,7 @@ def test_builds_same_complete_input_for_thoracic_radiology_with_new_roles():
     units = {
         unit.graph_unit.graph_unit_id: unit for segment in result.segments for unit in segment.units
     }
-    assert units["seg_003_gu_003"].evidence_role == EvidenceRole.COLLABORATIVE_CONTEXT
+    assert units["seg_003_gu_003"].evidence_role == EvidenceRole.OWNED
     assert units["seg_004_gu_001"].evidence_role == EvidenceRole.OWNED
     assert units["seg_005_gu_001"].evidence_role == EvidenceRole.REFERENCE_ONLY
 

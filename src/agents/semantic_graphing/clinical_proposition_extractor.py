@@ -32,7 +32,6 @@ class ExtractedGraphUnitClinicalPropositions(BaseModel):
 
     graph_unit_id: SkipJsonSchema[str] = ""
     primary_frame: SkipJsonSchema[PrimaryFrame] = PrimaryFrame.BACKGROUND_CONTEXT
-    event_modifiers: list["ExtractedClinicalModifier"] = Field(default_factory=list)
     propositions: list["ExtractedClinicalProposition"] = Field(min_length=1)
     notes: SkipJsonSchema[list[str]] = Field(default_factory=list)
     metadata: SkipJsonSchema[dict[str, Any]] = Field(default_factory=dict)
@@ -234,7 +233,6 @@ def _attach_evidence_blocks(
         modifier_index += 1
         return normalized
 
-    event_modifiers = [normalized_modifier(item) for item in result.event_modifiers]
     propositions = []
     for index, item in enumerate(result.propositions, start=1):
         evidence = _canonicalize_evidence_reference(item.evidence, evidence_blocks)
@@ -265,7 +263,6 @@ def _attach_evidence_blocks(
         graph_unit_id=unit.graph_unit_id,
         primary_frame=primary_frame.primary_frame,
         evidence_blocks=evidence_blocks,
-        event_modifiers=event_modifiers,
         propositions=propositions,
     )
 
@@ -325,11 +322,6 @@ def _merge_chunk_results(
         modifier_index += 1
         return updated
 
-    event_modifiers = [
-        renumber_modifier(modifier)
-        for result in results
-        for modifier in result.event_modifiers
-    ]
     propositions = []
     for proposition_index, proposition in enumerate(
         (item for result in results for item in result.propositions),
@@ -347,7 +339,6 @@ def _merge_chunk_results(
         graph_unit_id=graph_unit_id,
         primary_frame=primary_frame.primary_frame,
         evidence_blocks=[block for result in results for block in result.evidence_blocks],
-        event_modifiers=event_modifiers,
         propositions=propositions,
         notes=[note for result in results for note in result.notes],
         metadata={"chunk_count": len(results)},
@@ -450,9 +441,6 @@ def validate_clinical_propositions(
 
     proposition_ids: set[str] = set()
     modifier_ids: set[str] = set()
-    for modifier in result.event_modifiers:
-        _validate_modifier(modifier, result.evidence_blocks, modifier_ids)
-
     for proposition in result.propositions:
         if proposition.proposition_id in proposition_ids:
             raise ValueError(f"Duplicate proposition_id: {proposition.proposition_id}")

@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ValidationSeverity(StrEnum):
@@ -29,12 +29,18 @@ class PropositionValidationMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposition_count: int = Field(ge=0)
-    event_modifier_count: int = Field(ge=0)
     proposition_modifier_count: int = Field(ge=0)
     attributed_proposition_count: int = Field(ge=0)
     evidence_block_count: int = Field(ge=0)
     referenced_evidence_block_count: int = Field(ge=0)
     evidence_block_coverage: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_event_modifier_count(cls, data: object) -> object:
+        if isinstance(data, dict) and "event_modifier_count" in data:
+            return {key: value for key, value in data.items() if key != "event_modifier_count"}
+        return data
 
 
 class GraphUnitPropositionValidation(BaseModel):

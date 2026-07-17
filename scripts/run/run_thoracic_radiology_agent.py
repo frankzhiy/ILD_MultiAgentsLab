@@ -269,7 +269,6 @@ def main() -> int:
         f"输入完成：segments={case_input.summary.segment_count} "
         f"units={case_input.summary.unit_count} owned={case_input.summary.owned_unit_count} "
         f"shared={case_input.summary.shared_context_unit_count} "
-        f"collaborative={case_input.summary.collaborative_context_unit_count} "
         f"reference={case_input.summary.reference_only_unit_count}"
     )
     progress.log(

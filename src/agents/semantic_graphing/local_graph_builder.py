@@ -160,11 +160,6 @@ class LocalGraphBuilder:
 
         add_edge(GraphEdgeType.ORGANIZES_AS, graph_unit_id, event_id)
 
-        for modifier in propositions.event_modifiers:
-            modifier_id = f"{prefix}::{modifier.modifier_id}"
-            nodes.append(_modifier_node(modifier_id, modifier))
-            add_edge(GraphEdgeType.HAS_EVENT_MODIFIER, event_id, modifier_id)
-
         actor_ids: dict[tuple, str] = {}
         actor_counts: defaultdict[str, int] = defaultdict(int)
         for proposition in propositions.propositions:

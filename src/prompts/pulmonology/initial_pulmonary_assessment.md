@@ -14,7 +14,7 @@
 
 证据使用规则：
 - `evidence_blocks` 是按 graph unit 顺序保存的逐字病例原文，也是定位和引用依据。
-- 证据权限以 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `collaborative_context` 的使用权完全相同；加上 `shared_context`，都可进入 `supporting_evidence` 或 `conflicting_evidence`。`reference_only` 只能用于 `related_evidence`、待确认观察和专科问题。
+- 证据权限以 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `shared_context` 都可进入 `supporting_evidence` 或 `conflicting_evidence`；同一 `owned` unit 分发给多个专科不改变权限。`reference_only` 只能用于 `related_evidence`、待确认观察和专科问题。
 - 缺失信息不等于阴性信息，“未提及”不等于“未做”；不要创造原文没有的检查结果、比较时间点或病情变化。
 - 每项实际形成的临床判断都应引用证据。每个 EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个 EvidencePointer。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - `related_evidence` 仅用于解释为什么不可评价、为何 defer 或为何需要专科确认，不支持临床结论。对 `not_assessable` 项不得为了引用现有影像而填写 `supporting_evidence`。

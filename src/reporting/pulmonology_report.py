@@ -20,7 +20,6 @@ from src.reporting.specialty_report_common import (
 ROLE_LABELS = {
     "owned": "呼吸科主责",
     "shared_context": "共享背景",
-    "collaborative_context": "多专科共同使用",
     "reference_only": "其他专科参考",
     "unknown": "角色未知",
 }
@@ -194,7 +193,6 @@ def _page(
     .evidence-list {{ display:grid; gap:9px; padding:0 11px 11px; }}
     .evidence {{ padding:12px 13px; border-left:4px solid #0284c7; border-radius:8px; background:#fff; }}
     .role-shared_context {{ border-left-color:#94a3b8; }}
-    .role-collaborative_context {{ border-left-color:#f59e0b; }}
     .role-reference_only {{ border-left-color:var(--violet); }}
     blockquote {{ margin:9px 0; padding:8px 11px; border-radius:7px; background:#f8fafc; }}
     code {{ display:block; color:#64748b; overflow-wrap:anywhere; font-size:11px; line-height:1.55; }}
@@ -239,7 +237,6 @@ def _page(
       <span class="metric">单元 {summary.unit_count}</span>
       <span class="metric">主责 {summary.owned_unit_count}</span>
       <span class="metric">共享 {summary.shared_context_unit_count}</span>
-      <span class="metric">跨专科 {summary.collaborative_context_unit_count}</span>
       <span class="metric">参考 {summary.reference_only_unit_count}</span>
     </div>
   </div></header>

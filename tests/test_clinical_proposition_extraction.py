@@ -21,6 +21,12 @@ from src.schemas.semantic_graphing.clinical_proposition import (
 )
 from src.schemas.semantic_graphing.document import SourceType
 from src.schemas.semantic_graphing.graph_unit import GraphUnit, MdtSpecialty
+from src.schemas.semantic_graphing.local_graph import (
+    GraphEdgeType,
+    GraphUnitLocalGraph,
+    LocalGraphBuildStatus,
+    LocalGraphEdge,
+)
 from src.schemas.semantic_graphing.primary_frame import (
     GraphUnitPrimaryFrame,
     PrimaryFrame,
@@ -148,49 +154,11 @@ def test_proposition_modifiers_are_owned_by_the_correct_proposition():
     ]
 
 
-def test_validation_rejects_duplicate_modifier_ids():
-    text = "咳痰，量少。"
-    bad_span = GraphUnitClinicalPropositions(
-        graph_unit_id="seg_001_gu_001",
-        primary_frame=PrimaryFrame.BACKGROUND_CONTEXT,
-        evidence_blocks=build_evidence_blocks(make_unit(text)),
-        event_modifiers=[
-            ClinicalModifier(
-                modifier_id="mod_001",
-                modifier_type=ModifierType.QUANTITY,
-                value_text="量少",
-                evidence=span(text, "量少"),
-            )
-        ],
-        propositions=[
-            ClinicalProposition(
-                proposition_id="prop_001",
-                proposition_type=PropositionType.SYMPTOM,
-                concept_text="咳痰",
-                evidence=span(text, "咳痰"),
-                modifiers=[
-                    ClinicalModifier(
-                        modifier_id="mod_001",
-                        modifier_type=ModifierType.QUANTITY,
-                        value_text="量少",
-                        evidence=span(text, "量少"),
-                    )
-                ],
-                rationale="test",
-            )
-        ],
-    )
-
-    with pytest.raises(ValueError, match="Duplicate modifier_id"):
-        validate_clinical_propositions(bad_span, make_unit(text), make_frame())
-
-
 def test_extractor_uses_schema_response_and_validates_nested_modifier_ownership():
     text = "活动后气短明显。"
     response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
@@ -248,7 +216,6 @@ def test_ungrounded_attribution_error_explains_implicit_subjects_use_null():
     response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
@@ -286,7 +253,6 @@ def test_actor_outside_attribution_span_error_explains_implicit_subjects_use_nul
     response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
@@ -321,7 +287,6 @@ def test_nonverbatim_modifier_evidence_becomes_validation_warning():
     response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
@@ -359,37 +324,33 @@ def test_nonverbatim_modifier_evidence_becomes_validation_warning():
     assert "error" not in [severity for _, severity in issues]
 
 
-def test_extractor_retries_nonverbatim_proposition_evidence_with_actionable_guidance():
-    text = (
-        "术前完善肺功能；呼吸储备功能、肺容量及气道阻力正常，"
-        "常规超声心动图六项：二尖瓣、三尖瓣返流。"
-    )
+def test_extractor_accepts_coordinated_findings_with_shared_prefix_evidence():
+    text = "胸部CT提示双肺肺气肿、肺纤维化。"
     invalid_response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
                 "proposition_type": "finding",
-                "concept_text": "呼吸储备功能正常",
+                "concept_text": "胸部CT提示双肺肺气肿",
                 "status": "present",
                 "certainty": "high",
                 "attribution": None,
                 "modifiers": [],
-                "evidence": ref("呼吸储备功能正常", 2),
-                "rationale": "展开共享状态",
+                "evidence": ref("胸部CT提示双肺肺气肿"),
+                "rationale": "补全共享前缀",
             },
             {
                 "proposition_id": "prop_002",
                 "proposition_type": "finding",
-                "concept_text": "二尖瓣返流",
+                "concept_text": "胸部CT提示双肺肺纤维化",
                 "status": "present",
                 "certainty": "high",
                 "attribution": None,
                 "modifiers": [],
-                "evidence": ref("二尖瓣返流", 2),
-                "rationale": "展开共享谓词",
+                "evidence": ref("胸部CT提示双肺肺纤维化"),
+                "rationale": "补全共享前缀",
             },
         ],
         "notes": [],
@@ -400,11 +361,11 @@ def test_extractor_retries_nonverbatim_proposition_evidence_with_actionable_guid
         "propositions": [
             {
                 **invalid_response["propositions"][0],
-                "evidence": ref("呼吸储备功能、肺容量及气道阻力正常", 2),
+                "evidence": ref("胸部CT提示双肺肺气肿、肺纤维化"),
             },
             {
                 **invalid_response["propositions"][1],
-                "evidence": ref("二尖瓣、三尖瓣返流", 2),
+                "evidence": ref("胸部CT提示双肺肺气肿、肺纤维化"),
             },
         ],
     }
@@ -422,17 +383,17 @@ def test_extractor_retries_nonverbatim_proposition_evidence_with_actionable_guid
     assert "concept_text may be a normalized or coordination-expanded clinical statement" in retry_prompt
     assert "evidence.quote must quote the complete continuous source evidence" in retry_prompt
     assert "Select that verbatim evidence span instead of copying concept_text" in retry_prompt
+    assert "并列结构可补全共享前/后缀" in llm.messages_by_attempt[0][1].content
     assert len(trace["attempts"]) == 2
     assert trace["attempts"][0]["validated"] is False
     assert trace["attempts"][1]["validated"] is True
-    assert result.propositions[0].evidence.quote == "呼吸储备功能、肺容量及气道阻力正常"
-    assert result.propositions[1].evidence.quote == "二尖瓣、三尖瓣返流"
+    assert result.propositions[0].evidence.quote == "胸部CT提示双肺肺气肿、肺纤维化"
+    assert result.propositions[1].evidence.quote == "胸部CT提示双肺肺气肿、肺纤维化"
 
 
 def test_extractor_derives_contiguous_owned_evidence_ids_from_source_text():
     text = "主因胸闷1年余。入院。\n患者诉1年前出现胸闷。"
     response = {
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_type": "symptom",
@@ -512,7 +473,6 @@ def test_validation_rejects_unknown_and_disconnected_evidence_references():
     response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
@@ -554,7 +514,6 @@ def test_quality_gate_reports_evidence_block_coverage():
     response = {
         "graph_unit_id": "seg_001_gu_001",
         "primary_frame": "background_context",
-        "event_modifiers": [],
         "propositions": [
             {
                 "proposition_id": "prop_001",
@@ -581,3 +540,22 @@ def test_quality_gate_reports_evidence_block_coverage():
     assert validation.metrics.evidence_block_count == 2
     assert validation.metrics.referenced_evidence_block_count == 1
     assert validation.metrics.evidence_block_coverage == 0.5
+
+
+def test_local_graph_accepts_typed_edges_when_building_new_graphs():
+    graph = GraphUnitLocalGraph(
+        graph_unit_id="seg_001_gu_001",
+        segment_id="seg_001",
+        primary_frame=PrimaryFrame.BACKGROUND_CONTEXT,
+        build_status=LocalGraphBuildStatus.BUILT,
+        edges=[
+            LocalGraphEdge(
+                edge_id="seg_001_gu_001::edge_001",
+                edge_type=GraphEdgeType.ORGANIZES_AS,
+                source_node_id="source",
+                target_node_id="target",
+            )
+        ],
+    )
+
+    assert graph.edges[0].edge_type == GraphEdgeType.ORGANIZES_AS

@@ -108,6 +108,25 @@ def test_runtime_honors_stage_limit_and_skips_zero_limit_stage():
     assert allowed == {}
 
 
+def test_runtime_reuses_one_retriever_for_the_same_directory(monkeypatch, tmp_path):
+    created = []
+
+    class FakeRetriever:
+        def __init__(self, directory):
+            created.append(directory)
+
+    monkeypatch.setattr("src.guidelines.runtime.GuidelineRetriever", FakeRetriever)
+    GuidelineRuntime._retrievers.clear()
+    config = {"guideline_retrieval": {"enabled": True, "directory": str(tmp_path)}}
+
+    first = GuidelineRuntime.from_config(config)
+    second = GuidelineRuntime.from_config(config)
+
+    assert first is not None and second is not None
+    assert first.retriever is second.retriever
+    assert created == [tmp_path.resolve()]
+
+
 def test_unretrieved_citation_is_rejected():
     pointer = GuidelineEvidencePointer(
         chunk_id="invented",

@@ -71,3 +71,12 @@ dmypy.json
 # uv / pip
 .uv/
 pip-wheel-metadata/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+front/dist/
+
+# Local workbench runtime state
+outputs/workbench.sqlite3
+outputs/workbench_inputs/

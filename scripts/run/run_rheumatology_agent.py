@@ -199,7 +199,6 @@ def main() -> int:
         f"风湿科输入：{input_path.resolve()}；segments={case.summary.segment_count} "
         f"units={case.summary.unit_count} owned={case.summary.owned_unit_count} "
         f"shared={case.summary.shared_context_unit_count} "
-        f"collaborative={case.summary.collaborative_context_unit_count} "
         f"reference={case.summary.reference_only_unit_count}"
     )
     progress.log(f"首阶段病例输入：{working_input_path.resolve()}")

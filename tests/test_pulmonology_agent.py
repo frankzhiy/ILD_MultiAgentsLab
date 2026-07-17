@@ -371,13 +371,19 @@ def test_initial_assessment_rejects_missing_unknown_and_reference_only_evidence(
 
 def test_mixed_specialty_context_has_owned_evidence_authorization():
     case = case_input()
-    collaborative = unit_with_role(case, EvidenceRole.COLLABORATIVE_CONTEXT)
-    assessment = assessment_for(case, pointer_for(collaborative))
+    multi_specialty = next(
+        unit
+        for segment in case.segments
+        for unit in segment.units
+        if unit.evidence_role == EvidenceRole.OWNED
+        and len(unit.graph_unit.mdt_specialty) > 1
+    )
+    assessment = assessment_for(case, pointer_for(multi_specialty))
 
     validated = validate_initial_assessment(assessment, case)
 
     assert validated.clinical_phenotype.supporting_evidence[0].graph_unit_id == (
-        collaborative.graph_unit.graph_unit_id
+        multi_specialty.graph_unit.graph_unit_id
     )
 
 
@@ -409,7 +415,13 @@ def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():
     case = case_input()
     foundation, pulmonary, formulation = initial_stages(case)
     reference_pointer = pointer_for(unit_with_role(case, EvidenceRole.REFERENCE_ONLY))
-    collaborative_pointer = pointer_for(unit_with_role(case, EvidenceRole.COLLABORATIVE_CONTEXT))
+    multi_specialty_pointer = pointer_for(next(
+        unit
+        for segment in case.segments
+        for unit in segment.units
+        if unit.evidence_role == EvidenceRole.OWNED
+        and len(unit.graph_unit.mdt_specialty) > 1
+    ))
     pulmonary.progression_assessment = ProgressionAssessment(
         recent_worsening="not_assessable",
         acute_exacerbation_status="not_assessable",
@@ -420,7 +432,7 @@ def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():
                 component="radiology",
                 status="not_assessable",
                 assessment="需要影像科完成纵向比较。",
-                related_evidence=[reference_pointer, collaborative_pointer],
+                related_evidence=[reference_pointer, multi_specialty_pointer],
             )
         ],
         reasoning_summary="现有影像上下文不能替代正式纵向影像判断。",

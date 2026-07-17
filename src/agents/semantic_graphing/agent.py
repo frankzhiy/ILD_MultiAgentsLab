@@ -432,8 +432,7 @@ class SemanticGraphingAgent:
                     completed=len(indexed_results),
                     total=unit_total,
                     proposition_count=len(propositions.propositions),
-                    modifier_count=len(propositions.event_modifiers)
-                    + sum(len(item.modifiers) for item in propositions.propositions),
+                    modifier_count=sum(len(item.modifiers) for item in propositions.propositions),
                     cached=True,
                 )
 
@@ -473,8 +472,7 @@ class SemanticGraphingAgent:
                     completed=len(indexed_results),
                     total=unit_total,
                     proposition_count=len(propositions.propositions),
-                    modifier_count=len(propositions.event_modifiers)
-                    + sum(len(item.modifiers) for item in propositions.propositions),
+                    modifier_count=sum(len(item.modifiers) for item in propositions.propositions),
                 )
         if first_error is not None:
             raise first_error
@@ -504,8 +502,7 @@ class SemanticGraphingAgent:
             len(unit.propositions) for segment in ordered_results for unit in segment.units
         )
         modifier_count = sum(
-            len(unit.event_modifiers)
-            + sum(len(proposition.modifiers) for proposition in unit.propositions)
+            sum(len(proposition.modifiers) for proposition in unit.propositions)
             for segment in ordered_results
             for unit in segment.units
         )
