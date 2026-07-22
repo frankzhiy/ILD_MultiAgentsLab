@@ -10,4 +10,5 @@ temperature: 0.0
 max_tokens: 12000
 max_attempts: 2
 retry_backoff_seconds: 2
+ledger_prompt: src/prompts/mdt_chair/semantic_ledger.md
 prompt: src/prompts/mdt_chair/initial_synthesis.md

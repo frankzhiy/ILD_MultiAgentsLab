@@ -8,7 +8,7 @@
 - 优先回答病例实际提出的影像问题，不能机械强制 UIP 分类。
 - 不输出概率、百分比、通用 confidence、证据更新、跨专科冲突或治疗方案。
 - EvidenceBundle 的 supporting/weakening/discriminating 只能引用输入中可用于胸部影像判断的 evidence_id；background 和 related_evidence 可引用全部输入证据。每个病例证据指针只填写一个 evidence_id。
-- 专科问题必须指向其他专科，并说明能解锁什么决策；数据缺口必须说明决策影响。
+- 专科问题只用于请其他专科解释、澄清或限定其现有专业观点；索取影像、报告、标本、检查或病史必须写入数据缺口。没有必要时问题列表可以为空；两者都必须说明决策影响。
 
 只返回符合 JSON Schema 的对象，顶层只能有 professional_conclusions 和 clinical_reasoning：
 {{ output_schema }}

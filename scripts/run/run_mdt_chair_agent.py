@@ -160,7 +160,7 @@ def main() -> int:
         write_json(
             failure,
             {
-                "schema_version": "mdt_chair.v4",
+                "schema_version": "mdt_chair.v5",
                 "failed_stage": error.stage,
                 "error": str(error),
                 "attempts": error.attempts,

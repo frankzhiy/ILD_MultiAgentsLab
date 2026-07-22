@@ -25,6 +25,20 @@ const QUESTION_STATUS = {
   disputed: ['存在分歧', 'error'],
 }
 
+const RESPONSE_STATUS = {
+  none_responded: ['尚未回应', 'default'],
+  partially_responded: ['部分专科已回应', 'warning'],
+  all_responded: ['目标专科均已回应', 'success'],
+}
+
+const RESOLUTION_STATUS = {
+  resolved: ['已解决', 'success'],
+  partially_resolved: ['部分解决', 'warning'],
+  unresolved: ['尚未解决', 'default'],
+  blocked_by_evidence: ['受证据缺口阻断', 'warning'],
+  disputed: ['存在分歧', 'error'],
+}
+
 const NEED_STATUS = {
   available: ['已满足', 'success'],
   partially_available: ['部分满足', 'warning'],
@@ -82,6 +96,23 @@ const CONCLUSION_TYPE = {
   other: '其他',
 }
 
+const BOUNDARY_STATUS = {
+  indeterminate: ['尚不确定', 'warning'],
+  not_assessable: ['不可评价', 'default'],
+  unclassifiable: ['不能分类', 'default'],
+  not_applicable: ['不适用', 'default'],
+}
+
+const BOUNDARY_SCOPE = {
+  clinical: '临床',
+  imaging: '影像',
+  pathology: '病理',
+  rheumatology: '风湿免疫',
+  progression: '疾病进展',
+  etiology: '病因',
+  other: '其他',
+}
+
 const specialtyLabel = (value) => SPECIALTIES[value] || value
 
 function SpecialtyTags({ label, specialties = [], color }) {
@@ -123,7 +154,7 @@ function IntegratedConclusions({ items = [] }) {
         {items.map((item, index) => (
           <article className="formal-item conclusion-item" key={item.conclusion_id || index}>
             <Space size={[6, 6]} wrap>
-              <SpecialtyTags label="相关专科" specialties={item.specialties} color="geekblue" />
+              <SpecialtyTags label="支持专科" specialties={item.supporting_specialties ?? item.specialties} color="geekblue" />
               {item.status && <LabeledStatus label="结论状态" value={item.status} labels={CONCLUSION_STATUS} />}
               {item.role && <LabeledTag label="结论定位" value={item.role} labels={CONCLUSION_ROLE} />}
               {item.conclusion_type && <LabeledTag label="结论类型" value={item.conclusion_type} labels={CONCLUSION_TYPE} />}
@@ -136,7 +167,31 @@ function IntegratedConclusions({ items = [] }) {
             {item.limitations?.length > 0 && <div className="limitation-note"><Text strong>结论限制：</Text>{item.limitations.join('；')}</div>}
           </article>
         ))}
-      </div> : <EmptyList description="尚未形成跨专科整合结论" />}
+      </div> : <EmptyList description="本轮未形成新的跨专科整合结论" />}
+    </Card>
+  )
+}
+
+function AssessmentBoundaries({ items = [] }) {
+  return (
+    <Card title="本轮判断边界（不可评价）" className="section-card chair-board chair-boundaries">
+      {items.length ? <div className="formal-list">
+        {items.map((item, index) => (
+          <article className="formal-item boundary-item" key={item.boundary_id || index}>
+            <Space size={[6, 6]} wrap>
+              <SpecialtyTags label="涉及专科" specialties={item.specialties} color="default" />
+              {item.status && <LabeledStatus label="判断状态" value={item.status} labels={BOUNDARY_STATUS} />}
+              {item.scope && <LabeledTag label="判断范围" value={item.scope} labels={BOUNDARY_SCOPE} />}
+            </Space>
+            <Title level={5}>{item.topic}</Title>
+            <Paragraph><Text strong>当前不能判断：</Text>{item.statement}</Paragraph>
+            <Paragraph><Text strong>原因：</Text>{item.reason}</Paragraph>
+            <Paragraph type="secondary"><Text strong>决策影响：</Text>{item.decision_impact}</Paragraph>
+            <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
+            <Sources item={item} />
+          </article>
+        ))}
+      </div> : <EmptyList description="本轮没有需要单独说明的判断边界" />}
     </Card>
   )
 }
@@ -197,9 +252,20 @@ function Questions({ items = [] }) {
         {items.map((item, index) => (
           <article className="formal-item question-item" key={item.question_id || index}>
             <Space size={[6, 6]} wrap>
-              <LabeledStatus label="问题状态" value={item.status} labels={QUESTION_STATUS} />
+              {item.response_status
+                ? <LabeledStatus label="专科回应情况" value={item.response_status} labels={RESPONSE_STATUS} />
+                : <LabeledStatus label="问题状态" value={item.status} labels={QUESTION_STATUS} />}
+              {item.resolution_status && <LabeledStatus label="问题解决情况" value={item.resolution_status} labels={RESOLUTION_STATUS} />}
               <SpecialtyTags label="问题提出专科" specialties={item.raised_by} />
-              <SpecialtyTags label="待回答专科" specialties={item.target_specialties} color="geekblue" />
+              <SpecialtyTags label="目标专科" specialties={item.target_specialties} color="geekblue" />
+              <SpecialtyTags label="已回应专科" specialties={item.responded_by} color="green" />
+              <SpecialtyTags
+                label="仍待回答专科"
+                specialties={item.response_status === 'all_responded'
+                  ? []
+                  : item.awaiting_specialties?.filter((specialty) => !item.responded_by?.includes(specialty))}
+                color="orange"
+              />
             </Space>
             <Title level={5}>{item.question}</Title>
             {item.why_it_matters && <Paragraph><Text strong>讨论意义：</Text>{item.why_it_matters}</Paragraph>}
@@ -317,13 +383,14 @@ export function ChairWorkspace({ runId, run }) {
 
       <Alert className="section-gap" type="info" showIcon title="开发阶段单独运行入口" description="此按钮只运行 MDT 主持人，会直接使用现有四个专科结果，不会重新运行前序 Agent。" />
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="主持人尚不可运行" description={value.error} />}
-      {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="现有主持人结果属于旧版结构" description="下方结果仍可查看，请点击重新运行以生成当前四板块完整结果。" />}
+      {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="现有主持人结果属于旧版结构" description="下方结果仍可查看，请点击重新运行以生成当前五板块完整结果。" />}
       {value.status === 'pending' && <Alert className="section-gap" type="success" showIcon title="四个专科结果已就绪" description="可以单独运行主持人整合。" />}
       {value.status === 'failed' && <Alert className="section-gap" type="error" showIcon title={failedWithPrevious ? '本次重跑失败，下方展示上一次成功结果' : '主持人整合失败'} description={value.error} />}
       {mutation.isError && <Alert className="section-gap" type="error" showIcon title="无法启动主持人" description={mutation.error.message} />}
 
       <div className="chair-board-grid">
         <IntegratedConclusions items={result?.integrated_conclusions} />
+        <AssessmentBoundaries items={result?.assessment_boundaries} />
         <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />
         <Questions items={result?.questions} />
         <EvidenceNeeds items={result?.evidence_needs} />

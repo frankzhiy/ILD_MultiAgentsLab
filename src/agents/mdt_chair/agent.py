@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents.mdt_chair.models import (
+    ChairSemanticLedger,
     CaseEvidenceCitation,
     ChairEvidenceBundle,
     CitedChairStatement,
@@ -296,7 +297,6 @@ def _compact_specialty(
                 "medical_basis": medical_basis,
                 "decision_impact": decision_impact,
                 "evidence": evidence,
-                "guideline_evidence": list(item.get("guideline_evidence") or []),
                 "limitations": list(item.get("limitations") or []),
             }
         )
@@ -312,7 +312,11 @@ def _compact_specialty(
             path,
             question,
             evidence=evidence,
-            metadata={"target_specialty": item.get("target_specialty")},
+            metadata={
+                "target_specialty": item.get("target_specialty"),
+                "why_it_matters": item.get("why_it_matters"),
+                "decision_unlocked": item.get("decision_unlocked"),
+            },
         )
         questions.append({"source_ref": source_ref, **item, "related_evidence": evidence["background"]})
 
@@ -327,6 +331,11 @@ def _compact_specialty(
             path,
             required,
             evidence=evidence,
+            metadata={
+                "available_information": item.get("available_information"),
+                "why_it_matters": item.get("why_it_matters"),
+                "decision_unlocked": item.get("decision_unlocked"),
+            },
         )
         evidence_needs.append(
             {"source_ref": source_ref, **item, "related_evidence": evidence["background"]}
@@ -378,6 +387,7 @@ class MDTChairAgent:
         self,
         llm: LLMClient,
         *,
+        ledger_prompt_path: str | Path,
         prompt_path: str | Path,
         temperature: float = 0.0,
         max_tokens: int = 12000,
@@ -385,6 +395,7 @@ class MDTChairAgent:
         retry_backoff_seconds: float = 0.0,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
+        self.ledger_prompt = load_text(ledger_prompt_path)
         self.prompt = load_text(prompt_path)
         self.generator = StructuredLLMGenerator(
             llm,
@@ -407,10 +418,11 @@ class MDTChairAgent:
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> "MDTChairAgent":
         config = load_yaml(config_path)
-        if "prompt" not in config:
-            raise ValueError("MDT chair config is missing prompt")
+        if "ledger_prompt" not in config or "prompt" not in config:
+            raise ValueError("MDT chair config is missing ledger_prompt or prompt")
         return cls(
             llm,
+            ledger_prompt_path=config["ledger_prompt"],
             prompt_path=config["prompt"],
             temperature=float(config.get("temperature", 0.0)),
             max_tokens=int(config.get("max_tokens", 12000)),
@@ -421,25 +433,57 @@ class MDTChairAgent:
 
     def integrate(self, bundle: ChairPromptBundle) -> tuple[MDTChairIntegration, dict]:
         compact_json = prompt_json(bundle.prompt_input)
+        ledger_schema = (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if self.generator.response_format_mode == "json_schema"
+            else prompt_schema_json(ChairSemanticLedger)
+        )
+        ledger_prompt = render_template(
+            self.ledger_prompt,
+            {"chair_input": compact_json, "output_schema": ledger_schema},
+        )
+        ledger, ledger_trace = self.generator.generate(
+            schema_model=ChairSemanticLedger,
+            schema_name="mdt_chair_semantic_ledger",
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=ledger_prompt,
+            extra_validation=lambda value: resolve_semantic_ledger(value, bundle),
+        )
+
+        ledger_json = prompt_json(ledger.model_dump(mode="json"))
         output_schema = (
             "由 API 的严格 JSON Schema response_format 提供。"
             if self.generator.response_format_mode == "json_schema"
             else prompt_schema_json(MDTChairIntegration)
         )
-        prompt = render_template(
+        synthesis_prompt = render_template(
             self.prompt,
-            {"chair_input": compact_json, "output_schema": output_schema},
+            {
+                "chair_input": compact_json,
+                "topic_ledger": ledger_json,
+                "output_schema": output_schema,
+            },
         )
-        result, trace = self.generator.generate(
+        result, synthesis_trace = self.generator.generate(
             schema_model=MDTChairIntegration,
             schema_name="mdt_chair_integration",
             system_prompt=SYSTEM_PROMPT,
-            user_prompt=prompt,
-            extra_validation=lambda value: resolve_chair_references(value, bundle),
+            user_prompt=synthesis_prompt,
+            extra_validation=lambda value: resolve_chair_references(
+                value, bundle, ledger
+            ),
         )
+        trace = {
+            "semantic_ledger": ledger.model_dump(mode="json"),
+            "ledger_generation": ledger_trace,
+            "integration_generation": synthesis_trace,
+        }
         trace["prompt_components"] = {
-            "total_chars": len(prompt),
+            "total_chars": len(ledger_prompt) + len(synthesis_prompt),
+            "ledger_prompt_chars": len(ledger_prompt),
+            "integration_prompt_chars": len(synthesis_prompt),
             "chair_input_chars": len(compact_json),
+            "topic_ledger_chars": len(ledger_json),
             "output_schema_chars": len(output_schema),
             "source_reference_count": len(bundle.source_registry),
             "evidence_reference_count": len(bundle.evidence_registry),
@@ -454,12 +498,16 @@ class MDTChairAgent:
 def resolve_chair_references(
     result: MDTChairIntegration,
     bundle: ChairPromptBundle,
+    ledger: ChairSemanticLedger | None = None,
 ) -> MDTChairIntegration:
+    """Backfill deterministic IDs and provenance without judging medical semantics."""
+
     result.case_id = bundle.case_id
-    _validate_unique_ids(result)
-    for conclusion in result.integrated_conclusions:
+    result.schema_version = "mdt_chair.v5"
+    for index, conclusion in enumerate(result.integrated_conclusions, 1):
+        conclusion.conclusion_id = f"IC{index:03d}"
         _resolve_cited(conclusion, bundle, "native_conclusion")
-        conclusion.specialties = _ordered_unique(
+        conclusion.supporting_specialties = _ordered_unique(
             citation.specialty for citation in conclusion.source_citations
         )
         conclusion.limitations = _ordered_unique(
@@ -468,24 +516,33 @@ def resolve_chair_references(
             for limitation in bundle.source_metadata[ref].get("limitations", [])
         )
 
-    retained_questions = []
-    for question in result.questions:
-        unknown = set(question.source_refs) - set(bundle.source_registry)
-        if unknown:
-            raise ValueError(f"Unknown specialty source refs: {sorted(unknown)}")
-        question.source_refs = _ordered_unique(
-            ref
-            for ref in question.source_refs
-            if bundle.source_registry[ref].source_type == "native_question"
+    for index, boundary in enumerate(result.assessment_boundaries, 1):
+        boundary.boundary_id = f"B{index:03d}"
+        _resolve_cited(boundary, bundle, "native_conclusion")
+        boundary.specialties = _ordered_unique(
+            citation.specialty for citation in boundary.source_citations
         )
-        if not question.source_refs:
-            continue
-        if len(question.source_refs) == 1:
-            question.question = bundle.source_registry[question.source_refs[0]].quote
-        retained_questions.append(question)
-    result.questions = retained_questions
 
-    for question in result.questions:
+    for index, need in enumerate(result.evidence_needs, 1):
+        need.need_id = f"EN{index:03d}"
+        _resolve_cited(
+            need,
+            bundle,
+            {"native_question", "evidence_gap", "native_conclusion"},
+        )
+        need.raised_by = _ordered_unique(
+            citation.specialty
+            for citation in need.source_citations
+            if citation.source_type in {"native_question", "evidence_gap"}
+        )
+        need.provided_by = _ordered_unique(
+            citation.specialty
+            for citation in need.source_citations
+            if citation.source_type == "native_conclusion"
+        )
+
+    for index, question in enumerate(result.questions, 1):
+        question.question_id = f"Q{index:03d}"
         _resolve_cited(question, bundle, "native_question")
         question.raised_by = _ordered_unique(
             citation.specialty for citation in question.source_citations
@@ -497,99 +554,72 @@ def resolve_chair_references(
         )
         for answer in question.answers:
             _resolve_cited(answer, bundle, "native_conclusion")
-            if not any(
-                citation.specialty == answer.specialty
-                for citation in answer.source_citations
-            ):
-                raise ValueError(
-                    f"Question answer by {answer.specialty} must cite that specialty's native conclusion"
-                )
-        answered = {answer.specialty for answer in question.answers}
-        targets = set(question.target_specialties)
-        if question.status == "disputed" and len(answered) >= 2:
-            continue
-        question.status = (
-            "answered"
-            if targets and targets.issubset(answered)
-            else "partially_answered"
-            if answered
-            else "unanswered"
+            if answer.source_citations:
+                answer.specialty = answer.source_citations[0].specialty
+        question.responded_by = _ordered_unique(
+            answer.specialty for answer in question.answers
         )
-
-    retained_needs = []
-    for need in result.evidence_needs:
-        unknown = set(need.source_refs) - set(bundle.source_registry)
-        if unknown:
-            raise ValueError(f"Unknown specialty source refs: {sorted(unknown)}")
-        need.source_refs = _ordered_unique(
-            ref
-            for ref in need.source_refs
-            if bundle.source_registry[ref].source_type
-            in {"evidence_gap", "native_conclusion"}
-        )
-        gap_refs = [
-            ref
-            for ref in need.source_refs
-            if bundle.source_registry[ref].source_type == "evidence_gap"
+        question.awaiting_specialties = [
+            specialty
+            for specialty in question.target_specialties
+            if specialty not in question.responded_by
         ]
-        if not gap_refs:
-            continue
-        if len(gap_refs) == 1:
-            need.required_information = bundle.source_registry[gap_refs[0]].quote
-        retained_needs.append(need)
-    result.evidence_needs = retained_needs
+        question.response_status = (
+            "all_responded"
+            if question.target_specialties and not question.awaiting_specialties
+            else "partially_responded"
+            if question.responded_by
+            else "none_responded"
+        )
 
-    for need in result.evidence_needs:
-        _resolve_cited(
-            need,
-            bundle,
-            {"evidence_gap", "native_conclusion"},
-            required_source_type="evidence_gap",
-        )
-        need.raised_by = _ordered_unique(
-            citation.specialty
-            for citation in need.source_citations
-            if citation.source_type == "evidence_gap"
-        )
-        need.provided_by = _ordered_unique(
-            citation.specialty
-            for citation in need.source_citations
-            if citation.source_type == "native_conclusion"
-        )
+    _link_output_items(result)
     _resolve_conflicts(result.conflicts, result, bundle)
+    if ledger is not None:
+        _validate_output_refs_against_ledger(result, ledger)
     return result
+
+
+def resolve_semantic_ledger(
+    ledger: ChairSemanticLedger,
+    bundle: ChairPromptBundle,
+) -> ChairSemanticLedger:
+    """Resolve ledger IDs and check only that selected source IDs exist."""
+
+    for topic_index, group in enumerate(ledger.claim_groups, 1):
+        group.topic_id = f"T{topic_index:03d}"
+        for claim_index, claim in enumerate(group.claims, 1):
+            claim.claim_id = f"{group.topic_id}-A{claim_index:03d}"
+            _require_refs([claim.source_ref], bundle, {"native_conclusion"})
+    for index, route in enumerate(ledger.question_routes, 1):
+        route.route_id = f"R{index:03d}"
+        _require_refs(route.source_refs, bundle, {"native_question"})
+        route.target_specialties = _ordered_unique(
+            bundle.source_metadata[ref].get("target_specialty")
+            for ref in route.source_refs
+            if bundle.source_metadata[ref].get("target_specialty") in SPECIALTIES
+        )
+        for answer in route.answer_links:
+            _require_refs(answer.source_refs, bundle, {"native_conclusion"})
+            answer.specialty = bundle.source_registry[answer.source_refs[0]].specialty
+    for index, group in enumerate(ledger.evidence_need_groups, 1):
+        group.group_id = f"NG{index:03d}"
+        _require_refs(group.source_refs, bundle, {"native_question", "evidence_gap"})
+        _require_refs(group.coverage_source_refs, bundle, {"native_conclusion"})
+    return ledger
 
 
 def _resolve_cited(
     statement: CitedChairStatement,
     bundle: ChairPromptBundle,
     expected_source_type: str | set[str],
-    *,
-    required_source_type: str | None = None,
 ) -> None:
     statement.source_refs = _ordered_unique(statement.source_refs)
-    unknown = set(statement.source_refs) - set(bundle.source_registry)
-    if unknown:
-        raise ValueError(f"Unknown specialty source refs: {sorted(unknown)}")
     allowed = (
         {expected_source_type}
         if isinstance(expected_source_type, str)
         else expected_source_type
     )
-    wrong_type = [
-        ref
-        for ref in statement.source_refs
-        if bundle.source_registry[ref].source_type not in allowed
-    ]
-    if wrong_type:
-        raise ValueError(
-            f"Expected {expected_source_type} source refs; got incompatible refs: {wrong_type}"
-        )
-    if required_source_type and not any(
-        bundle.source_registry[ref].source_type == required_source_type
-        for ref in statement.source_refs
-    ):
-        raise ValueError(f"At least one {required_source_type} source ref is required")
+    _require_refs(statement.source_refs, bundle, allowed)
     statement.source_citations = [bundle.source_registry[ref] for ref in statement.source_refs]
     evidence = {}
     for role in EVIDENCE_ROLES:
@@ -613,15 +643,89 @@ def _resolve_cited(
     )
 
 
-def _validate_unique_ids(result: MDTChairIntegration) -> None:
-    for label, values in (
-        ("conclusion_id", [item.conclusion_id for item in result.integrated_conclusions]),
-        ("conflict_id", [item.conflict_id for item in result.conflicts]),
-        ("question_id", [item.question_id for item in result.questions]),
-        ("need_id", [item.need_id for item in result.evidence_needs]),
-    ):
-        if len(values) != len(set(values)):
-            raise ValueError(f"{label} values must be unique")
+def _require_refs(
+    refs: Iterable[str],
+    bundle: ChairPromptBundle,
+    allowed_types: set[str],
+) -> None:
+    unique_refs = _ordered_unique(refs)
+    unknown = set(unique_refs) - set(bundle.source_registry)
+    if unknown:
+        raise ValueError(f"Unknown specialty source refs: {sorted(unknown)}")
+    wrong_type = [
+        ref
+        for ref in unique_refs
+        if bundle.source_registry[ref].source_type not in allowed_types
+    ]
+    if wrong_type:
+        raise ValueError(f"Incompatible specialty source refs: {wrong_type}")
+
+
+def _link_output_items(result: MDTChairIntegration) -> None:
+    def ids_for(refs: Iterable[str], items: Iterable[Any], id_field: str) -> list[str]:
+        selected = set(refs)
+        return [
+            getattr(item, id_field)
+            for item in items
+            if selected.intersection(item.source_refs)
+        ]
+
+    for boundary in result.assessment_boundaries:
+        boundary.related_evidence_need_ids = ids_for(
+            boundary.related_evidence_need_source_refs,
+            result.evidence_needs,
+            "need_id",
+        )
+    for question in result.questions:
+        question.related_evidence_need_ids = ids_for(
+            question.related_evidence_need_source_refs,
+            result.evidence_needs,
+            "need_id",
+        )
+
+
+def _validate_output_refs_against_ledger(
+    result: MDTChairIntegration,
+    ledger: ChairSemanticLedger,
+) -> None:
+    """Keep links auditable; do not enforce model-level medical judgments."""
+
+    ledger_refs = {
+        claim.source_ref
+        for group in ledger.claim_groups
+        for claim in group.claims
+    }
+    ledger_refs.update(
+        ref for route in ledger.question_routes for ref in route.source_refs
+    )
+    ledger_refs.update(
+        ref
+        for route in ledger.question_routes
+        for answer in route.answer_links
+        for ref in answer.source_refs
+    )
+    ledger_refs.update(
+        ref for group in ledger.evidence_need_groups for ref in group.source_refs
+    )
+    ledger_refs.update(
+        ref
+        for group in ledger.evidence_need_groups
+        for ref in group.coverage_source_refs
+    )
+    output_refs = {
+        ref
+        for collection in (
+            result.integrated_conclusions,
+            result.assessment_boundaries,
+            result.questions,
+            result.evidence_needs,
+        )
+        for item in collection
+        for ref in item.source_refs
+    }
+    unknown = output_refs - ledger_refs
+    if unknown:
+        raise ValueError(f"Output source refs are absent from semantic ledger: {sorted(unknown)}")
 
 
 def _resolve_conflicts(
@@ -629,45 +733,31 @@ def _resolve_conflicts(
     result: MDTChairIntegration,
     bundle: ChairPromptBundle,
 ) -> None:
-    question_ids = {item.question_id for item in result.questions}
-    need_ids = {item.need_id for item in result.evidence_needs}
     expected_status = {
         (False, False): "unresolved",
         (True, False): "pending_clarification",
         (False, True): "pending_evidence",
         (True, True): "pending_clarification_and_evidence",
     }
-    for conflict in conflicts:
+    for index, conflict in enumerate(conflicts, 1):
+        conflict.conflict_id = f"CF{index:03d}"
         specialties = []
-        stances = set()
         for position in conflict.positions:
             _resolve_cited(position, bundle, "native_conclusion")
-            cited_specialties = {item.specialty for item in position.source_citations}
-            if cited_specialties != {position.specialty}:
-                raise ValueError(
-                    "Each conflict position must cite only native conclusions from its specialty"
-            )
+            if position.source_citations:
+                position.specialty = position.source_citations[0].specialty
             specialties.append(position.specialty)
-            stances.add(position.stance)
-        if len(set(specialties)) < 2:
-            raise ValueError("A cross-specialty conflict requires positions from at least two specialties")
-        if stances != {"affirms", "denies"}:
-            raise ValueError(
-                "A cross-specialty conflict requires both an affirming and a denying position"
-            )
         conflict.specialties = _ordered_unique(specialties)
-        conflict.related_question_ids = _ordered_unique(conflict.related_question_ids)
-        conflict.related_evidence_need_ids = _ordered_unique(conflict.related_evidence_need_ids)
-        unknown_questions = set(conflict.related_question_ids) - question_ids
-        if unknown_questions:
-            raise ValueError(f"Unknown related question IDs: {sorted(unknown_questions)}")
-        unknown_needs = set(conflict.related_evidence_need_ids) - need_ids
-        if unknown_needs:
-            raise ValueError(f"Unknown related evidence need IDs: {sorted(unknown_needs)}")
-        status = expected_status[
+        conflict.related_question_ids = [
+            item.question_id
+            for item in result.questions
+            if set(conflict.related_question_source_refs).intersection(item.source_refs)
+        ]
+        conflict.related_evidence_need_ids = [
+            item.need_id
+            for item in result.evidence_needs
+            if set(conflict.related_evidence_need_source_refs).intersection(item.source_refs)
+        ]
+        conflict.status = expected_status[
             (bool(conflict.related_question_ids), bool(conflict.related_evidence_need_ids))
         ]
-        if conflict.status != status:
-            raise ValueError(
-                f"Conflict {conflict.conflict_id} status must be {status} for its linked resolution items"
-            )

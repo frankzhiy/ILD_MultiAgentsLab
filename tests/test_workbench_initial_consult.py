@@ -93,17 +93,12 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     write_json(
         run_dir / "case-1_mdt_chair_integration.json",
         {
-            "schema_version": "mdt_chair.v4",
-            "integrated_conclusions": [
-                {
-                    "statement": "综合结论",
-                    "medical_basis": "依据",
-                    "decision_impact": "影响",
-                    "evidence": {},
-                    "guideline_evidence": [],
-                }
-            ],
+            "schema_version": "mdt_chair.v5",
+            "integrated_conclusions": [],
+            "assessment_boundaries": [],
             "conflicts": [],
+            "questions": [],
+            "evidence_needs": [],
         },
     )
     assert catalog.chair("run-1")["status"] == "completed"

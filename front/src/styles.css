@@ -123,6 +123,8 @@ a { color: inherit; }
 .chair-board > .ant-card-head .ant-card-head-title { color: #13213a; font-size: 17px; }
 .chair-board > .ant-card-body { padding: 18px 20px; }
 .chair-conclusions { border-top: 3px solid #2f6fed; }
+.chair-boundaries { border-top: 3px solid #8b7a5b; }
+.chair-boundaries > .ant-card-head { background: #f5f1e8; }
 .chair-conflicts { border-top: 3px solid #dc2626; }
 .chair-questions { border-top: 3px solid #7c5ce5; }
 .chair-needs { border-top: 3px solid #d39b2a; }
@@ -137,6 +139,8 @@ a { color: inherit; }
 .chair-answer-evidence > .citation-group { margin-top: 6px; }
 .chair-result { margin-top: 11px; padding: 12px 14px; border-left: 4px solid #2f6fed; border-radius: 5px; background: #f3f7ff; }
 .chair-result .ant-typography { margin: 3px 0 0; line-height: 1.7; }
+.boundary-item { border-color: #ddd5c7; background: #faf8f3; }
+.boundary-item > .ant-typography { line-height: 1.7; }
 .conflict-positions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
 .conflict-position { padding: 12px; border: 1px solid #fecaca; border-radius: 6px; background: #fff7f7; }
 .conflict-position > .ant-typography { margin: 8px 0; line-height: 1.7; }

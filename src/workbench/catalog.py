@@ -372,21 +372,18 @@ class RunCatalog:
 
     @staticmethod
     def _is_current_chair_output(value: Any) -> bool:
-        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v4":
+        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v5":
             return False
-        conclusions = value.get("integrated_conclusions")
-        if not isinstance(conclusions, list) or not conclusions:
-            return False
-        if not isinstance(value.get("conflicts"), list):
-            return False
-        required = {
-            "statement",
-            "medical_basis",
-            "decision_impact",
-            "evidence",
-            "guideline_evidence",
-        }
-        return all(isinstance(item, dict) and required <= set(item) for item in conclusions)
+        return all(
+            isinstance(value.get(field), list)
+            for field in (
+                "integrated_conclusions",
+                "assessment_boundaries",
+                "conflicts",
+                "questions",
+                "evidence_needs",
+            )
+        )
 
     @staticmethod
     def _error_agent(filename: str) -> str:

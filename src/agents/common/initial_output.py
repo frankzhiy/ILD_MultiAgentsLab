@@ -108,20 +108,30 @@ class ProfessionalConclusion(BaseModel):
 
 
 class InterspecialtyQuestion(BaseModel):
+    """A request for another specialty to explain an existing professional view."""
+
     model_config = ConfigDict(extra="forbid")
 
     target_specialty: SpecialistTarget
-    question: str = Field(min_length=1)
+    question: str = Field(
+        min_length=1,
+        description="请其他专科解释、澄清或限定其专业观点；不得用于索取新病例资料。",
+    )
     why_it_matters: str = Field(min_length=1)
     decision_unlocked: str = Field(min_length=1)
     related_evidence: list[CaseEvidencePointer] = Field(default_factory=list)
 
 
 class EvidenceGap(BaseModel):
+    """Missing case material or information needed for a decision."""
+
     model_config = ConfigDict(extra="forbid")
 
     available_information: str = Field(min_length=1)
-    missing_information: str = Field(min_length=1)
+    missing_information: str = Field(
+        min_length=1,
+        description="仍需补充的影像、报告、标本、检查、病史或其他病例资料。",
+    )
     why_it_matters: str = Field(min_length=1)
     decision_unlocked: str = Field(min_length=1)
     related_evidence: list[CaseEvidencePointer] = Field(default_factory=list)
