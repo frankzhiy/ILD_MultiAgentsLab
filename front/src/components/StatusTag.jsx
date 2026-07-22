@@ -10,6 +10,8 @@ const STATUS = {
   running: ['运行中', 'processing'],
   cancelled: ['已取消', 'default'],
   pending: ['等待中', 'default'],
+  unavailable: ['不可运行', 'default'],
+  outdated: ['需要重跑', 'warning'],
   prepared: ['已分发', 'success'],
   not_prepared: ['未分发', 'default'],
 }

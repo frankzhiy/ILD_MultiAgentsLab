@@ -21,7 +21,6 @@ from src.agents.mdt_chair.agent import (  # noqa: E402
 )
 from src.llm.factory import build_llm_client  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
-from src.reporting.mdt_chair_report import render_mdt_chair_report  # noqa: E402
 from src.utils.config import load_yaml  # noqa: E402
 
 
@@ -100,7 +99,7 @@ def _event(event: str, payload: dict) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate the first-pass ILD MDT chair report.")
+    parser = argparse.ArgumentParser(description="Generate the ILD MDT chair integration.")
     parser.add_argument("--run-dir", help="Directory containing four specialty initial JSON files.")
     args = parser.parse_args()
     load_env_file()
@@ -155,13 +154,13 @@ def main() -> int:
         event_callback=_event,
     )
     try:
-        result, trace = agent.synthesize(bundle)
+        result, trace = agent.integrate(bundle)
     except StructuredGenerationError as error:
         failure = run_dir / f"{case_id}_mdt_chair_failure_trace.json"
         write_json(
             failure,
             {
-                "schema_version": "mdt_chair.v1",
+                "schema_version": "mdt_chair.v2",
                 "failed_stage": error.stage,
                 "error": str(error),
                 "attempts": error.attempts,
@@ -170,15 +169,12 @@ def main() -> int:
         print(f"失败 trace：{failure}", flush=True)
         raise
 
-    json_path = run_dir / f"{case_id}_mdt_chair_initial.json"
-    trace_path = run_dir / f"{case_id}_mdt_chair_initial_trace.json"
-    html_path = run_dir / f"{case_id}_mdt_chair_initial.html"
+    json_path = run_dir / f"{case_id}_mdt_chair_integration.json"
+    trace_path = run_dir / f"{case_id}_mdt_chair_integration_trace.json"
     write_json(json_path, result.model_dump(mode="json"))
     write_json(trace_path, trace)
-    render_mdt_chair_report(result, html_path)
     print(f"JSON：{json_path}")
     print(f"Trace：{trace_path}")
-    print(f"HTML：{html_path}")
     print(f"总耗时：{time.perf_counter() - started:.1f}s")
     return 0
 

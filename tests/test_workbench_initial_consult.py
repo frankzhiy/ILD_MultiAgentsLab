@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ import src.workbench.workflow as workflow_module
 from src.agents.pulmonology.agent import PulmonologyAgent
 from src.workbench.catalog import RunCatalog, SPECIALTIES
 from src.workbench.events import EventStore
-from src.workbench.runner import AGENTS
+from src.workbench.runner import AGENTS, RunOrchestrator
 from src.workbench.workflow import WorkbenchWorkflow
 
 
@@ -62,7 +63,7 @@ def test_web_specialty_run_writes_two_layers_and_no_html(monkeypatch, tmp_path):
     assert not list(run_dir.glob("*.html"))
 
 
-def test_catalog_completes_after_four_specialties_and_hides_internal_artifacts(tmp_path):
+def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     run_dir = tmp_path / "outputs" / "runs" / "run-1"
     run_dir.mkdir(parents=True)
     write_json(run_dir / ".workbench_run.json", {"case_id": "case-1"})
@@ -75,18 +76,72 @@ def test_catalog_completes_after_four_specialties_and_hides_internal_artifacts(t
     catalog = RunCatalog(tmp_path)
     summary = catalog.run_summary(run_dir)
     results = catalog.specialties("run-1")["results"]
+    chair = catalog.chair("run-1")
 
     assert summary["status"] == "completed"
-    assert "chair_complete" not in summary
+    assert summary["chair_complete"] is False
+    assert chair["status"] == "unavailable"
+    assert "clinical propositions" in chair["error"]
     assert all(not item["legacy"] for item in results)
     assert all(set(item) == {"specialty", "label", "status", "input_summary", "output", "legacy"} for item in results)
 
+    write_json(run_dir / "case-1_clinical_propositions.json", {"segments": []})
+    write_json(run_dir / "case-1_local_graphs.json", {"segments": []})
+    assert catalog.chair("run-1")["status"] == "pending"
+    assert catalog.chair("run-1")["runnable"] is True
 
-def test_web_orchestrator_and_workflow_have_no_chair_or_reporting_stage():
+    write_json(
+        run_dir / "case-1_mdt_chair_integration.json",
+        {
+            "schema_version": "mdt_chair.v2",
+            "integrated_conclusions": [
+                {
+                    "statement": "综合结论",
+                    "medical_basis": "依据",
+                    "decision_impact": "影响",
+                    "evidence": {},
+                    "guideline_evidence": [],
+                }
+            ],
+        },
+    )
+    assert catalog.chair("run-1")["status"] == "completed"
+    assert catalog.run_summary(run_dir)["chair_complete"] is True
+
+
+def test_web_orchestrator_and_workflow_include_chair_without_html_reporting():
     source = Path(workflow_module.__file__).read_text(encoding="utf-8")
 
-    assert "mdt_chair" not in AGENTS
-    assert not hasattr(WorkbenchWorkflow, "run_chair")
+    assert "mdt_chair" in AGENTS
+    assert hasattr(WorkbenchWorkflow, "run_chair")
     assert "scripts.run" not in source
     assert "src.reporting" not in source
     assert ".html" not in source
+
+
+def test_full_run_executes_chair_after_all_specialties(monkeypatch, tmp_path):
+    run_dir = tmp_path / "outputs/runs/run-1"
+    run_dir.mkdir(parents=True)
+    input_path = tmp_path / "case-1.txt"
+    input_path.write_text("case", encoding="utf-8")
+    write_json(
+        run_dir / ".workbench_run.json",
+        {
+            "case_id": "case-1",
+            "status": "queued",
+            "configs": {agent: str(tmp_path / f"{agent}.yaml") for agent in AGENTS},
+        },
+    )
+    orchestrator = RunOrchestrator(
+        tmp_path, RunCatalog(tmp_path), EventStore(tmp_path / "events.sqlite3")
+    )
+    stages = []
+
+    async def record_stage(_run_id, _run_dir, agent_id, stage, *_args):
+        stages.append((agent_id, stage))
+
+    monkeypatch.setattr(orchestrator, "_stage", record_stage)
+    asyncio.run(orchestrator._execute("run-1", input_path))
+
+    assert stages[-1] == ("mdt_chair", "cross_specialty_integration")
+    assert {agent for agent, _stage in stages[-5:-1]} == set(SPECIALTIES)

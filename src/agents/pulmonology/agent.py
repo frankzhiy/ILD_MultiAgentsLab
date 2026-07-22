@@ -18,25 +18,15 @@ from src.agents.common.initial_output_validation import (
 from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.pulmonology.models import (
-    DiscussionConsultOutput,
-    DiscussionEvidenceMap,
-    DiscussionStateUpdate,
     InitialDiagnosticFormulation,
     InitialFoundation,
     InitialPulmonaryAssessment,
-    PulmonologyDiscussionInput,
-    PulmonologyDiscussionResponse,
     PulmonologyInitialAssessment,
 )
 from src.agents.pulmonology.validation import (
     require_pulmonology_input as _require_pulmonology_input,
-    validate_consult_output as _validate_consult_output,
-    validate_discussion_response,
-    validate_evidence_map as _validate_evidence_map,
     validate_initial_assessment,
     validate_initial_stage as _validate_initial_stage,
-    validate_specialist_opinions as _validate_specialist_opinions,
-    validate_state_update as _validate_state_update,
 )
 from src.guidelines.runtime import (
     PROMPT_RULES,
@@ -63,18 +53,11 @@ _RULE_KEYS_BY_STAGE = {
     "initial_pulmonary_assessment": ("ppf",),
     "initial_diagnostic_formulation": ("diagnostic_confidence", "ppf"),
     "initial_reasoning_output": ("ppf",),
-    "discussion_evidence_mapping": (),
-    "discussion_state_update": ("diagnostic_confidence", "ppf"),
-    "discussion_consult_response": ("diagnostic_confidence", "ppf"),
 }
 
 _CONTRACT_RULES_BY_STAGE = {
     "initial_diagnostic_formulation": (
         "diagnostic_formulation.classification_status 不是 insufficient_data 时，"
-        "leading_diagnosis 必须是非空字符串。",
-    ),
-    "discussion_state_update": (
-        "updated_state.diagnostic_formulation.classification_status 不是 insufficient_data 时，"
         "leading_diagnosis 必须是非空字符串。",
     ),
 }
@@ -88,9 +71,6 @@ class PulmonologyAgent:
         initial_foundation_prompt_path: str | Path,
         initial_pulmonary_assessment_prompt_path: str | Path,
         initial_diagnostic_formulation_prompt_path: str | Path,
-        discussion_evidence_mapping_prompt_path: str | Path,
-        discussion_state_update_prompt_path: str | Path,
-        discussion_consult_response_prompt_path: str | Path,
         clinical_rules: dict,
         temperature: float,
         max_tokens: int,
@@ -109,9 +89,6 @@ class PulmonologyAgent:
                 if initial_reasoning_output_prompt_path
                 else ""
             ),
-            "discussion_evidence_mapping": load_text(discussion_evidence_mapping_prompt_path),
-            "discussion_state_update": load_text(discussion_state_update_prompt_path),
-            "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
         }
         self.clinical_rules = clinical_rules
         self.guideline_runtime = guideline_runtime
@@ -142,9 +119,6 @@ class PulmonologyAgent:
             "initial_pulmonary_assessment_prompt",
             "initial_diagnostic_formulation_prompt",
             "initial_reasoning_output_prompt",
-            "discussion_evidence_mapping_prompt",
-            "discussion_state_update_prompt",
-            "discussion_consult_response_prompt",
         )
         missing = [key for key in prompt_keys if key not in config]
         if missing:
@@ -240,88 +214,6 @@ class PulmonologyAgent:
             ("initial_foundation", foundation_trace),
             ("initial_pulmonary_assessment", pulmonary_trace),
             ("initial_diagnostic_formulation", formulation_trace),
-        )
-
-    def discussion_response(
-        self,
-        discussion_input: PulmonologyDiscussionInput,
-    ) -> tuple[PulmonologyDiscussionResponse, dict]:
-        case_input = discussion_input.case_input
-        _require_pulmonology_input(case_input)
-        validate_initial_assessment(
-            discussion_input.initial_assessment,
-            case_input,
-            self.clinical_rules,
-        )
-        _validate_specialist_opinions(discussion_input)
-        discussion_json = _json(
-            {
-                "case_input": build_specialty_evidence_prompt_input(case_input),
-                "initial_assessment": discussion_input.initial_assessment,
-                "specialist_opinions": discussion_input.specialist_opinions,
-                "chair_questions": discussion_input.chair_questions,
-            }
-        )
-        rules_json = _json(self.clinical_rules)
-        pointer_constraints = diagnostic_evidence_schema_constraints(
-            case_input,
-            discussion_input.specialist_opinions,
-        )
-
-        evidence_map, map_trace = self._generate(
-            stage="discussion_evidence_mapping",
-            schema_model=DiscussionEvidenceMap,
-            variables={
-                "discussion_input": discussion_json,
-                "clinical_rules": rules_json,
-            },
-            validation=lambda result: _validate_evidence_map(result, discussion_input),
-            pointer_constraints=pointer_constraints,
-        )
-        state_update, update_trace = self._generate(
-            stage="discussion_state_update",
-            schema_model=DiscussionStateUpdate,
-            variables={
-                "discussion_input": discussion_json,
-                "evidence_map": _json(evidence_map),
-                "clinical_rules": rules_json,
-            },
-            validation=lambda result: _validate_state_update(
-                result, discussion_input, self.clinical_rules
-            ),
-            pointer_constraints=pointer_constraints,
-        )
-        consult, consult_trace = self._generate(
-            stage="discussion_consult_response",
-            schema_model=DiscussionConsultOutput,
-            variables={
-                "discussion_input": discussion_json,
-                "updated_state": _json(state_update.updated_state),
-                "state_delta": _json(state_update.domain_changes),
-                "clinical_rules": rules_json,
-            },
-            validation=lambda result: _validate_consult_output(result, discussion_input),
-            pointer_constraints=pointer_constraints,
-        )
-        result = PulmonologyDiscussionResponse(
-            case_id=case_input.case_id,
-            updated_state=state_update.updated_state,
-            domain_changes=state_update.domain_changes,
-            specialist_opinions_used=evidence_map.specialist_opinions_used,
-            mapped_findings=evidence_map.mapped_findings,
-            chair_answers=consult.chair_answers,
-            unresolved_conflicts=[
-                *evidence_map.unresolved_conflicts,
-                *consult.unresolved_conflicts,
-            ],
-            diagnostic_recommendations=consult.diagnostic_recommendations,
-            limitations=consult.limitations,
-        )
-        validate_discussion_response(result, discussion_input, self.clinical_rules)
-        return result, _combined_trace(
-            ("discussion_evidence_mapping", map_trace),
-            ("discussion_state_update", update_trace),
-            ("discussion_consult_response", consult_trace),
         )
 
     def initial_consult(

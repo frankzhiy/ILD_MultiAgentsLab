@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Alert, Card, Empty, Segmented, Skeleton, Space, Tag, Typography } from 'antd'
 import { api } from '../../api'
 import { CitationGroup } from '../../components/Citation'
+import { EvidenceGroups } from '../../components/EvidenceGroups'
 import { EmptyState } from '../../components/EmptyState'
 import { QueryError } from '../../components/QueryState'
 
@@ -67,38 +68,10 @@ const TYPE_LABELS = {
   material_representativeness: '材料代表性',
 }
 
-const EVIDENCE_GROUPS = [
-  ['supporting', '支持证据', 'green'],
-  ['weakening', '削弱证据', 'red'],
-  ['discriminating', '鉴别证据', 'blue'],
-  ['background', '背景证据', 'default'],
-]
-
 const valueLabel = (value, labels = {}) => labels[value] || value?.replaceAll?.('_', ' ') || value
 
 function EmptyList({ description = '当前无此项' }) {
   return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={description} />
-}
-
-function EvidenceGroups({ evidence = {}, guidelineEvidence = [] }) {
-  const groups = EVIDENCE_GROUPS.filter(([key]) => evidence?.[key]?.length)
-  if (!groups.length && !guidelineEvidence?.length) return null
-  return (
-    <div className="evidence-groups">
-      {groups.map(([key, label, color]) => (
-        <div className="evidence-group" key={key}>
-          <Tag color={color}>{label}</Tag>
-          <CitationGroup refs={evidence[key]} />
-        </div>
-      ))}
-      {guidelineEvidence?.length > 0 && (
-        <div className="evidence-group">
-          <Tag color="purple">指南依据</Tag>
-          <CitationGroup refs={guidelineEvidence} />
-        </div>
-      )}
-    </div>
-  )
 }
 
 function Section({ title, description, children }) {

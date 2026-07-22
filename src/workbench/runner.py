@@ -16,7 +16,7 @@ from src.workbench.events import EventStore
 from src.workbench.workflow import WorkbenchWorkflow
 
 
-AGENTS = ("semantic_graphing", *SPECIALTIES)
+AGENTS = ("semantic_graphing", *SPECIALTIES, "mdt_chair")
 SAFE_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 
@@ -35,6 +35,7 @@ class RunOrchestrator:
         self.events = events
         self.workflow = WorkbenchWorkflow(self.root, events)
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.active_chairs: set[str] = set()
 
     def prepare(self, request: dict[str, Any]) -> tuple[str, Path]:
         case_id = str(request.get("case_id") or "").strip()
@@ -119,6 +120,25 @@ class RunOrchestrator:
         self.tasks[run_id] = task
         task.add_done_callback(lambda _: self.tasks.pop(run_id, None))
 
+    def start_chair(self, run_id: str) -> None:
+        run_dir = self.catalog.run_dir(run_id)
+        readiness = self.catalog.chair(run_id)
+        if not readiness["runnable"]:
+            raise ValueError(readiness["error"] or "四个专科正式输出尚未全部就绪。")
+        key = f"{run_id}:chair"
+        if run_id in self.tasks or key in self.tasks:
+            raise ValueError("该运行仍在执行，不能重复启动主持人。")
+        task = asyncio.create_task(
+            self._execute_chair(run_id, run_dir, self._chair_config(run_dir)),
+            name=f"chair:{run_id}",
+        )
+        self.active_chairs.add(run_id)
+        self.tasks[key] = task
+        task.add_done_callback(lambda _: self._finish_chair(key, run_id))
+
+    def chair_running(self, run_id: str) -> bool:
+        return run_id in self.active_chairs
+
     async def _execute(self, run_id: str, input_path: Path) -> None:
         run_dir = self.catalog.run_dir(run_id)
         manifest_path = run_dir / ".workbench_run.json"
@@ -162,6 +182,22 @@ class RunOrchestrator:
             failures = [str(item) for item in specialty_results if isinstance(item, Exception)]
             if failures:
                 raise RuntimeError("；".join(failures))
+
+            self.active_chairs.add(run_id)
+            try:
+                await self._stage(
+                    run_id,
+                    run_dir,
+                    "mdt_chair",
+                    "cross_specialty_integration",
+                    self.workflow.run_chair,
+                    run_id,
+                    run_dir,
+                    case_id,
+                    Path(configs["mdt_chair"]),
+                )
+            finally:
+                self.active_chairs.discard(run_id)
 
         except asyncio.CancelledError:
             self._update_manifest(manifest_path, status="cancelled", finished_at=self._now())
@@ -230,6 +266,63 @@ class RunOrchestrator:
         self.events.append(
             run_id, "stage_completed", {}, agent_id=agent_id, stage=stage
         )
+
+    async def _execute_chair(
+        self, run_id: str, run_dir: Path, config_path: Path
+    ) -> None:
+        self.events.append(
+            run_id,
+            "manual_stage_started",
+            {},
+            agent_id="mdt_chair",
+            stage="cross_specialty_integration",
+        )
+        try:
+            await self._stage(
+                run_id,
+                run_dir,
+                "mdt_chair",
+                "cross_specialty_integration",
+                self.workflow.run_chair,
+                run_id,
+                run_dir,
+                self.catalog.case_id(run_dir),
+                config_path,
+            )
+        except Exception:
+            return
+        self.events.append(
+            run_id,
+            "manual_stage_completed",
+            {},
+            agent_id="mdt_chair",
+            stage="cross_specialty_integration",
+        )
+
+    def _finish_chair(self, key: str, run_id: str) -> None:
+        self.tasks.pop(key, None)
+        self.active_chairs.discard(run_id)
+
+    def _chair_config(self, run_dir: Path) -> Path:
+        manifest_path = run_dir / ".workbench_run.json"
+        manifest = self._read_json(manifest_path) if manifest_path.exists() else {}
+        configured = (manifest.get("configs") or {}).get("mdt_chair")
+        if configured and Path(configured).is_file():
+            return Path(configured)
+
+        config = load_yaml(self.root / "configs/agents/mdt_chair/agent.yaml")
+        for key, value in list(config.items()):
+            if (key == "prompt" or key.endswith("_prompt")) and isinstance(value, str):
+                config[key] = str((self.root / value).resolve())
+        target = run_dir / "workbench_config/mdt_chair.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        if manifest_path.exists():
+            manifest.setdefault("configs", {})["mdt_chair"] = str(target)
+            self._write_json(manifest_path, manifest)
+        return target
 
     def _update_manifest(self, path: Path, **changes: Any) -> None:
         manifest = self._read_json(path)

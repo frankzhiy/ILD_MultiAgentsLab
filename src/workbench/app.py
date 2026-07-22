@@ -8,9 +8,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from src.utils.config import load_yaml
-from src.workbench.catalog import RunCatalog, SPECIALTIES
+from src.workbench.catalog import RunCatalog
 from src.workbench.events import EventStore
-from src.workbench.runner import RunOrchestrator
+from src.workbench.runner import AGENTS, RunOrchestrator
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,9 +73,8 @@ def get_case(case_id: str) -> dict[str, str]:
 
 @app.get("/api/models")
 def models() -> dict:
-    agents = ["semantic_graphing", *SPECIALTIES]
     values = []
-    for agent_id in agents:
+    for agent_id in AGENTS:
         path = ROOT / "configs/agents" / agent_id / "agent.yaml"
         config = load_yaml(path)
         values.append(
@@ -140,6 +139,30 @@ def specialties(run_id: str) -> dict:
         return catalog.specialties(run_id)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.get("/api/runs/{run_id}/chair")
+def chair(run_id: str) -> dict:
+    try:
+        result = catalog.chair(run_id)
+        if orchestrator.chair_running(run_id):
+            result["status"] = "running"
+        return result
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.post("/api/runs/{run_id}/chair", status_code=202)
+async def run_chair(run_id: str) -> dict:
+    try:
+        orchestrator.start_chair(run_id)
+        result = catalog.chair(run_id)
+        result["status"] = "running"
+        return result
+    except FileNotFoundError as error:
+        raise not_found(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.get("/api/runs/{run_id}/artifacts")

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from src.workbench.app import app
+from src.workbench.app import app, orchestrator
 
 
 RUN_ID = "20260716_163006_86-IPF_step2_step3"
@@ -32,13 +32,26 @@ def test_workbench_exposes_unique_unit_routing_and_marks_legacy_specialty_output
     assert all("trace" not in item and "internal_state" not in item for item in specialties)
 
 
-def test_workbench_has_no_active_chair_endpoint_or_model():
+def test_workbench_exposes_chair_endpoint_and_model():
     client = TestClient(app)
 
-    assert client.get(f"/api/runs/{RUN_ID}/chair").status_code == 404
-    assert "mdt_chair" not in {
+    response = client.get(f"/api/runs/{RUN_ID}/chair")
+    assert response.status_code == 200
+    assert response.json()["status"] == "unavailable"
+    assert "mdt_chair" in {
         item["agent_id"] for item in client.get("/api/models").json()["agents"]
     }
+
+
+def test_chair_endpoint_starts_only_the_chair_stage(monkeypatch):
+    started = []
+    monkeypatch.setattr(orchestrator, "start_chair", started.append)
+
+    response = TestClient(app).post(f"/api/runs/{RUN_ID}/chair")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "running"
+    assert started == [RUN_ID]
 
 
 def test_workbench_rejects_path_traversal():

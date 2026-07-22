@@ -11,7 +11,7 @@ const { Title, Text } = Typography
 
 const AGENT_LABELS = {
   semantic_graphing: 'Semantic Graphing', pulmonology: '呼吸科', thoracic_radiology: '胸部影像科',
-  rheumatology: '风湿免疫科', pathology: '病理科',
+  rheumatology: '风湿免疫科', pathology: '病理科', mdt_chair: 'MDT 主持人',
 }
 
 export function NewRunPage() {
@@ -21,7 +21,7 @@ export function NewRunPage() {
   const [agentConfig, setAgentConfig] = useState({})
   const { data: cases = [] } = useQuery({ queryKey: ['cases'], queryFn: api.cases })
   const { data: modelData } = useQuery({ queryKey: ['models'], queryFn: api.models })
-  const agents = (modelData?.agents || []).filter((item) => item.agent_id !== 'mdt_chair')
+  const agents = modelData?.agents || []
   useEffect(() => {
     if (!agents.length) return
     setAgentConfig(Object.fromEntries(agents.map((item) => [item.agent_id, { model: item.model, reasoning_effort: item.reasoning_effort || 'none' }])))
@@ -44,7 +44,7 @@ export function NewRunPage() {
       <Header className="global-header"><Brand /><Button icon={<ArrowLeftOutlined />}><Link to="/runs">返回运行列表</Link></Button></Header>
       <Content className="page-content narrow-content">
         <div className="page-heading"><div><Text className="eyebrow">NEW EXPERIMENT</Text><Title level={2}>配置一次 MDT 运行</Title><Text type="secondary">病例原文保持只读；每个 Agent 的模型设置与最终产物一起记录。</Text></div></div>
-        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="提交后依次运行 Semantic Graphing 与四个并行专科；过程事件、失败 trace 和产物会实时写入当前运行。" />
+        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="提交后依次运行 Semantic Graphing、四个并行专科和 MDT 主持人整合；过程事件、失败 trace 和产物会实时写入当前运行。" />
         <Form form={form} layout="vertical" initialValues={{ source: 'library', max_concurrency: 6 }} onFinish={(values) => mutation.mutate({ ...values, agents: agentConfig })}>
           <Card title={<Space><FileTextOutlined />病例输入</Space>} className="section-card">
             <Form.Item name="source" label="输入方式"><Radio.Group options={[{ value: 'library', label: '病例库' }, { value: 'paste', label: '粘贴原文' }]} /></Form.Item>
@@ -59,7 +59,7 @@ export function NewRunPage() {
             <Table rowKey="agent_id" columns={columns} dataSource={agents} pagination={false} size="middle" />
           </Card>
           <Card className="section-card">
-            <Row gutter={24} align="middle"><Col flex="auto"><Title level={5}>启动首轮专科评估</Title><Text type="secondary">Semantic Graphing → unit 分发 → 四专科并行评估</Text></Col><Col><Button type="primary" htmlType="submit" size="large" loading={mutation.isPending}>开始运行</Button></Col></Row>
+            <Row gutter={24} align="middle"><Col flex="auto"><Title level={5}>启动完整 MDT 流程</Title><Text type="secondary">Semantic Graphing → unit 分发 → 四专科并行评估 → 主持人跨专科整合</Text></Col><Col><Button type="primary" htmlType="submit" size="large" loading={mutation.isPending}>开始运行</Button></Col></Row>
           </Card>
         </Form>
       </Content>

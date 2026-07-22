@@ -79,6 +79,9 @@ class RunCatalog:
         files = list(run_dir.iterdir())
         names = {path.name for path in files if path.is_file()}
         semantic_complete = f"{case_id}_local_graphs.json" in names
+        chair_complete = self._is_current_chair_output(
+            self._json(run_dir / f"{case_id}_mdt_chair_integration.json", None)
+        )
         completed_specialties = [
             specialty
             for specialty in SPECIALTIES
@@ -103,6 +106,7 @@ class RunCatalog:
             "case_id": case_id,
             "status": status,
             "semantic_complete": semantic_complete,
+            "chair_complete": chair_complete,
             "completed_specialties": completed_specialties,
             "has_error_artifact": has_error,
             "orchestrated": bool(manifest),
@@ -221,6 +225,67 @@ class RunCatalog:
             )
         return {"case_id": case_id, "results": results}
 
+    def chair(self, run_id: str) -> dict[str, Any]:
+        run_dir = self.run_dir(run_id)
+        case_id = self.case_id(run_dir)
+        specialty_paths = [
+            run_dir / f"{case_id}_{specialty}_initial.json"
+            for specialty in SPECIALTIES
+        ]
+        missing = [
+            specialty
+            for specialty, path in zip(SPECIALTIES, specialty_paths, strict=True)
+            if not path.exists()
+        ]
+        legacy = [
+            specialty
+            for specialty, path in zip(SPECIALTIES, specialty_paths, strict=True)
+            if path.exists() and not self._is_formal_output(self._json(path, None))
+        ]
+        semantic_paths = [
+            run_dir / f"{case_id}_clinical_propositions.json",
+            run_dir / f"{case_id}_local_graphs.json",
+        ]
+        runnable = not missing and not legacy and all(path.exists() for path in semantic_paths)
+        readiness_error = None
+        if missing:
+            readiness_error = f"缺少专科正式输出：{', '.join(missing)}"
+        elif legacy:
+            readiness_error = f"以下专科仍是旧版输出：{', '.join(legacy)}"
+        elif not all(path.exists() for path in semantic_paths):
+            readiness_error = "缺少 clinical propositions 或 local graphs。"
+
+        result_path = run_dir / f"{case_id}_mdt_chair_integration.json"
+        failure_path = (
+            run_dir
+            / f"{case_id}_mdt_chair_cross_specialty_integration_failure_trace.json"
+        )
+        result = self._json(result_path, None)
+        current_result = self._is_current_chair_output(result)
+        latest_failure = failure_path.exists() and (
+            not result_path.exists()
+            or failure_path.stat().st_mtime > result_path.stat().st_mtime
+        )
+        failure = self._json(failure_path, {}) if latest_failure else {}
+        status = (
+            "failed"
+            if latest_failure
+            else "completed"
+            if current_result
+            else "outdated"
+            if result is not None
+            else "pending"
+            if runnable
+            else "unavailable"
+        )
+        return {
+            "case_id": case_id,
+            "status": status,
+            "runnable": runnable,
+            "result": result,
+            "error": failure.get("error") or readiness_error,
+        }
+
     def artifacts(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self.run_dir(run_id)
         result = []
@@ -304,6 +369,22 @@ class RunCatalog:
             "professional_conclusions",
             "clinical_reasoning",
         }
+
+    @staticmethod
+    def _is_current_chair_output(value: Any) -> bool:
+        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v2":
+            return False
+        conclusions = value.get("integrated_conclusions")
+        if not isinstance(conclusions, list) or not conclusions:
+            return False
+        required = {
+            "statement",
+            "medical_basis",
+            "decision_impact",
+            "evidence",
+            "guideline_evidence",
+        }
+        return all(isinstance(item, dict) and required <= set(item) for item in conclusions)
 
     @staticmethod
     def _error_agent(filename: str) -> str:

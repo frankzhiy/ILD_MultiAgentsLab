@@ -199,6 +199,55 @@ class WorkbenchWorkflow:
         self._write(run_dir / f"{stem}_initial.json", consultation.formal_output)
         self._write(run_dir / f"{stem}_initial_trace.json", consultation.trace)
 
+    def run_chair(
+        self,
+        run_id: str,
+        run_dir: Path,
+        case_id: str,
+        config_path: Path,
+    ) -> None:
+        self._load_env()
+        from src.agents.mdt_chair.agent import (
+            MDTChairAgent,
+            build_chair_prompt_bundle,
+            build_semantic_evidence_catalog,
+        )
+
+        def read(path: Path) -> Any:
+            return json.loads(path.read_text(encoding="utf-8"))
+        outputs = {
+            specialty: read(run_dir / f"{case_id}_{specialty}_initial.json")
+            for specialty in (
+                "pulmonology",
+                "thoracic_radiology",
+                "rheumatology",
+                "pathology",
+            )
+        }
+        semantic_evidence = build_semantic_evidence_catalog(
+            read(run_dir / f"{case_id}_clinical_propositions.json"),
+            read(run_dir / f"{case_id}_local_graphs.json"),
+        )
+        bundle = build_chair_prompt_bundle(
+            case_id, outputs, semantic_evidence=semantic_evidence
+        )
+        self._write(
+            run_dir / f"{case_id}_mdt_chair_prompt_input.json",
+            bundle.prompt_input,
+        )
+        config = load_yaml(config_path)
+        llm = build_llm_client(config)
+        agent = MDTChairAgent.from_config(
+            config_path,
+            llm,
+            event_callback=self._progress(run_id, "mdt_chair"),
+        )
+        result, trace = agent.integrate(bundle)
+        self._write(run_dir / f"{case_id}_mdt_chair_integration.json", result)
+        self._write(
+            run_dir / f"{case_id}_mdt_chair_integration_trace.json", trace
+        )
+
     def _progress(self, run_id: str, agent_id: str) -> Callable[[str, dict], None]:
         def callback(event: str, payload: dict) -> None:
             safe_payload = json.loads(json.dumps(payload, ensure_ascii=False, default=str))

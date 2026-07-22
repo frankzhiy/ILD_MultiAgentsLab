@@ -15,26 +15,16 @@ from src.agents.common.initial_output_validation import (
 from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.rheumatology.models import (
-    DiscussionConsultOutput,
-    DiscussionEvidenceMap,
-    DiscussionStateUpdate,
     InitialAutoimmuneAssessment,
     InitialCaseReconstruction,
     InitialConsultFormulation,
-    RheumatologyDiscussionInput,
-    RheumatologyDiscussionResponse,
     RheumatologyDomain,
     RheumatologyInitialAssessment,
 )
 from src.agents.rheumatology.validation import (
     require_rheumatology_input,
-    validate_consult_output,
-    validate_discussion_response,
-    validate_evidence_map,
     validate_initial_assessment,
     validate_initial_stage,
-    validate_specialist_opinions,
-    validate_state_update,
 )
 from src.guidelines.runtime import (
     PROMPT_RULES,
@@ -74,19 +64,6 @@ _RULE_KEYS_BY_STAGE = {
         "ipaf",
         "specialist_boundaries",
     ),
-    "discussion_evidence_mapping": (),
-    "discussion_state_update": (
-        "diagnostic_confidence",
-        "ctd_ild_diagnosis",
-        "ipaf",
-        "screening_and_risk",
-        "specialist_boundaries",
-    ),
-    "discussion_consult_response": (
-        "diagnostic_confidence",
-        "ctd_ild_diagnosis",
-        "specialist_boundaries",
-    ),
 }
 
 _CONTRACT_RULES_BY_STAGE = {
@@ -95,12 +72,6 @@ _CONTRACT_RULES_BY_STAGE = {
         "provisional_rheumatic_disease、overlap_rheumatic_disease、"
         "undifferentiated_autoimmune_state 或 ipaf_classification_possible 时，"
         "leading_diagnosis 必须是非空字符串。",
-    ),
-    "discussion_state_update": (
-        "updated_state.rheumatic_disease_formulation.classification_status 为 "
-        "established_rheumatic_disease、provisional_rheumatic_disease、"
-        "overlap_rheumatic_disease、undifferentiated_autoimmune_state 或 "
-        "ipaf_classification_possible 时，leading_diagnosis 必须是非空字符串。",
     ),
 }
 
@@ -113,9 +84,6 @@ class RheumatologyAgent:
         initial_case_reconstruction_prompt_path: str | Path,
         initial_autoimmune_assessment_prompt_path: str | Path,
         initial_consult_formulation_prompt_path: str | Path,
-        discussion_evidence_mapping_prompt_path: str | Path,
-        discussion_state_update_prompt_path: str | Path,
-        discussion_consult_response_prompt_path: str | Path,
         clinical_rules: dict,
         temperature: float,
         max_tokens: int,
@@ -134,9 +102,6 @@ class RheumatologyAgent:
                 if initial_reasoning_output_prompt_path
                 else ""
             ),
-            "discussion_evidence_mapping": load_text(discussion_evidence_mapping_prompt_path),
-            "discussion_state_update": load_text(discussion_state_update_prompt_path),
-            "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
         }
         self.clinical_rules = clinical_rules
         self.guideline_runtime = guideline_runtime
@@ -165,9 +130,6 @@ class RheumatologyAgent:
             "initial_autoimmune_assessment_prompt",
             "initial_consult_formulation_prompt",
             "initial_reasoning_output_prompt",
-            "discussion_evidence_mapping_prompt",
-            "discussion_state_update_prompt",
-            "discussion_consult_response_prompt",
         )
         if missing := [key for key in keys if key not in config]:
             raise ValueError(f"Rheumatology config is missing prompt paths: {missing}")
@@ -234,65 +196,6 @@ class RheumatologyAgent:
             ("initial_case_reconstruction", reconstruction_trace),
             ("initial_autoimmune_assessment", autoimmune_trace),
             ("initial_consult_formulation", formulation_trace),
-        )
-
-    def discussion_response(self, discussion_input: RheumatologyDiscussionInput) -> tuple[RheumatologyDiscussionResponse, dict]:
-        case = discussion_input.case_input
-        require_rheumatology_input(case)
-        validate_initial_assessment(discussion_input.initial_assessment, case, self.clinical_rules)
-        validate_specialist_opinions(discussion_input)
-        discussion_json = _json(
-            {
-                "case_input": build_specialty_evidence_prompt_input(case),
-                "initial_assessment": discussion_input.initial_assessment,
-                "specialist_opinions": discussion_input.specialist_opinions,
-                "chair_questions": discussion_input.chair_questions,
-            }
-        )
-        rules_json = _json(self.clinical_rules)
-        pointer_constraints = diagnostic_evidence_schema_constraints(
-            case,
-            discussion_input.specialist_opinions,
-        )
-        evidence_map, map_trace = self._generate(
-            "discussion_evidence_mapping", DiscussionEvidenceMap,
-            {"discussion_input": discussion_json, "clinical_rules": rules_json},
-            lambda result: validate_evidence_map(result, discussion_input),
-            pointer_constraints,
-        )
-        state_update, update_trace = self._generate(
-            "discussion_state_update", DiscussionStateUpdate,
-            {"discussion_input": discussion_json, "evidence_map": _json(evidence_map), "clinical_rules": rules_json},
-            lambda result: validate_state_update(result, discussion_input, self.clinical_rules),
-            pointer_constraints,
-        )
-        consult, consult_trace = self._generate(
-            "discussion_consult_response", DiscussionConsultOutput,
-            {
-                "discussion_input": discussion_json,
-                "updated_state": _json(state_update.updated_state),
-                "state_delta": _json(state_update.domain_changes),
-                "clinical_rules": rules_json,
-            },
-            lambda result: validate_consult_output(result, discussion_input),
-            pointer_constraints,
-        )
-        result = RheumatologyDiscussionResponse(
-            case_id=case.case_id,
-            updated_state=state_update.updated_state,
-            domain_changes=state_update.domain_changes,
-            specialist_opinions_used=evidence_map.specialist_opinions_used,
-            mapped_findings=evidence_map.mapped_findings,
-            chair_answers=consult.chair_answers,
-            unresolved_conflicts=[*evidence_map.unresolved_conflicts, *consult.unresolved_conflicts],
-            diagnostic_recommendations=consult.diagnostic_recommendations,
-            limitations=consult.limitations,
-        )
-        validate_discussion_response(result, discussion_input, self.clinical_rules)
-        return result, _combined_trace(
-            ("discussion_evidence_mapping", map_trace),
-            ("discussion_state_update", update_trace),
-            ("discussion_consult_response", consult_trace),
         )
 
     def initial_consult(self, case_input: SpecialtyCaseInput) -> SpecialtyInitialConsultResult:

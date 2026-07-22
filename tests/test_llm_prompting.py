@@ -9,12 +9,9 @@ from src.agents.semantic_graphing.clinical_proposition_extractor import (
 from src.agents.pulmonology.models import EvidencePointer as PulmonologyPointer
 from src.agents.pulmonology.models import InitialPulmonaryAssessment
 from src.agents.pulmonology.models import SpecialistQuestion as PulmonologyQuestion
-from src.agents.pulmonology.models import SpecialistOpinion as PulmonologyOpinion
 from src.agents.rheumatology.models import SpecialistQuestion as RheumatologyQuestion
-from src.agents.rheumatology.models import SpecialistOpinion as RheumatologyOpinion
 from src.agents.thoracic_radiology.models import EvidencePointer as RadiologyPointer
 from src.agents.thoracic_radiology.models import SpecialistQuestion as RadiologyQuestion
-from src.agents.thoracic_radiology.models import SpecialistOpinion as RadiologyOpinion
 from src.guidelines.models import GuidelineEvidencePointer
 from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import (
@@ -64,15 +61,8 @@ def test_prompt_schema_is_compact_and_keeps_required_structure():
     assert '"title"' not in schema
 
 
-def test_specialist_output_schemas_exclude_shared_context():
-    for model in (
-        PulmonologyQuestion,
-        RheumatologyQuestion,
-        RadiologyQuestion,
-        PulmonologyOpinion,
-        RheumatologyOpinion,
-        RadiologyOpinion,
-    ):
+def test_specialist_question_schemas_exclude_shared_context():
+    for model in (PulmonologyQuestion, RheumatologyQuestion, RadiologyQuestion):
         schema = model.model_json_schema()
         assert schema["$defs"]["SpecialistTarget"]["enum"] == [
             "pulmonology",
@@ -130,13 +120,6 @@ def test_final_contract_distinguishes_partitioned_and_working_inputs():
     assert "diagnostic_evidence_units" in partitioned
     assert "context_only_evidence_units" in partitioned
     assert partitioned.endswith("specialist_opinion_ids 必须为空列表。")
-
-    discussion = specialty_output_contract(
-        pointer_style="evidence_id",
-        initial_stage=False,
-        partitioned_evidence=True,
-    )
-    assert "获得授权后必须同时填写对应 specialist_opinion_id" in discussion
 
 
 def test_declared_json_schema_support_does_not_silently_downgrade():
