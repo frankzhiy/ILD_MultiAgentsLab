@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ApartmentOutlined, BugOutlined, DatabaseOutlined, FileSearchOutlined,
   HomeOutlined, MedicineBoxOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
-  ShareAltOutlined, TeamOutlined,
+  MessageOutlined, ShareAltOutlined, TeamOutlined,
 } from '@ant-design/icons'
 import { Button, Layout, Menu, Skeleton, Space, Typography } from 'antd'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
@@ -17,6 +17,7 @@ const SemanticWorkspace = lazy(() => import('./workspaces/SemanticWorkspace').th
 const RoutingWorkspace = lazy(() => import('./workspaces/RoutingWorkspace').then((module) => ({ default: module.RoutingWorkspace })))
 const SpecialtyWorkspace = lazy(() => import('./workspaces/SpecialtyWorkspace').then((module) => ({ default: module.SpecialtyWorkspace })))
 const ChairWorkspace = lazy(() => import('./workspaces/ChairWorkspace').then((module) => ({ default: module.ChairWorkspace })))
+const DiscussionWorkspace = lazy(() => import('./workspaces/DiscussionWorkspace').then((module) => ({ default: module.DiscussionWorkspace })))
 const ArtifactsWorkspace = lazy(() => import('./workspaces/ArtifactsWorkspace').then((module) => ({ default: module.ArtifactsWorkspace })))
 const ErrorWorkspace = lazy(() => import('./workspaces/ErrorWorkspace').then((module) => ({ default: module.ErrorWorkspace })))
 
@@ -29,6 +30,7 @@ const ITEMS = [
   ['routing', <ShareAltOutlined />, '证据分发'],
   ['specialties', <MedicineBoxOutlined />, '专科工作区'],
   ['chair', <TeamOutlined />, 'MDT 主持人'],
+  ['discussion', <MessageOutlined />, 'MDT 团队讨论'],
   ['artifacts', <DatabaseOutlined />, '产物审计'],
   ['errors', <BugOutlined />, '错误与诊断'],
 ]
@@ -39,6 +41,7 @@ const WORKSPACES = {
   routing: RoutingWorkspace,
   specialties: SpecialtyWorkspace,
   chair: ChairWorkspace,
+  discussion: DiscussionWorkspace,
   artifacts: ArtifactsWorkspace,
   errors: ErrorWorkspace,
 }

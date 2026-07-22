@@ -156,6 +156,24 @@ a { color: inherit; }
 .remaining-step { border-top: 3px solid #d86060; }
 .need-arrow { align-self: center; color: #94a3b8; }
 .need-impact { margin: 12px 0 5px !important; }
+.discussion-rounds { display: grid; gap: 26px; margin-top: 18px; }
+.discussion-round { display: grid; gap: 14px; }
+.discussion-round .section-card { margin-top: 0; }
+.discussion-specialty { padding: 4px 0 14px; border-bottom: 1px solid #e7ecf3; }
+.discussion-specialty:last-child { padding-bottom: 0; border-bottom: 0; }
+.discussion-specialty > h5 { color: #1c2c45; }
+.discussion-answer { margin: 12px 0 8px !important; color: #172033; font-size: 15px; line-height: 1.75; }
+.discussion-evidence-use { margin-top: 10px; padding: 11px 13px; border-left: 3px solid #2f6fed; background: #f6f8fb; }
+.discussion-evidence-use blockquote { margin: 9px 0; color: #3c4b62; white-space: pre-wrap; }
+.discussion-evidence-use .ant-typography { margin-bottom: 0; }
+.discussion-propositions { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.discussion-chair-heading { margin-top: 8px; }
+.discussion-chair-heading h4 { margin-bottom: 3px !important; }
+.discussion-final-report { margin-bottom: 14px; border-top: 3px solid #0f9f6e; }
+.discussion-final-report > .ant-card-body > .ant-typography { margin-top: 12px; line-height: 1.75; }
+.discussion-report-list { margin-top: 12px; }
+.discussion-report-list ul { margin: 5px 0 0; padding-left: 22px; color: #3c4b62; }
+.discussion-report-list li { margin: 5px 0; line-height: 1.65; }
 .artifact-grid { display: grid; grid-template-columns: 360px 1fr; gap: 12px; height: calc(100vh - 156px); min-height: 660px; }
 .artifact-list-card > .ant-card-body { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
 .artifact-list { min-height: 0; overflow: auto; }

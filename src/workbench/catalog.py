@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ class RunCatalog:
         chair_complete = self._is_current_chair_output(
             self._json(run_dir / f"{case_id}_mdt_chair_integration.json", None)
         )
+        discussion = self.discussion(run_dir.name)
         completed_specialties = [
             specialty
             for specialty in SPECIALTIES
@@ -107,6 +109,7 @@ class RunCatalog:
             "status": status,
             "semantic_complete": semantic_complete,
             "chair_complete": chair_complete,
+            "discussion_complete": discussion["status"] == "completed",
             "completed_specialties": completed_specialties,
             "has_error_artifact": has_error,
             "orchestrated": bool(manifest),
@@ -286,6 +289,55 @@ class RunCatalog:
             "error": failure.get("error") or readiness_error,
         }
 
+    def discussion(self, run_id: str) -> dict[str, Any]:
+        run_dir = self.run_dir(run_id)
+        case_id = self.case_id(run_dir)
+        chair = self.chair(run_id)
+        baseline_path = run_dir / f"{case_id}_mdt_chair_integration.json"
+        runnable = chair["runnable"] and chair["status"] == "completed"
+        readiness_error = (
+            None
+            if runnable
+            else chair.get("error") or "需要先获得当前版本的主持人整合结果。"
+        )
+        state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
+        failure_path = (
+            run_dir / f"{case_id}_mdt_discussion_team_discussion_failure_trace.json"
+        )
+        state = self._json(state_path, None)
+        baseline_hash = (
+            sha256(baseline_path.read_bytes()).hexdigest()
+            if baseline_path.exists()
+            else None
+        )
+        current = bool(state and state.get("baseline_sha256") == baseline_hash)
+        latest_failure = failure_path.exists() and (
+            not state_path.exists() or failure_path.stat().st_mtime > state_path.stat().st_mtime
+        )
+        failure = self._json(failure_path, {}) if latest_failure else {}
+        if latest_failure:
+            status = "failed"
+        elif state and not current:
+            status = "outdated"
+        elif state:
+            status = state.get("status", "pending")
+        else:
+            status = "pending" if runnable else "unavailable"
+        return {
+            "case_id": case_id,
+            "status": status,
+            "runnable": runnable,
+            "current_round": len((state or {}).get("rounds", [])),
+            "max_rounds": (state or {}).get("max_rounds", 3),
+            "rounds": (state or {}).get("rounds", []),
+            "latest_chair_result": (state or {}).get("latest_chair_result"),
+            "stop_reason": (state or {}).get("stop_reason"),
+            "final_report": (state or {}).get("final_report"),
+            "error": (
+                failure.get("error") or (state or {}).get("error") or readiness_error
+            ),
+        }
+
     def artifacts(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self.run_dir(run_id)
         result = []
@@ -387,7 +439,7 @@ class RunCatalog:
 
     @staticmethod
     def _error_agent(filename: str) -> str:
-        for specialty in (*SPECIALTIES, "mdt_chair", "semantic_graphing"):
+        for specialty in (*SPECIALTIES, "mdt_chair", "mdt_discussion", "semantic_graphing"):
             if specialty in filename:
                 return specialty
         return "semantic_graphing"

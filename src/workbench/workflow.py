@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
@@ -247,6 +249,228 @@ class WorkbenchWorkflow:
         self._write(
             run_dir / f"{case_id}_mdt_chair_integration_trace.json", trace
         )
+
+    def run_discussion(
+        self,
+        run_id: str,
+        run_dir: Path,
+        case_id: str,
+        config_paths: dict[str, Path],
+        *,
+        max_rounds: int = 3,
+    ) -> None:
+        """Run only the MDT discussion, starting from an existing chair result."""
+
+        self._load_env()
+        from src.agents.mdt_chair.agent import (
+            MDTChairAgent,
+            build_chair_prompt_bundle,
+            build_semantic_evidence_catalog,
+        )
+        from src.agents.mdt_chair.models import MDTChairIntegration
+        from src.agents.mdt_discussion.final_report import FinalReportAgent
+        from src.agents.mdt_discussion.integration import (
+            append_round_responses,
+            move_stalled_issues_to_boundaries,
+            stabilize_integration_ids,
+        )
+        from src.agents.mdt_discussion.models import (
+            DiscussionRound,
+            MDTDiscussionState,
+            SpecialtyRoundResponse,
+        )
+        from src.agents.mdt_discussion.routing import (
+            build_discussion_tasks,
+            group_tasks_by_specialty,
+        )
+        from src.agents.mdt_discussion.specialty_agent import SpecialtyDiscussionAgent
+
+        def read(path: Path) -> Any:
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        baseline_path = run_dir / f"{case_id}_mdt_chair_integration.json"
+        baseline_bytes = baseline_path.read_bytes()
+        baseline = MDTChairIntegration.model_validate(json.loads(baseline_bytes))
+        clinical_propositions = read(run_dir / f"{case_id}_clinical_propositions.json")
+        local_graphs = read(run_dir / f"{case_id}_local_graphs.json")
+        semantic_evidence = build_semantic_evidence_catalog(
+            clinical_propositions,
+            local_graphs,
+        )
+        initial_outputs = {
+            specialty: read(run_dir / f"{case_id}_{specialty}_initial.json")
+            for specialty in (
+                "pulmonology",
+                "thoracic_radiology",
+                "rheumatology",
+                "pathology",
+            )
+        }
+        cumulative_outputs = initial_outputs
+        state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
+        trace_path = run_dir / f"{case_id}_mdt_discussion_trace.json"
+        state = MDTDiscussionState(
+            case_id=case_id,
+            baseline_sha256=sha256(baseline_bytes).hexdigest(),
+            status="running",
+            max_rounds=max_rounds,
+            latest_chair_result=baseline.model_dump(mode="json"),
+        )
+        traces: dict[str, Any] = {"rounds": []}
+        self._write(state_path, state)
+        latest = baseline
+        try:
+            for round_number in range(1, max_rounds + 1):
+                tasks = build_discussion_tasks(
+                    chair_result=latest.model_dump(mode="json"),
+                    clinical_propositions=clinical_propositions,
+                    local_graphs=local_graphs,
+                    round_number=round_number,
+                    previous_rounds=state.rounds,
+                )
+                if not tasks:
+                    state.stop_reason = "没有仍需专科处理的问题或冲突。"
+                    break
+                grouped = group_tasks_by_specialty(tasks)
+                self.events.append(
+                    run_id,
+                    "discussion_round_started",
+                    {
+                        "round_number": round_number,
+                        "task_count": len(tasks),
+                        "specialties": list(grouped),
+                    },
+                    stage="mdt_discussion",
+                )
+                self._write(
+                    run_dir / f"{case_id}_mdt_round_{round_number:02d}_tasks.json",
+                    [task.model_dump(mode="json") for task in tasks],
+                )
+
+                answers_by_specialty = {specialty: [] for specialty in grouped}
+                round_trace: dict[str, Any] = {
+                    "round_number": round_number,
+                    "tasks": {},
+                }
+
+                def run_task(task):
+                    config_path = config_paths[task.specialty]
+                    config = load_yaml(config_path)
+                    llm = build_llm_client(config)
+                    agent = SpecialtyDiscussionAgent.from_config(
+                        config_path,
+                        llm,
+                        specialty=task.specialty,
+                        event_callback=self._progress(run_id, task.specialty),
+                    )
+                    answer, task_trace = agent.respond_to_task(
+                        task=task,
+                        specialty_initial_output=initial_outputs[task.specialty],
+                        chair_result=latest.model_dump(mode="json"),
+                    )
+                    return task, answer, task_trace
+
+                with ThreadPoolExecutor(max_workers=min(len(tasks), 6)) as executor:
+                    futures = [executor.submit(run_task, task) for task in tasks]
+                    for future in as_completed(futures):
+                        task, answer, task_trace = future.result()
+                        answers_by_specialty[task.specialty].append(answer)
+                        round_trace["tasks"][task.task_id] = task_trace
+                task_order = {task.task_id: index for index, task in enumerate(tasks)}
+                responses = []
+                for specialty, specialty_tasks in grouped.items():
+                    response = SpecialtyRoundResponse(
+                        case_id=case_id,
+                        round_number=round_number,
+                        specialty=specialty,
+                        answers=sorted(
+                            answers_by_specialty[specialty],
+                            key=lambda answer: task_order[answer.task_id],
+                        ),
+                    )
+                    responses.append(response)
+                    self._write(
+                        run_dir / f"{case_id}_{specialty}_round_{round_number:02d}_response.json",
+                        response,
+                    )
+                cumulative_outputs = append_round_responses(cumulative_outputs, responses)
+                bundle = build_chair_prompt_bundle(
+                    case_id,
+                    cumulative_outputs,
+                    semantic_evidence=semantic_evidence,
+                )
+                chair_config = load_yaml(config_paths["mdt_chair"])
+                chair_llm = build_llm_client(chair_config)
+                chair = MDTChairAgent.from_config(
+                    config_paths["mdt_chair"],
+                    chair_llm,
+                    event_callback=self._progress(run_id, "mdt_chair"),
+                )
+                updated, chair_trace = chair.integrate(
+                    bundle,
+                    discussion_previous=latest,
+                    discussion_responses=responses,
+                )
+                updated = stabilize_integration_ids(updated, latest)
+                updated = move_stalled_issues_to_boundaries(
+                    updated,
+                    state.rounds,
+                    responses,
+                )
+                updated = stabilize_integration_ids(updated, latest)
+                latest = updated
+                discussion_round = DiscussionRound(
+                    round_number=round_number,
+                    tasks=tasks,
+                    specialty_responses=responses,
+                    chair_result=latest.model_dump(mode="json"),
+                )
+                state.rounds.append(discussion_round)
+                state.latest_chair_result = latest.model_dump(mode="json")
+                round_trace["chair"] = chair_trace
+                traces["rounds"].append(round_trace)
+                self._write(
+                    run_dir / f"{case_id}_mdt_round_{round_number:02d}_chair.json",
+                    latest,
+                )
+                self._write(state_path, state)
+                self._write(trace_path, traces)
+                self.events.append(
+                    run_id,
+                    "discussion_round_completed",
+                    {"round_number": round_number},
+                    stage="mdt_discussion",
+                )
+            else:
+                state.stop_reason = "已达到最多三轮讨论。"
+
+            if not state.stop_reason:
+                state.stop_reason = "讨论已结束。"
+            report_config = load_yaml(config_paths["mdt_chair"])
+            report_llm = build_llm_client(report_config)
+            report_agent = FinalReportAgent.from_config(
+                config_paths["mdt_chair"],
+                report_llm,
+                event_callback=self._progress(run_id, "mdt_chair"),
+            )
+            report, report_trace = report_agent.generate(
+                case_id=case_id,
+                chair_result=latest.model_dump(mode="json"),
+                rounds=state.rounds,
+                stop_reason=state.stop_reason,
+            )
+            state.final_report = report
+            state.status = "completed"
+            traces["final_report"] = report_trace
+            self._write(run_dir / f"{case_id}_mdt_final_report.json", report)
+            self._write(state_path, state)
+            self._write(trace_path, traces)
+        except Exception as error:
+            state.status = "failed"
+            state.error = str(error)
+            self._write(state_path, state)
+            self._write(trace_path, traces)
+            raise
 
     def _progress(self, run_id: str, agent_id: str) -> Callable[[str, dict], None]:
         def callback(event: str, payload: dict) -> None:

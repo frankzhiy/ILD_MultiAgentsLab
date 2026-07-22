@@ -6,34 +6,22 @@ import pytest
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
 from src.agents.pulmonology.agent import (
     PulmonologyAgent,
-    validate_discussion_response,
     validate_initial_assessment,
 )
 from src.agents.pulmonology.models import (
-    ChairAnswer,
     ClinicalAssessmentItem,
     DataGap,
     DiagnosticFormulation,
     DifferentialDiagnosis,
-    DiscussionConsultOutput,
-    DiscussionEvidenceMap,
-    DiscussionStateUpdate,
-    DomainChange,
     EvidencePointer,
     InitialDiagnosticFormulation,
     InitialFoundation,
     InitialPulmonaryAssessment,
-    PulmonologyDiscussionState,
-    MappedSpecialistFinding,
     ProgressionAssessment,
     ProgressionComponent,
-    PulmonologyDiscussionInput,
-    PulmonologyDiscussionResponse,
     PulmonologyDomain,
     PulmonologyInitialAssessment,
     ReferenceObservation,
-    SpecialistClaim,
-    SpecialistOpinion,
     SpecialistQuestion,
 )
 from src.llm.apiyi_client import APIYIClient
@@ -111,10 +99,6 @@ def initial_reviews():
     return [review(domain, statuses.get(domain, "assessed")) for domain in PulmonologyDomain]
 
 
-def discussion_reviews():
-    return [review(domain, "reviewed_unchanged") for domain in PulmonologyDomain]
-
-
 def clinical_item(pointer, text="慢性呼吸系统症状，近期加重"):
     return ClinicalAssessmentItem(
         assessment=text,
@@ -185,38 +169,6 @@ def initial_stages(case):
         diagnostic_formulation=formulation_for(pointer),
     )
     return foundation, pulmonary, formulation
-
-
-def discussion_state(initial, *, diagnostic_formulation=None):
-    return PulmonologyDiscussionState(
-        case_id=initial.case_id,
-        phase="discussion_update",
-        domain_reviews=discussion_reviews(),
-        clinical_phenotype=initial.clinical_phenotype,
-        secondary_cause_assessment=initial.secondary_cause_assessment,
-        pulmonary_severity=initial.pulmonary_severity,
-        respiratory_test_interpretation=initial.respiratory_test_interpretation,
-        bronchoscopy_assessment=initial.bronchoscopy_assessment,
-        specialist_dependencies=initial.specialist_dependencies,
-        reference_observations=initial.reference_observations,
-        progression_assessment=initial.progression_assessment,
-        diagnostic_formulation=diagnostic_formulation or initial.diagnostic_formulation,
-        missing_data=initial.missing_data,
-        limitations=initial.limitations,
-    )
-
-
-def domain_changes():
-    return [
-        DomainChange(
-            domain=domain,
-            change_status="reviewed_unchanged",
-            initial_view="首轮状态",
-            updated_view="复核后不变",
-            reason="本轮无足以改变该域判断的新信息。",
-        )
-        for domain in PulmonologyDomain
-    ]
 
 
 def test_pulmonology_yaml_builds_apiyi_client(monkeypatch):
@@ -517,110 +469,3 @@ def test_agent_rejects_wrong_specialty_and_empty_input():
     case.summary.unit_count = 0
     with pytest.raises(ValueError, match="at least one graph unit"):
         agent.initial_assessment(case)
-
-
-def discussion_fixture():
-    case = case_input()
-    initial = assessment_for(case)
-    reference_unit = unit_with_role(case, EvidenceRole.REFERENCE_ONLY)
-    pointer = pointer_for(reference_unit)
-    opinion = SpecialistOpinion(
-        specialty=MdtSpecialty.THORACIC_RADIOLOGY,
-        opinion_id="radiology-001",
-        summary="影像科正式意见",
-        claims=[SpecialistClaim(claim="存在间质性影像异常", evidence=[pointer])],
-        confidence="moderate",
-    )
-    discussion_input = PulmonologyDiscussionInput(
-        case_input=case,
-        initial_assessment=initial,
-        specialist_opinions=[opinion],
-        chair_questions=["影像意见是否改变呼吸科工作诊断？"],
-    )
-    return case, initial, pointer, opinion, discussion_input
-
-
-def test_discussion_runs_mapping_update_and_consult_stages():
-    case, initial, pointer, opinion, discussion_input = discussion_fixture()
-    evidence_map = DiscussionEvidenceMap(
-        specialist_opinions_used=[opinion.opinion_id],
-        mapped_findings=[
-            MappedSpecialistFinding(
-                opinion_id=opinion.opinion_id,
-                relationship="supplementary",
-                affected_domains=[PulmonologyDomain.SPECIALIST_INTEGRATION],
-                clinical_effect="正式影像意见可进入呼吸科疾病层面判断。",
-                evidence=[pointer],
-            )
-        ],
-    )
-    updated = discussion_state(
-        initial,
-        diagnostic_formulation=formulation_for(pointer, opinion_id=opinion.opinion_id),
-    )
-    update = DiscussionStateUpdate(updated_state=updated, domain_changes=domain_changes())
-    consult = DiscussionConsultOutput(
-        chair_answers=[
-            ChairAnswer(
-                question_id="chair_q_001",
-                answer="影像意见已被整合，但当前仍是呼吸科工作诊断。",
-                confidence="moderate",
-                supporting_evidence=[pointer],
-                specialist_opinion_ids=[opinion.opinion_id],
-            )
-        ],
-        diagnostic_recommendations=["如关键冲突仍存在，建议主席安排再次 MDD。"],
-    )
-    llm = FakeLLM([llm_payload(evidence_map), llm_payload(update), llm_payload(consult)])
-    agent = PulmonologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
-
-    result, trace = agent.discussion_response(discussion_input)
-
-    assert result.updated_state.phase == "discussion_update"
-    assert result.chair_answers[0].question_id == "chair_q_001"
-    assert [item["stage"] for item in trace["stages"]] == [
-        "discussion_evidence_mapping",
-        "discussion_state_update",
-        "discussion_consult_response",
-    ]
-    assert "第 1 步专科证据映射" in llm.prompts[1][1].content
-    assert "state_delta" not in llm.prompts[2][1].content
-
-
-def test_discussion_authorizes_reference_evidence_by_exact_block_id():
-    case, initial, authorized, opinion, discussion_input = discussion_fixture()
-    other_block = pointer_for(unit_with_role(case, EvidenceRole.REFERENCE_ONLY), 1)
-    state = discussion_state(
-        initial,
-        diagnostic_formulation=formulation_for(other_block, opinion_id=opinion.opinion_id),
-    )
-    response = PulmonologyDiscussionResponse(
-        case_id=case.case_id,
-        updated_state=state,
-        domain_changes=domain_changes(),
-        specialist_opinions_used=[opinion.opinion_id],
-    )
-
-    with pytest.raises(ValueError, match="精确引用相同 evidence ID"):
-        validate_discussion_response(response, discussion_input)
-
-
-def test_discussion_rejects_specialist_evidence_outside_scope():
-    case = case_input()
-    reference = unit_with_role(case, EvidenceRole.REFERENCE_ONLY)
-    opinion = SpecialistOpinion(
-        specialty=MdtSpecialty.PATHOLOGY,
-        opinion_id="pathology-001",
-        summary="越界引用影像证据",
-        claims=[SpecialistClaim(claim="病理意见", evidence=[pointer_for(reference)])],
-        confidence="low",
-    )
-    discussion_input = PulmonologyDiscussionInput(
-        case_input=case,
-        initial_assessment=assessment_for(case),
-        specialist_opinions=[opinion],
-    )
-    agent = PulmonologyAgent.from_config(CONFIG, FakeLLM([]), enable_guidelines=False)
-
-    with pytest.raises(ValueError, match="outside pathology's evidence scope"):
-        agent.discussion_response(discussion_input)

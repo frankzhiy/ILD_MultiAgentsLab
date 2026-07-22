@@ -4,6 +4,7 @@ from src.workbench.app import app, orchestrator
 
 
 RUN_ID = "20260716_163006_86-IPF_step2_step3"
+DISCUSSION_RUN_ID = "20260722_210144_78-IPF_step2_step3"
 
 
 def test_workbench_exposes_real_run_and_semantic_projection():
@@ -52,6 +53,25 @@ def test_chair_endpoint_starts_only_the_chair_stage(monkeypatch):
     assert response.status_code == 202
     assert response.json()["status"] == "running"
     assert started == [RUN_ID]
+
+
+def test_discussion_endpoint_is_ready_from_existing_chair_outputs():
+    response = TestClient(app).get(f"/api/runs/{DISCUSSION_RUN_ID}/discussion")
+
+    assert response.status_code == 200
+    assert response.json()["runnable"] is True
+    assert response.json()["max_rounds"] == 3
+
+
+def test_discussion_endpoint_starts_only_the_discussion_stage(monkeypatch):
+    started = []
+    monkeypatch.setattr(orchestrator, "start_discussion", started.append)
+
+    response = TestClient(app).post(f"/api/runs/{DISCUSSION_RUN_ID}/discussion")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "running"
+    assert started == [DISCUSSION_RUN_ID]
 
 
 def test_workbench_rejects_path_traversal():

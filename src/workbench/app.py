@@ -165,6 +165,30 @@ async def run_chair(run_id: str) -> dict:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
+@app.get("/api/runs/{run_id}/discussion")
+def discussion(run_id: str) -> dict:
+    try:
+        result = catalog.discussion(run_id)
+        if orchestrator.discussion_running(run_id):
+            result["status"] = "running"
+        return result
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.post("/api/runs/{run_id}/discussion", status_code=202)
+async def run_discussion(run_id: str) -> dict:
+    try:
+        orchestrator.start_discussion(run_id)
+        result = catalog.discussion(run_id)
+        result["status"] = "running"
+        return result
+    except FileNotFoundError as error:
+        raise not_found(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.get("/api/runs/{run_id}/artifacts")
 def artifacts(run_id: str) -> list[dict]:
     try:

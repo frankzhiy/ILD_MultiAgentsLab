@@ -65,9 +65,20 @@ class GuidelineRuntime:
 
     def prepare(self, stage: str) -> tuple[str, dict[str, GuidelineChunk], dict]:
         query = str(self.queries.get(stage) or "").strip()
+        return self.prepare_query(query, limit=self.limits.get(stage, self.limit))
+
+    def prepare_query(
+        self,
+        query: str,
+        *,
+        limit: int | None = None,
+    ) -> tuple[str, dict[str, GuidelineChunk], dict]:
+        """Retrieve guideline context for a runtime question instead of a fixed stage."""
+
+        query = str(query or "").strip()
         if not query:
             return "[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []}
-        limit = int(self.limits.get(stage, self.limit))
+        limit = int(self.limit if limit is None else limit)
         if limit <= 0:
             return "[]", {}, {"query": query, "candidates": [], "used_chunk_ids": []}
         hits = self.retriever.search(query, guideline_ids=self.scope, limit=limit)

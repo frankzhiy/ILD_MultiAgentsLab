@@ -13,6 +13,8 @@ vi.mock('../../api', () => ({
 
 const citation = { source_ref: 'pulmonology:conclusion-1', specialty: 'pulmonology', quote: '原始专科结论' }
 const evidence = { evidence_ref: 'gu-1', graph_unit_id: 'gu-1', quote: '病例原文' }
+const answerEvidence = { evidence_ref: 'answer-disc', graph_unit_id: 'gu-answer', quote: '回答鉴别证据' }
+const questionEvidence = { evidence_ref: 'question-bg', graph_unit_id: 'gu-question', quote: '提问背景证据' }
 
 const result = {
   schema_version: 'mdt_chair.v5',
@@ -69,9 +71,18 @@ const result = {
     resolution_status: 'blocked_by_evidence',
     responded_by: ['thoracic_radiology'],
     awaiting_specialties: ['thoracic_radiology'],
-    answers: [{ specialty: 'thoracic_radiology', answer: '当前描述支持纤维化，但不足以锁定 UIP。', source_citations: [citation] }],
+    answers: [{
+      specialty: 'thoracic_radiology',
+      answer: '当前描述支持纤维化，但不足以锁定 UIP。',
+      evidence: { discriminating: [answerEvidence] },
+      guideline_evidence: [{ guideline_id: 'answer-guide', source_file: 'answer-guide.pdf' }],
+      source_citations: [citation],
+    }],
     answer_summary: '已明确纤维化方向，形态归类仍保持限定。',
     remaining_clarification: '请进一步说明不能锁定 UIP 的判读依据。',
+    evidence: { background: [questionEvidence] },
+    guideline_evidence: [{ guideline_id: 'question-guide', source_file: 'question-guide.pdf' }],
+    source_citations: [citation],
   }],
   evidence_needs: [{
     need_id: 'need-1',
@@ -120,6 +131,12 @@ describe('ChairWorkspace', () => {
     ;['冲突状态：等待澄清', '冲突类别：形态/影像解释', '共同命题：', '比较前提：', '立场：肯定该命题', '立场：否定该命题', '不可兼容原因：', '解决条件：', '已有解决路径：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
     expect(screen.getByText('已有专科回答')).toBeInTheDocument()
+    expect(screen.getByText('回答来源：')).toBeInTheDocument()
+    expect(screen.getByText('问题来源：')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /answer-disc/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /answer-guide/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /question-bg/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /question-guide/ })).not.toBeInTheDocument()
     expect(screen.getByText('当前结果')).toBeInTheDocument()
     expect(screen.getByText(/仍需解释\/\澄清/)).toBeInTheDocument()
     ;['需要提供', '当前已有', '仍然缺少'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())

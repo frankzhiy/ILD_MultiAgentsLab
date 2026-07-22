@@ -282,6 +282,7 @@ def _compact_specialty(
             evidence=evidence,
             guidelines=list(item.get("guideline_evidence") or []),
             metadata={
+                "conclusion_id": item.get("conclusion_id"),
                 "original_statement": statement,
                 "limitations": list(item.get("limitations") or []),
             },
@@ -431,7 +432,13 @@ class MDTChairAgent:
             event_callback=event_callback,
         )
 
-    def integrate(self, bundle: ChairPromptBundle) -> tuple[MDTChairIntegration, dict]:
+    def integrate(
+        self,
+        bundle: ChairPromptBundle,
+        *,
+        discussion_previous: MDTChairIntegration | None = None,
+        discussion_responses: list[Any] | None = None,
+    ) -> tuple[MDTChairIntegration, dict]:
         compact_json = prompt_json(bundle.prompt_input)
         ledger_schema = (
             "由 API 的严格 JSON Schema response_format 提供。"
@@ -464,14 +471,30 @@ class MDTChairAgent:
                 "output_schema": output_schema,
             },
         )
+        def resolve(value: MDTChairIntegration) -> MDTChairIntegration:
+            if discussion_previous is not None:
+                from src.agents.mdt_discussion.integration import (
+                    reconcile_discussion_references,
+                )
+
+                reconcile_discussion_references(
+                    value,
+                    discussion_previous,
+                    discussion_responses or [],
+                    bundle,
+                )
+            return resolve_chair_references(
+                value,
+                bundle,
+                None if discussion_previous is not None else ledger,
+            )
+
         result, synthesis_trace = self.generator.generate(
             schema_model=MDTChairIntegration,
             schema_name="mdt_chair_integration",
             system_prompt=SYSTEM_PROMPT,
             user_prompt=synthesis_prompt,
-            extra_validation=lambda value: resolve_chair_references(
-                value, bundle, ledger
-            ),
+            extra_validation=resolve,
         )
         trace = {
             "semantic_ledger": ledger.model_dump(mode="json"),
@@ -518,7 +541,7 @@ def resolve_chair_references(
 
     for index, boundary in enumerate(result.assessment_boundaries, 1):
         boundary.boundary_id = f"B{index:03d}"
-        _resolve_cited(boundary, bundle, "native_conclusion")
+        _resolve_cited(boundary, bundle, {"native_conclusion", "native_question"})
         boundary.specialties = _ordered_unique(
             citation.specialty for citation in boundary.source_citations
         )

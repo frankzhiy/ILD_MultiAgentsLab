@@ -36,6 +36,7 @@ class RunOrchestrator:
         self.workflow = WorkbenchWorkflow(self.root, events)
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.active_chairs: set[str] = set()
+        self.active_discussions: set[str] = set()
 
     def prepare(self, request: dict[str, Any]) -> tuple[str, Path]:
         case_id = str(request.get("case_id") or "").strip()
@@ -126,7 +127,7 @@ class RunOrchestrator:
         if not readiness["runnable"]:
             raise ValueError(readiness["error"] or "四个专科正式输出尚未全部就绪。")
         key = f"{run_id}:chair"
-        if run_id in self.tasks or key in self.tasks:
+        if run_id in self.tasks or key in self.tasks or run_id in self.active_discussions:
             raise ValueError("该运行仍在执行，不能重复启动主持人。")
         task = asyncio.create_task(
             self._execute_chair(run_id, run_dir, self._chair_config(run_dir)),
@@ -138,6 +139,25 @@ class RunOrchestrator:
 
     def chair_running(self, run_id: str) -> bool:
         return run_id in self.active_chairs
+
+    def start_discussion(self, run_id: str) -> None:
+        run_dir = self.catalog.run_dir(run_id)
+        readiness = self.catalog.discussion(run_id)
+        if not readiness["runnable"]:
+            raise ValueError(readiness["error"] or "讨论所需的既有产物尚未就绪。")
+        key = f"{run_id}:discussion"
+        if run_id in self.tasks or key in self.tasks or run_id in self.active_chairs:
+            raise ValueError("该运行仍在执行，不能重复启动团队讨论。")
+        task = asyncio.create_task(
+            self._execute_discussion(run_id, run_dir, self._discussion_configs(run_dir)),
+            name=f"discussion:{run_id}",
+        )
+        self.active_discussions.add(run_id)
+        self.tasks[key] = task
+        task.add_done_callback(lambda _: self._finish_discussion(key, run_id))
+
+    def discussion_running(self, run_id: str) -> bool:
+        return run_id in self.active_discussions
 
     async def _execute(self, run_id: str, input_path: Path) -> None:
         run_dir = self.catalog.run_dir(run_id)
@@ -299,9 +319,45 @@ class RunOrchestrator:
             stage="cross_specialty_integration",
         )
 
+    async def _execute_discussion(
+        self, run_id: str, run_dir: Path, config_paths: dict[str, Path]
+    ) -> None:
+        self.events.append(
+            run_id,
+            "manual_stage_started",
+            {},
+            agent_id="mdt_discussion",
+            stage="team_discussion",
+        )
+        try:
+            await self._stage(
+                run_id,
+                run_dir,
+                "mdt_discussion",
+                "team_discussion",
+                self.workflow.run_discussion,
+                run_id,
+                run_dir,
+                self.catalog.case_id(run_dir),
+                config_paths,
+            )
+        except Exception:
+            return
+        self.events.append(
+            run_id,
+            "manual_stage_completed",
+            {},
+            agent_id="mdt_discussion",
+            stage="team_discussion",
+        )
+
     def _finish_chair(self, key: str, run_id: str) -> None:
         self.tasks.pop(key, None)
         self.active_chairs.discard(run_id)
+
+    def _finish_discussion(self, key: str, run_id: str) -> None:
+        self.tasks.pop(key, None)
+        self.active_discussions.discard(run_id)
 
     def _chair_config(self, run_dir: Path) -> Path:
         manifest_path = run_dir / ".workbench_run.json"
@@ -323,6 +379,33 @@ class RunOrchestrator:
             manifest.setdefault("configs", {})["mdt_chair"] = str(target)
             self._write_json(manifest_path, manifest)
         return target
+
+    def _discussion_configs(self, run_dir: Path) -> dict[str, Path]:
+        manifest_path = run_dir / ".workbench_run.json"
+        manifest = self._read_json(manifest_path) if manifest_path.exists() else {}
+        configured = manifest.setdefault("configs", {})
+        result: dict[str, Path] = {}
+        for agent_id in (*SPECIALTIES, "mdt_chair"):
+            path = Path(configured.get(agent_id, ""))
+            if not path.is_file():
+                config = load_yaml(self.root / f"configs/agents/{agent_id}/agent.yaml")
+                for key, value in list(config.items()):
+                    if (key == "prompt" or key.endswith("_prompt")) and isinstance(value, str):
+                        config[key] = str((self.root / value).resolve())
+                retrieval = config.get("guideline_retrieval")
+                if isinstance(retrieval, dict) and isinstance(retrieval.get("directory"), str):
+                    retrieval["directory"] = str((self.root / retrieval["directory"]).resolve())
+                path = run_dir / "workbench_config" / f"{agent_id}.yaml"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8",
+                )
+                configured[agent_id] = str(path)
+            result[agent_id] = path
+        if manifest_path.exists():
+            self._write_json(manifest_path, manifest)
+        return result
 
     def _update_manifest(self, path: Path, **changes: Any) -> None:
         manifest = self._read_json(path)

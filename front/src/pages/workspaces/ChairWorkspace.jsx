@@ -137,11 +137,11 @@ function EmptyList({ description }) {
   return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={description} />
 }
 
-function Sources({ item }) {
+function Sources({ item, label = '来源引用：' }) {
   if (!item.source_citations?.length) return null
   return (
     <div className="chair-sources">
-      <Text strong>来源引用：</Text>
+      <Text strong>{label}</Text>
       <CitationGroup sourceCitations={item.source_citations} />
     </div>
   )
@@ -278,7 +278,7 @@ function Questions({ items = [] }) {
                     <Paragraph>{answer.answer}</Paragraph>
                     <div className="chair-answer-evidence">
                       <EvidenceGroups evidence={answer.evidence} guidelineEvidence={answer.guideline_evidence} />
-                      <CitationGroup sourceCitations={answer.source_citations} />
+                      <Sources item={answer} label="回答来源：" />
                     </div>
                   </div>
                 ))}
@@ -287,8 +287,7 @@ function Questions({ items = [] }) {
             {item.answer_summary && <div className="chair-result"><Text strong>当前结果</Text><Paragraph>{item.answer_summary}</Paragraph></div>}
             {item.remaining_clarification && <div className="clarification-note"><Text strong>仍需解释/澄清：</Text>{item.remaining_clarification}</div>}
             {item.decision_unlocked && <Paragraph type="secondary"><Text strong>将影响：</Text>{item.decision_unlocked}</Paragraph>}
-            <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
-            <Sources item={item} />
+            <Sources item={item} label="问题来源：" />
           </article>
         ))}
       </div> : <EmptyList description="当前没有待回答的跨专科问题" />}
@@ -331,6 +330,18 @@ function EvidenceNeeds({ items = [] }) {
         ))}
       </div> : <EmptyList description="当前没有新的证据需求" />}
     </Card>
+  )
+}
+
+export function ChairResultBoards({ result }) {
+  return (
+    <div className="chair-board-grid">
+      <IntegratedConclusions items={result?.integrated_conclusions} />
+      <AssessmentBoundaries items={result?.assessment_boundaries} />
+      <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />
+      <Questions items={result?.questions} />
+      <EvidenceNeeds items={result?.evidence_needs} />
+    </div>
   )
 }
 
@@ -388,13 +399,7 @@ export function ChairWorkspace({ runId, run }) {
       {value.status === 'failed' && <Alert className="section-gap" type="error" showIcon title={failedWithPrevious ? '本次重跑失败，下方展示上一次成功结果' : '主持人整合失败'} description={value.error} />}
       {mutation.isError && <Alert className="section-gap" type="error" showIcon title="无法启动主持人" description={mutation.error.message} />}
 
-      <div className="chair-board-grid">
-        <IntegratedConclusions items={result?.integrated_conclusions} />
-        <AssessmentBoundaries items={result?.assessment_boundaries} />
-        <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />
-        <Questions items={result?.questions} />
-        <EvidenceNeeds items={result?.evidence_needs} />
-      </div>
+      <ChairResultBoards result={result} />
     </div>
   )
 }

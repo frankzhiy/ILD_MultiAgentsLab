@@ -13,6 +13,11 @@ from src.agents.mdt_chair.models import (
     ChairSemanticLedger,
     MDTChairIntegration,
 )
+from src.agents.mdt_discussion.integration import (
+    append_round_responses,
+    reconcile_discussion_references,
+)
+from src.agents.mdt_discussion.models import SpecialtyRoundResponse, SpecialtyTaskAnswer
 from src.llm.base import LLMResponse
 
 
@@ -320,6 +325,81 @@ def test_program_backfills_v5_ids_provenance_and_separates_boundaries():
     ]
     assert result.questions[0].question_id == "Q001"
     assert [item.need_id for item in result.evidence_needs] == ["EN001", "EN002"]
+
+
+def test_assessment_boundary_accepts_unresolved_native_question_source():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = integration_payload(bundle)
+    question_ref = source_ref(bundle, "pulmonology", "native_question")
+    payload["assessment_boundaries"][0]["source_refs"] = [question_ref]
+
+    result = resolve_chair_references(
+        MDTChairIntegration.model_validate(payload), bundle, resolved_ledger(bundle)
+    )
+
+    boundary = result.assessment_boundaries[0]
+    assert boundary.source_citations[0].source_type == "native_question"
+    assert boundary.specialties == ["pulmonology"]
+
+
+def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    previous = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(initial_bundle)),
+        initial_bundle,
+        resolved_ledger(initial_bundle),
+    )
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-thoracic_radiology-A",
+        task_id="R01-Q001-thoracic_radiology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="partially_answered",
+        answer="现有文字只能支持有限影像表型。",
+        confidence="moderate",
+        medical_basis="缺少原始影像。",
+        changed_from_previous=True,
+        remaining_limitation="仍需完整HRCT。",
+    )
+    responses = [SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty="thoracic_radiology",
+        answers=[answer],
+    )]
+    current_outputs = append_round_responses(initial_outputs, responses)
+    current_bundle = build_chair_prompt_bundle("case-1", current_outputs)
+    payload = integration_payload(current_bundle)
+    payload["questions"][0]["source_refs"] = [
+        source_ref(current_bundle, "pulmonology", "evidence_gap"),
+        source_ref(current_bundle, "rheumatology", "native_conclusion"),
+    ]
+    payload["questions"][0]["answers"][0]["source_refs"] = [
+        source_ref(current_bundle, "pulmonology", "evidence_gap")
+    ]
+    payload["evidence_needs"][0]["source_refs"] = [
+        source_ref(current_bundle, "rheumatology", "native_conclusion")
+    ]
+    result = MDTChairIntegration.model_validate(payload)
+
+    reconcile_discussion_references(result, previous, responses, current_bundle)
+    result = resolve_chair_references(result, current_bundle)
+
+    question = result.questions[0]
+    assert {item.source_type for item in question.source_citations} == {"native_question"}
+    assert question.answers[-1].answer == answer.answer
+    assert {item.source_type for item in question.answers[-1].source_citations} == {
+        "native_conclusion"
+    }
+    assert all(
+        citation.source_type in {"native_question", "evidence_gap", "native_conclusion"}
+        for need in result.evidence_needs
+        for citation in need.source_citations
+    )
+    assert result.evidence_needs[0].required_information == (
+        previous.evidence_needs[0].required_information
+    )
 
 
 def test_question_response_and_resolution_are_independent():
