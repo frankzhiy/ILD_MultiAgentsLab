@@ -130,14 +130,52 @@ class EvidenceNeed(CitedChairStatement):
     decision_unlocked: str = Field(min_length=1)
 
 
-class MDTChairIntegration(BaseModel):
-    """The chair's only three public result sections."""
+class ConflictPosition(CitedChairStatement):
+    specialty: Specialty
+    stance: Literal["affirms", "denies"]
+    position: str = Field(min_length=1)
+
+
+class CrossSpecialtyConflict(BaseModel):
+    """An unresolved incompatibility between formal specialty conclusions."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["mdt_chair.v2"] = "mdt_chair.v2"
+    conflict_id: str = Field(min_length=1)
+    topic: str = Field(min_length=1)
+    conflict_domain: Literal[
+        "diagnostic_interpretation",
+        "morphologic_interpretation",
+        "etiologic_attribution",
+        "severity_or_trajectory",
+        "assessability_or_scope",
+    ]
+    status: Literal[
+        "unresolved",
+        "pending_clarification",
+        "pending_evidence",
+        "pending_clarification_and_evidence",
+    ]
+    shared_claim: str = Field(min_length=1)
+    comparison_conditions: str = Field(min_length=1)
+    positions: list[ConflictPosition] = Field(min_length=2)
+    why_incompatible: str = Field(min_length=1)
+    decision_impact: str = Field(min_length=1)
+    resolution_requirement: str = Field(min_length=1)
+    related_question_ids: list[str] = Field(default_factory=list)
+    related_evidence_need_ids: list[str] = Field(default_factory=list)
+    specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
+
+
+class MDTChairIntegration(BaseModel):
+    """The chair's public cross-specialty integration result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["mdt_chair.v4"] = "mdt_chair.v4"
     case_id: SkipJsonSchema[str] = ""
     integrated_conclusions: list[IntegratedConclusion] = Field(min_length=1)
+    conflicts: list[CrossSpecialtyConflict] = Field(default_factory=list)
     questions: list[IntegratedQuestion] = Field(default_factory=list)
     evidence_needs: list[EvidenceNeed] = Field(default_factory=list)
 

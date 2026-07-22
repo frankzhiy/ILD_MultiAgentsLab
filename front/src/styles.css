@@ -123,6 +123,7 @@ a { color: inherit; }
 .chair-board > .ant-card-head .ant-card-head-title { color: #13213a; font-size: 17px; }
 .chair-board > .ant-card-body { padding: 18px 20px; }
 .chair-conclusions { border-top: 3px solid #2f6fed; }
+.chair-conflicts { border-top: 3px solid #dc2626; }
 .chair-questions { border-top: 3px solid #7c5ce5; }
 .chair-needs { border-top: 3px solid #d39b2a; }
 .chair-sources { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: flex-start; margin-top: 11px; }
@@ -136,6 +137,11 @@ a { color: inherit; }
 .chair-answer-evidence > .citation-group { margin-top: 6px; }
 .chair-result { margin-top: 11px; padding: 12px 14px; border-left: 4px solid #2f6fed; border-radius: 5px; background: #f3f7ff; }
 .chair-result .ant-typography { margin: 3px 0 0; line-height: 1.7; }
+.conflict-positions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.conflict-position { padding: 12px; border: 1px solid #fecaca; border-radius: 6px; background: #fff7f7; }
+.conflict-position > .ant-typography { margin: 8px 0; line-height: 1.7; }
+.conflict-links { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 11px; }
+.conflict-links > .ant-typography { margin-right: 2px; }
 .clarification-note { margin-top: 10px; padding: 10px 12px; border-left: 3px solid #7c5ce5; background: #f7f5ff; color: #493a79; line-height: 1.65; }
 .evidence-need-flow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: stretch; margin-top: 13px; }
 .need-step { min-width: 0; padding: 13px 14px; border: 1px solid #e2e8f0; border-radius: 7px; background: #fff; }
@@ -183,6 +189,7 @@ a { color: inherit; }
   .formal-section { padding: 16px 0; }
   .chair-workspace .workspace-title { align-items: flex-start; }
   .chair-workspace .workspace-title > .ant-btn { width: 100%; }
+  .conflict-positions { grid-template-columns: minmax(0, 1fr); }
   .evidence-need-flow { grid-template-columns: minmax(0, 1fr); }
   .need-arrow { transform: rotate(90deg); justify-self: center; }
 }

@@ -31,6 +31,26 @@ const NEED_STATUS = {
   missing: ['缺失', 'error'],
 }
 
+const CONFLICT_STATUS = {
+  unresolved: ['未解决', 'error'],
+  pending_clarification: ['等待澄清', 'warning'],
+  pending_evidence: ['等待证据', 'warning'],
+  pending_clarification_and_evidence: ['等待澄清与证据', 'warning'],
+}
+
+const CONFLICT_DOMAIN = {
+  diagnostic_interpretation: '诊断解释',
+  morphologic_interpretation: '形态/影像解释',
+  etiologic_attribution: '病因归因',
+  severity_or_trajectory: '严重度/病程',
+  assessability_or_scope: '可评价性/证据范围',
+}
+
+const CONFLICT_STANCE = {
+  affirms: ['肯定该命题', 'success'],
+  denies: ['否定该命题', 'error'],
+}
+
 const CONCLUSION_STATUS = {
   supported: ['支持', 'success'],
   favored: ['倾向', 'processing'],
@@ -117,6 +137,55 @@ function IntegratedConclusions({ items = [] }) {
           </article>
         ))}
       </div> : <EmptyList description="尚未形成跨专科整合结论" />}
+    </Card>
+  )
+}
+
+function RelatedItems({ item, questions, evidenceNeeds }) {
+  const relatedQuestions = (item.related_question_ids || []).map((id) => questions.find((question) => question.question_id === id)).filter(Boolean)
+  const relatedNeeds = (item.related_evidence_need_ids || []).map((id) => evidenceNeeds.find((need) => need.need_id === id)).filter(Boolean)
+  if (!relatedQuestions.length && !relatedNeeds.length) return null
+  return (
+    <div className="conflict-links">
+      <Text strong>已有解决路径：</Text>
+      {relatedQuestions.map((question) => <Tag color="purple" key={question.question_id}>问题：{question.question}</Tag>)}
+      {relatedNeeds.map((need) => <Tag color="gold" key={need.need_id}>证据需求：{need.required_information}</Tag>)}
+    </div>
+  )
+}
+
+function Conflicts({ items = [], questions = [], evidenceNeeds = [] }) {
+  return (
+    <Card title="跨专科冲突" className="section-card chair-board chair-conflicts">
+      {items.length ? <div className="formal-list">
+        {items.map((item, index) => (
+          <article className="formal-item conflict-item" key={item.conflict_id || index}>
+            <Space size={[6, 6]} wrap>
+              <SpecialtyTags label="相关专科" specialties={item.specialties} color="volcano" />
+              <LabeledStatus label="冲突状态" value={item.status} labels={CONFLICT_STATUS} />
+              <LabeledTag label="冲突类别" value={item.conflict_domain} labels={CONFLICT_DOMAIN} />
+            </Space>
+            <Title level={5}>{item.topic}</Title>
+            <Paragraph><Text strong>共同命题：</Text>{item.shared_claim}</Paragraph>
+            <Paragraph type="secondary"><Text strong>比较前提：</Text>{item.comparison_conditions}</Paragraph>
+            <div className="conflict-positions">
+              {item.positions?.map((position, positionIndex) => (
+                <div className="conflict-position" key={`${position.specialty}-${positionIndex}`}>
+                  <Tag color="volcano">{specialtyLabel(position.specialty)}</Tag>
+                  <LabeledStatus label="立场" value={position.stance} labels={CONFLICT_STANCE} />
+                  <Paragraph>{position.position}</Paragraph>
+                  <EvidenceGroups evidence={position.evidence} guidelineEvidence={position.guideline_evidence} />
+                  <Sources item={position} />
+                </div>
+              ))}
+            </div>
+            <Paragraph><Text strong>不可兼容原因：</Text>{item.why_incompatible}</Paragraph>
+            <Paragraph type="secondary"><Text strong>对当前讨论的影响：</Text>{item.decision_impact}</Paragraph>
+            <div className="clarification-note"><Text strong>解决条件：</Text>{item.resolution_requirement}</div>
+            <RelatedItems item={item} questions={questions} evidenceNeeds={evidenceNeeds} />
+          </article>
+        ))}
+      </div> : <EmptyList description="当前未识别到未解决的跨专科冲突" />}
     </Card>
   )
 }
@@ -248,13 +317,14 @@ export function ChairWorkspace({ runId, run }) {
 
       <Alert className="section-gap" type="info" showIcon title="开发阶段单独运行入口" description="此按钮只运行 MDT 主持人，会直接使用现有四个专科结果，不会重新运行前序 Agent。" />
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="主持人尚不可运行" description={value.error} />}
-      {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="现有主持人结果属于旧版结构" description="下方结果仍可查看，请点击重新运行以生成当前三板块完整结果。" />}
+      {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="现有主持人结果属于旧版结构" description="下方结果仍可查看，请点击重新运行以生成当前四板块完整结果。" />}
       {value.status === 'pending' && <Alert className="section-gap" type="success" showIcon title="四个专科结果已就绪" description="可以单独运行主持人整合。" />}
       {value.status === 'failed' && <Alert className="section-gap" type="error" showIcon title={failedWithPrevious ? '本次重跑失败，下方展示上一次成功结果' : '主持人整合失败'} description={value.error} />}
       {mutation.isError && <Alert className="section-gap" type="error" showIcon title="无法启动主持人" description={mutation.error.message} />}
 
       <div className="chair-board-grid">
         <IntegratedConclusions items={result?.integrated_conclusions} />
+        <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />
         <Questions items={result?.questions} />
         <EvidenceNeeds items={result?.evidence_needs} />
       </div>

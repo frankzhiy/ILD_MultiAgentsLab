@@ -372,10 +372,12 @@ class RunCatalog:
 
     @staticmethod
     def _is_current_chair_output(value: Any) -> bool:
-        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v2":
+        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v4":
             return False
         conclusions = value.get("integrated_conclusions")
         if not isinstance(conclusions, list) or not conclusions:
+            return False
+        if not isinstance(value.get("conflicts"), list):
             return False
         required = {
             "statement",

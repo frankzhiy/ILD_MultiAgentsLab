@@ -12,6 +12,7 @@ from src.agents.mdt_chair.models import (
     CaseEvidenceCitation,
     ChairEvidenceBundle,
     CitedChairStatement,
+    CrossSpecialtyConflict,
     MDTChairIntegration,
     SpecialtySourceCitation,
 )
@@ -25,7 +26,7 @@ from src.utils.config import load_text, load_yaml, render_template
 SYSTEM_PROMPT = (
     "你是以呼吸科为主要背景的 ILD MDT 主持人。你只整合四个专科已经形成的正式结论、"
     "合并专科已经提出的原生问题，并汇总已有证据需求；不创造问题，不联系或重新运行专科 Agent，"
-    "不分析或裁决专科冲突，不输出最终 MDT 诊断或治疗方案。"
+    "识别并如实描述未解决的跨专科冲突，但不裁决冲突，不输出最终 MDT 诊断或治疗方案。"
     "所有面向人的文本使用简体中文，只返回符合 schema 的 JSON。"
 )
 
@@ -555,6 +556,7 @@ def resolve_chair_references(
             for citation in need.source_citations
             if citation.source_type == "native_conclusion"
         )
+    _resolve_conflicts(result.conflicts, result, bundle)
     return result
 
 
@@ -614,8 +616,58 @@ def _resolve_cited(
 def _validate_unique_ids(result: MDTChairIntegration) -> None:
     for label, values in (
         ("conclusion_id", [item.conclusion_id for item in result.integrated_conclusions]),
+        ("conflict_id", [item.conflict_id for item in result.conflicts]),
         ("question_id", [item.question_id for item in result.questions]),
         ("need_id", [item.need_id for item in result.evidence_needs]),
     ):
         if len(values) != len(set(values)):
             raise ValueError(f"{label} values must be unique")
+
+
+def _resolve_conflicts(
+    conflicts: list[CrossSpecialtyConflict],
+    result: MDTChairIntegration,
+    bundle: ChairPromptBundle,
+) -> None:
+    question_ids = {item.question_id for item in result.questions}
+    need_ids = {item.need_id for item in result.evidence_needs}
+    expected_status = {
+        (False, False): "unresolved",
+        (True, False): "pending_clarification",
+        (False, True): "pending_evidence",
+        (True, True): "pending_clarification_and_evidence",
+    }
+    for conflict in conflicts:
+        specialties = []
+        stances = set()
+        for position in conflict.positions:
+            _resolve_cited(position, bundle, "native_conclusion")
+            cited_specialties = {item.specialty for item in position.source_citations}
+            if cited_specialties != {position.specialty}:
+                raise ValueError(
+                    "Each conflict position must cite only native conclusions from its specialty"
+            )
+            specialties.append(position.specialty)
+            stances.add(position.stance)
+        if len(set(specialties)) < 2:
+            raise ValueError("A cross-specialty conflict requires positions from at least two specialties")
+        if stances != {"affirms", "denies"}:
+            raise ValueError(
+                "A cross-specialty conflict requires both an affirming and a denying position"
+            )
+        conflict.specialties = _ordered_unique(specialties)
+        conflict.related_question_ids = _ordered_unique(conflict.related_question_ids)
+        conflict.related_evidence_need_ids = _ordered_unique(conflict.related_evidence_need_ids)
+        unknown_questions = set(conflict.related_question_ids) - question_ids
+        if unknown_questions:
+            raise ValueError(f"Unknown related question IDs: {sorted(unknown_questions)}")
+        unknown_needs = set(conflict.related_evidence_need_ids) - need_ids
+        if unknown_needs:
+            raise ValueError(f"Unknown related evidence need IDs: {sorted(unknown_needs)}")
+        status = expected_status[
+            (bool(conflict.related_question_ids), bool(conflict.related_evidence_need_ids))
+        ]
+        if conflict.status != status:
+            raise ValueError(
+                f"Conflict {conflict.conflict_id} status must be {status} for its linked resolution items"
+            )

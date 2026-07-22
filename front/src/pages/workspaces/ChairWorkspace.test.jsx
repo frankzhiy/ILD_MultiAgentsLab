@@ -15,7 +15,7 @@ const citation = { source_ref: 'pulmonology:conclusion-1', specialty: 'pulmonolo
 const evidence = { evidence_ref: 'gu-1', graph_unit_id: 'gu-1', quote: '病例原文' }
 
 const result = {
-  schema_version: 'mdt_chair.v2',
+  schema_version: 'mdt_chair.v4',
   integrated_conclusions: [{
     conclusion_id: 'integrated-1',
     statement: '综合各专科意见，当前更支持慢性纤维化性间质性肺病的工作诊断。',
@@ -29,6 +29,24 @@ const result = {
     guideline_evidence: [{ guideline_id: 'guide-1', source_file: 'guide.pdf' }],
     limitations: ['现有结论受原始影像可获得性限制。'],
     source_citations: [citation],
+  }],
+  conflicts: [{
+    conflict_id: 'conflict-1',
+    topic: '现有影像文字能否支持具体形态模式',
+    conflict_domain: 'morphologic_interpretation',
+    status: 'pending_clarification',
+    shared_claim: '现有影像文字已经足以确认具体形态模式。',
+    comparison_conditions: '基于当前同一批影像文字资料。',
+    specialties: ['pulmonology', 'thoracic_radiology'],
+    positions: [
+      { specialty: 'pulmonology', stance: 'affirms', position: '临床整合认为可进入纤维化性 ILD 框架。', evidence: { supporting: [evidence] }, source_citations: [citation] },
+      { specialty: 'thoracic_radiology', stance: 'denies', position: '未直接阅片时不能确认具体模式。', evidence: { weakening: [evidence] }, source_citations: [{ ...citation, specialty: 'thoracic_radiology' }] },
+    ],
+    why_incompatible: '两项立场针对同一资料可支持的模式层级不能同时成立。',
+    decision_impact: '当前不能将具体模式作为已整合结论。',
+    resolution_requirement: '需要影像科澄清资料层级。',
+    related_question_ids: ['question-1'],
+    related_evidence_need_ids: ['need-1'],
   }],
   questions: [{
     question_id: 'question-1',
@@ -69,15 +87,18 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('ChairWorkspace', () => {
-  it('renders the three result boards with categorized evidence and discussion-only question results', async () => {
+  it('renders the four result boards with categorized evidence, conflict positions, and discussion-only question results', async () => {
     api.chair.mockResolvedValue({ status: 'completed', runnable: true, result })
     renderWorkspace()
 
     expect(await screen.findByText('跨专科整合结论')).toBeInTheDocument()
+    expect(screen.getByText('跨专科冲突')).toBeInTheDocument()
     expect(screen.getByText('待回答问题')).toBeInTheDocument()
     expect(screen.getByText('证据需求及满足状态')).toBeInTheDocument()
-    ;['相关专科', '结论状态：可能', '结论定位：重要替代解释', '结论类型：ILD 归因'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
+    expect(screen.getAllByText('相关专科').length).toBeGreaterThan(0)
+    ;['结论状态：可能', '结论定位：重要替代解释', '结论类型：ILD 归因'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['问题状态：部分回答', '问题提出专科', '待回答专科', '满足状态：部分满足', '需求提出专科', '已提供专科'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
+    ;['冲突状态：等待澄清', '冲突类别：形态/影像解释', '共同命题：', '比较前提：', '立场：肯定该命题', '立场：否定该命题', '不可兼容原因：', '解决条件：', '已有解决路径：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
     expect(screen.getByText('已有专科回答')).toBeInTheDocument()
     expect(screen.getByText('当前结果')).toBeInTheDocument()

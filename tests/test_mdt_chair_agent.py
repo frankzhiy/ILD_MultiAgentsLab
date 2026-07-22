@@ -8,7 +8,7 @@ from src.agents.mdt_chair.agent import (
     build_semantic_evidence_catalog,
     resolve_chair_references,
 )
-from src.agents.mdt_chair.models import MDTChairIntegration
+from src.agents.mdt_chair.models import CrossSpecialtyConflict, MDTChairIntegration
 from src.llm.base import LLMResponse
 from src.llm.prompting import llm_value
 
@@ -140,6 +140,7 @@ def integration_payload(bundle):
                 "source_refs": [pulmonary, radiology],
             }
         ],
+        "conflicts": [],
         "questions": [
             {
                 "question_id": "question_1",
@@ -212,6 +213,144 @@ def test_reference_resolution_backfills_all_evidence_roles_and_guidelines():
     assert question.answers[0].source_citations[0].specialty == "thoracic_radiology"
     assert result.evidence_needs[0].raised_by == ["pulmonology"]
     assert result.evidence_needs[0].provided_by == ["pulmonology"]
+
+
+def test_conflict_positions_keep_each_specialtys_evidence_and_linked_question():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    result = integration(bundle)
+    result.conflicts = [
+        CrossSpecialtyConflict.model_validate({
+            "conflict_id": "conflict_1",
+            "topic": "现有影像文字能否支持具体形态模式",
+            "conflict_domain": "morphologic_interpretation",
+            "status": "pending_clarification",
+            "shared_claim": "现有影像文字已经足以确认具体形态模式。",
+            "comparison_conditions": "基于当前同一批影像文字资料，不引入原始图像。",
+            "positions": [
+                {
+                    "specialty": "pulmonology",
+                    "stance": "affirms",
+                    "position": "临床整合倾向将现有资料纳入纤维化性 ILD 工作诊断。",
+                    "source_refs": [pulmonary],
+                },
+                {
+                    "specialty": "thoracic_radiology",
+                    "stance": "denies",
+                    "position": "未直接阅片时不能将文字描述升级为具体形态模式。",
+                    "source_refs": [radiology],
+                },
+            ],
+            "why_incompatible": "两项立场针对同一影像资料可支持的形态层级，不能同时作为已确认模式使用。",
+            "decision_impact": "本轮不能将具体形态模式作为已整合结论。",
+            "resolution_requirement": "需由影像科澄清现有文字描述的可解释范围。",
+            "related_question_ids": ["question_1"],
+            "related_evidence_need_ids": [],
+        })
+    ]
+
+    resolved = resolve_chair_references(result, bundle)
+    conflict = resolved.conflicts[0]
+    assert conflict.specialties == ["pulmonology", "thoracic_radiology"]
+    assert conflict.positions[0].source_citations[0].specialty == "pulmonology"
+    assert conflict.positions[1].source_citations[0].specialty == "thoracic_radiology"
+    assert conflict.positions[0].evidence.supporting
+    assert conflict.related_question_ids == ["question_1"]
+
+
+def test_conflict_rejects_cross_specialty_position_sources():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    result = integration(bundle)
+    result.conflicts = [
+        CrossSpecialtyConflict.model_validate({
+            "conflict_id": "conflict_1",
+            "topic": "冲突主题",
+            "conflict_domain": "diagnostic_interpretation",
+            "status": "unresolved",
+            "shared_claim": "共同命题。",
+            "comparison_conditions": "共同条件。",
+            "positions": [
+                {
+                    "specialty": "pulmonology",
+                    "stance": "affirms",
+                    "position": "呼吸科立场。",
+                    "source_refs": [radiology],
+                },
+                {
+                    "specialty": "thoracic_radiology",
+                    "stance": "denies",
+                    "position": "影像科立场。",
+                    "source_refs": [pulmonary],
+                },
+            ],
+            "why_incompatible": "同一前提下不兼容。",
+            "decision_impact": "限制整合。",
+            "resolution_requirement": "需要澄清。",
+            "related_question_ids": [],
+            "related_evidence_need_ids": [],
+        })
+    ]
+    with pytest.raises(ValueError, match="only native conclusions from its specialty"):
+        resolve_chair_references(result, bundle)
+
+
+def test_conflict_status_must_match_linked_resolution_items():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    result = integration(bundle)
+    result.conflicts = [
+        CrossSpecialtyConflict.model_validate({
+            "conflict_id": "conflict_1",
+            "topic": "冲突主题",
+            "conflict_domain": "diagnostic_interpretation",
+            "status": "unresolved",
+            "shared_claim": "共同命题。",
+            "comparison_conditions": "共同条件。",
+            "positions": [
+                {"specialty": "pulmonology", "stance": "affirms", "position": "呼吸科立场。", "source_refs": [pulmonary]},
+                {"specialty": "thoracic_radiology", "stance": "denies", "position": "影像科立场。", "source_refs": [radiology]},
+            ],
+            "why_incompatible": "同一前提下不兼容。",
+            "decision_impact": "限制整合。",
+            "resolution_requirement": "需要澄清。",
+            "related_question_ids": ["question_1"],
+            "related_evidence_need_ids": [],
+        })
+    ]
+    with pytest.raises(ValueError, match="status must be pending_clarification"):
+        resolve_chair_references(result, bundle)
+
+
+def test_conflict_requires_directly_opposing_positions_not_two_uncertain_views():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    result = integration(bundle)
+    result.conflicts = [
+        CrossSpecialtyConflict.model_validate({
+            "conflict_id": "conflict_1",
+            "topic": "冲突主题",
+            "conflict_domain": "severity_or_trajectory",
+            "status": "unresolved",
+            "shared_claim": "当前资料足以确认影像学进展。",
+            "comparison_conditions": "基于当前同一批可比影像资料。",
+            "positions": [
+                {"specialty": "pulmonology", "stance": "affirms", "position": "呼吸科认为尚不能确认。", "source_refs": [pulmonary]},
+                {"specialty": "thoracic_radiology", "stance": "affirms", "position": "影像科认为尚不能确认。", "source_refs": [radiology]},
+            ],
+            "why_incompatible": "同一前提下不兼容。",
+            "decision_impact": "限制整合。",
+            "resolution_requirement": "需要澄清。",
+            "related_question_ids": [],
+            "related_evidence_need_ids": [],
+        })
+    ]
+    with pytest.raises(ValueError, match="requires both an affirming and a denying position"):
+        resolve_chair_references(result, bundle)
 
 
 def test_reference_resolution_accepts_verbatim_integrated_statement():
