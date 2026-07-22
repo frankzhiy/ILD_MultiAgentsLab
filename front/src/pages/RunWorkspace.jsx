@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import {
-  ApartmentOutlined, AuditOutlined, BugOutlined, DatabaseOutlined, FileSearchOutlined,
+  ApartmentOutlined, BugOutlined, DatabaseOutlined, FileSearchOutlined,
   HomeOutlined, MedicineBoxOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
   ShareAltOutlined,
 } from '@ant-design/icons'
@@ -16,7 +16,6 @@ const OverviewWorkspace = lazy(() => import('./workspaces/OverviewWorkspace').th
 const SemanticWorkspace = lazy(() => import('./workspaces/SemanticWorkspace').then((module) => ({ default: module.SemanticWorkspace })))
 const RoutingWorkspace = lazy(() => import('./workspaces/RoutingWorkspace').then((module) => ({ default: module.RoutingWorkspace })))
 const SpecialtyWorkspace = lazy(() => import('./workspaces/SpecialtyWorkspace').then((module) => ({ default: module.SpecialtyWorkspace })))
-const ChairWorkspace = lazy(() => import('./workspaces/ChairWorkspace').then((module) => ({ default: module.ChairWorkspace })))
 const ArtifactsWorkspace = lazy(() => import('./workspaces/ArtifactsWorkspace').then((module) => ({ default: module.ArtifactsWorkspace })))
 const ErrorWorkspace = lazy(() => import('./workspaces/ErrorWorkspace').then((module) => ({ default: module.ErrorWorkspace })))
 
@@ -28,7 +27,6 @@ const ITEMS = [
   ['semantic', <ApartmentOutlined />, '语义图构建'],
   ['routing', <ShareAltOutlined />, '证据分发'],
   ['specialties', <MedicineBoxOutlined />, '专科工作区'],
-  ['chair', <AuditOutlined />, '主持人汇总'],
   ['artifacts', <DatabaseOutlined />, '产物审计'],
   ['errors', <BugOutlined />, '错误与诊断'],
 ]
@@ -38,7 +36,6 @@ const WORKSPACES = {
   semantic: SemanticWorkspace,
   routing: RoutingWorkspace,
   specialties: SpecialtyWorkspace,
-  chair: ChairWorkspace,
   artifacts: ArtifactsWorkspace,
   errors: ErrorWorkspace,
 }

@@ -13,6 +13,7 @@ retry_backoff_seconds: 2
 initial_foundation_prompt: src/prompts/pulmonology/initial_foundation.md
 initial_pulmonary_assessment_prompt: src/prompts/pulmonology/initial_pulmonary_assessment.md
 initial_diagnostic_formulation_prompt: src/prompts/pulmonology/initial_diagnostic_formulation.md
+initial_reasoning_output_prompt: src/prompts/pulmonology/initial_reasoning_output.md
 discussion_evidence_mapping_prompt: src/prompts/pulmonology/discussion_evidence_mapping.md
 discussion_state_update_prompt: src/prompts/pulmonology/discussion_state_update.md
 discussion_consult_response_prompt: src/prompts/pulmonology/discussion_consult_response.md
@@ -25,6 +26,7 @@ guideline_retrieval:
     initial_foundation: 3
     initial_pulmonary_assessment: 3
     initial_diagnostic_formulation: 4
+    initial_reasoning_output: 6
     discussion_evidence_mapping: 0
     discussion_state_update: 3
     discussion_consult_response: 4
@@ -38,6 +40,7 @@ guideline_retrieval:
     initial_foundation: ILD 临床表型评估、继发病因识别和多学科诊断需要哪些病例信息
     initial_pulmonary_assessment: ILD 严重程度、肺功能、急性加重和进展性肺纤维化 PPF 应如何评价
     initial_diagnostic_formulation: ILD 诊断信度、暂定诊断和未分类 ILD 应如何定义与表达
+    initial_reasoning_output: ILD 首轮呼吸科工作诊断、鉴别证据、病程机制一致性和专科边界应如何论证
     discussion_evidence_mapping: ILD 多学科讨论中如何采用其他专科证据并处理证据冲突
     discussion_state_update: 新增多学科证据如何改变 ILD 诊断状态、进展判断和诊断信度
     discussion_consult_response: ILD 多学科会诊结论如何表达限制、信度和下一步诊断建议

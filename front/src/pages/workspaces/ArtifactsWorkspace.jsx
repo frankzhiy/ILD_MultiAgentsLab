@@ -30,7 +30,7 @@ export function ArtifactsWorkspace({ runId }) {
   const [selectedName, setSelectedName] = useState(null)
   const artifacts = (query.data || []).filter((item) => !search || item.name.toLowerCase().includes(search.toLowerCase()))
   useEffect(() => {
-    if (!selectedName && artifacts.length) setSelectedName(artifacts.find((item) => item.name.endsWith('_mdt_chair_initial.json'))?.name || artifacts[0].name)
+    if (!selectedName && artifacts.length) setSelectedName(artifacts.find((item) => /_(pulmonology|thoracic_radiology|rheumatology|pathology)_initial\.json$/.test(item.name))?.name || artifacts[0].name)
   }, [artifacts, selectedName])
   if (query.isError) return <QueryError error={query.error} retry={query.refetch} />
   const selected = query.data?.find((item) => item.name === selectedName)

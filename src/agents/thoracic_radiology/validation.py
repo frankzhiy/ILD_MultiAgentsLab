@@ -355,6 +355,14 @@ def _validate_formulation(
     del case_input
     assessments = result.task_assessments
     _require_unique([str(item.task) for item in assessments], "task assessment")
+    active = {
+        item.task for item in reconstruction.task_plan if item.activation == "active"
+    }
+    assessed = {item.task for item in assessments}
+    if missing := active - assessed:
+        raise ValueError(
+            f"Active tasks lack assessments: {sorted(str(item) for item in missing)}"
+        )
     statement_ids = {item.statement_id for item in reconstruction.reported_statements}
     for assessment in assessments:
         unknown = set(assessment.reported_statement_ids) - statement_ids

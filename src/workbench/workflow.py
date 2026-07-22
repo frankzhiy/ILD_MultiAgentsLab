@@ -10,7 +10,6 @@ from src.agents.common.specialty_input import build_specialty_case_input
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent
 from src.llm.factory import build_llm_client
 from src.llm.prompting import llm_value
-from src.reporting.html_report import render_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.utils.config import load_yaml
 from src.workbench.events import EventStore
@@ -104,18 +103,6 @@ class WorkbenchWorkflow:
         self._write(run_dir / f"{case_id}_trace.json", trace)
         timing = {"total_elapsed_seconds": round(time.perf_counter() - started, 3)}
         self._write(run_dir / f"{case_id}_timing.json", timing)
-        render_report(
-            result,
-            graph_units,
-            source_filename=input_path.name,
-            raw_text=input_text,
-            timing=timing,
-            output_path=run_dir / f"{case_id}_report.html",
-            primary_frames=primary_frames,
-            clinical_propositions=clinical_propositions,
-            proposition_validation=validation,
-            local_graphs=local_graphs,
-        )
 
     def run_specialty(
         self,
@@ -140,7 +127,6 @@ class WorkbenchWorkflow:
                 build_specialty_working_input,
             )
             from src.agents.pulmonology.agent import PulmonologyAgent
-            from src.reporting.pulmonology_report import render_pulmonology_report
 
             working = build_specialty_working_input(case)
             self._write(run_dir / f"{stem}_working_input.json", working)
@@ -151,15 +137,13 @@ class WorkbenchWorkflow:
             agent = PulmonologyAgent.from_config(
                 config_path, llm, event_callback=callback
             )
-            result, trace = agent.initial_assessment(case)
-            report = render_pulmonology_report
+            consultation = agent.initial_consult(case)
         elif specialty == MdtSpecialty.RHEUMATOLOGY.value:
             from src.agents.common.evidence_projection import (
                 build_specialty_evidence_prompt_input,
                 build_specialty_working_input,
             )
             from src.agents.rheumatology.agent import RheumatologyAgent
-            from src.reporting.rheumatology_report import render_rheumatology_report
 
             working = build_specialty_working_input(case)
             self._write(run_dir / f"{stem}_working_input.json", working)
@@ -170,15 +154,13 @@ class WorkbenchWorkflow:
             agent = RheumatologyAgent.from_config(
                 config_path, llm, event_callback=callback
             )
-            result, trace = agent.initial_assessment(case)
-            report = render_rheumatology_report
+            consultation = agent.initial_consult(case)
         elif specialty == MdtSpecialty.PATHOLOGY.value:
             from src.agents.common.evidence_projection import (
                 build_specialty_evidence_prompt_input,
                 build_specialty_working_input,
             )
             from src.agents.pathology.agent import PathologyAgent
-            from src.reporting.pathology_report import render_pathology_report
 
             working = build_specialty_working_input(case)
             self._write(run_dir / f"{stem}_working_input.json", working)
@@ -187,17 +169,13 @@ class WorkbenchWorkflow:
                 llm_value(build_specialty_evidence_prompt_input(case)),
             )
             agent = PathologyAgent.from_config(config_path, llm, event_callback=callback)
-            result, trace = agent.initial_assessment(case)
-            report = render_pathology_report
+            consultation = agent.initial_consult(case)
         elif specialty == MdtSpecialty.THORACIC_RADIOLOGY.value:
             from src.agents.thoracic_radiology.agent import ThoracicRadiologyAgent
             from src.agents.thoracic_radiology.evidence_projection import (
                 build_radiology_evidence_prompt_input,
                 build_radiology_reconstruction_prompt_input,
                 build_radiology_working_input,
-            )
-            from src.reporting.thoracic_radiology_report import (
-                render_thoracic_radiology_report,
             )
 
             working = build_radiology_working_input(case)
@@ -213,59 +191,13 @@ class WorkbenchWorkflow:
             agent = ThoracicRadiologyAgent.from_config(
                 config_path, llm, event_callback=callback
             )
-            result, trace = agent.initial_assessment(case)
-            report = render_thoracic_radiology_report
+            consultation = agent.initial_consult(case)
         else:  # pragma: no cover - enum validation guards this
             raise ValueError(f"Unsupported specialty: {specialty}")
 
-        self._write(run_dir / f"{stem}_initial.json", result)
-        self._write(run_dir / f"{stem}_initial_trace.json", trace)
-        report(result, case, run_dir / f"{stem}_initial.html")
-
-    def run_chair(
-        self,
-        run_id: str,
-        run_dir: Path,
-        case_id: str,
-        config_path: Path,
-    ) -> None:
-        self._load_env()
-        from src.agents.mdt_chair.agent import (
-            MDTChairAgent,
-            SPECIALTIES,
-            build_chair_prompt_bundle,
-            build_semantic_evidence_catalog,
-        )
-        from src.reporting.mdt_chair_report import render_mdt_chair_report
-
-        outputs = {
-            specialty: self._read(run_dir / f"{case_id}_{specialty}_initial.json")
-            for specialty in SPECIALTIES
-        }
-        input_summaries = {
-            specialty: self._read(
-                run_dir / f"{case_id}_{specialty}_input.json"
-            ).get("summary", {})
-            for specialty in SPECIALTIES
-        }
-        semantic_evidence = build_semantic_evidence_catalog(
-            self._read(run_dir / f"{case_id}_clinical_propositions.json"),
-            self._read(run_dir / f"{case_id}_local_graphs.json"),
-        )
-        bundle = build_chair_prompt_bundle(
-            case_id, outputs, input_summaries, semantic_evidence
-        )
-        self._write(run_dir / f"{case_id}_mdt_chair_prompt_input.json", bundle.prompt_input)
-        config = load_yaml(config_path)
-        agent = MDTChairAgent.from_config(
-            config_path,
-            build_llm_client(config),
-            event_callback=self._progress(run_id, "mdt_chair"),
-        )
-        result, trace = agent.synthesize(bundle)
-        self._write(run_dir / f"{case_id}_mdt_chair_initial.json", result)
-        self._write(run_dir / f"{case_id}_mdt_chair_initial_trace.json", trace)
-        render_mdt_chair_report(result, run_dir / f"{case_id}_mdt_chair_initial.html")
+        self._write(run_dir / f"{stem}_internal_state.json", consultation.internal_state)
+        self._write(run_dir / f"{stem}_initial.json", consultation.formal_output)
+        self._write(run_dir / f"{stem}_initial_trace.json", consultation.trace)
 
     def _progress(self, run_id: str, agent_id: str) -> Callable[[str, dict], None]:
         def callback(event: str, payload: dict) -> None:
@@ -299,7 +231,3 @@ class WorkbenchWorkflow:
         path.write_text(
             json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
         )
-
-    @staticmethod
-    def _read(path: Path) -> dict[str, Any]:
-        return json.loads(path.read_text(encoding="utf-8"))

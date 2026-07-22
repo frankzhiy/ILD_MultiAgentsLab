@@ -39,16 +39,12 @@ export function OverviewWorkspace({ runId, run }) {
       { id: 'semantic', position: { x: 170, y: 365 }, data: { label: 'Semantic Graphing' }, className: run?.semantic_complete ? 'flow-success' : 'flow-active' },
       { id: 'router', position: { x: 390, y: 365 }, data: { label: '证据路由' }, className: 'flow-router' },
       ...specialtyNodes.map(([id, label, y]) => ({ id, position: { x: 600, y }, data: { label }, className: run?.completed_specialties?.includes(id) ? 'flow-success' : 'flow-pending' })),
-      { id: 'chair', position: { x: 820, y: 365 }, data: { label: 'MDT 主持人' }, className: run?.chair_complete ? 'flow-success' : 'flow-pending' },
-      { id: 'report', position: { x: 1020, y: 365 }, data: { label: '可追溯报告' }, className: run?.chair_complete ? 'flow-success' : 'flow-pending' },
     ]
     const arrow = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, animated: false }
     const edges = [
       { id: 'e-input', source: 'input', target: 'semantic', ...arrow },
       { id: 'e-semantic', source: 'semantic', target: 'router', ...arrow },
       ...specialtyNodes.map(([id]) => ({ id: `e-${id}`, source: 'router', target: id, ...arrow })),
-      ...specialtyNodes.map(([id]) => ({ id: `e-${id}-chair`, source: id, target: 'chair', ...arrow })),
-      { id: 'e-report', source: 'chair', target: 'report', ...arrow },
     ]
     return { nodes, edges }
   }, [run])
@@ -57,7 +53,6 @@ export function OverviewWorkspace({ runId, run }) {
   const lifecycle = events.length ? events.map((item) => ({ color: item.type.includes('failed') || item.type.includes('error') ? 'red' : item.type.includes('completed') ? 'green' : 'blue', children: <><Text strong>{item.stage || item.agent_id || item.type}</Text><br /><Text type="secondary">{item.type}</Text></> })) : [
     { color: run?.semantic_complete ? 'green' : 'blue', children: '语义图产物' },
     { color: completed === 4 ? 'green' : 'gray', children: `专科初评 ${completed}/4` },
-    { color: run?.chair_complete ? 'green' : 'gray', children: '主持人汇总' },
   ]
   return (
     <div>

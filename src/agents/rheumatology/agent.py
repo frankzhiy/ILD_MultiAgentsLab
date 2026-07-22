@@ -7,6 +7,11 @@ from src.agents.common.evidence_projection import (
     build_specialty_evidence_prompt_input,
     build_specialty_working_input,
 )
+from src.agents.common.initial_output import SpecialtyInitialConsultResult, SpecialtyInitialOutput
+from src.agents.common.initial_output_validation import (
+    formal_evidence_schema_constraints,
+    validate_specialty_initial_output,
+)
 from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.rheumatology.models import (
@@ -31,11 +36,17 @@ from src.agents.rheumatology.validation import (
     validate_specialist_opinions,
     validate_state_update,
 )
-from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
+from src.guidelines.runtime import (
+    PROMPT_RULES,
+    GuidelineRuntime,
+    guideline_evidence_schema_constraints,
+    resolve_guideline_evidence,
+)
 from src.llm.base import LLMClient
 from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
+from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.utils.config import load_text, load_yaml, render_template
 
 
@@ -54,6 +65,11 @@ _RULE_KEYS_BY_STAGE = {
     ),
     "initial_consult_formulation": (
         "diagnostic_confidence",
+        "ctd_ild_diagnosis",
+        "ipaf",
+        "specialist_boundaries",
+    ),
+    "initial_reasoning_output": (
         "ctd_ild_diagnosis",
         "ipaf",
         "specialist_boundaries",
@@ -107,11 +123,17 @@ class RheumatologyAgent:
         retry_backoff_seconds: float = 0.0,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
         guideline_runtime: GuidelineRuntime | None = None,
+        initial_reasoning_output_prompt_path: str | Path | None = None,
     ) -> None:
         self.prompts = {
             "initial_case_reconstruction": load_text(initial_case_reconstruction_prompt_path),
             "initial_autoimmune_assessment": load_text(initial_autoimmune_assessment_prompt_path),
             "initial_consult_formulation": load_text(initial_consult_formulation_prompt_path),
+            "initial_reasoning_output": (
+                load_text(initial_reasoning_output_prompt_path)
+                if initial_reasoning_output_prompt_path
+                else ""
+            ),
             "discussion_evidence_mapping": load_text(discussion_evidence_mapping_prompt_path),
             "discussion_state_update": load_text(discussion_state_update_prompt_path),
             "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
@@ -142,6 +164,7 @@ class RheumatologyAgent:
             "initial_case_reconstruction_prompt",
             "initial_autoimmune_assessment_prompt",
             "initial_consult_formulation_prompt",
+            "initial_reasoning_output_prompt",
             "discussion_evidence_mapping_prompt",
             "discussion_state_update_prompt",
             "discussion_consult_response_prompt",
@@ -272,6 +295,27 @@ class RheumatologyAgent:
             ("discussion_consult_response", consult_trace),
         )
 
+    def initial_consult(self, case_input: SpecialtyCaseInput) -> SpecialtyInitialConsultResult:
+        internal_state, trace = self.initial_assessment(case_input)
+        formal_output, output_trace = self._generate(
+            "initial_reasoning_output",
+            SpecialtyInitialOutput,
+            {
+                "case_input": _json(build_specialty_evidence_prompt_input(case_input)),
+                "internal_state": _json(internal_state),
+                "clinical_rules": _json(self.clinical_rules),
+            },
+            lambda result: validate_specialty_initial_output(
+                result, case_input, SpecialistTarget.RHEUMATOLOGY, internal_state
+            ),
+            formal_evidence_schema_constraints(case_input),
+        )
+        return SpecialtyInitialConsultResult(
+            internal_state=internal_state,
+            formal_output=formal_output,
+            trace=_append_trace(trace, "initial_reasoning_output", output_trace),
+        )
+
     def _generate(
         self,
         stage,
@@ -285,6 +329,10 @@ class RheumatologyAgent:
             if self.guideline_runtime
             else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
         )
+        pointer_constraints = {
+            **(pointer_constraints or {}),
+            **guideline_evidence_schema_constraints(allowed_chunks),
+        }
         variables = {
             **variables,
             "clinical_rules": _json(
@@ -323,7 +371,7 @@ class RheumatologyAgent:
 
         result, trace = self.generator.generate(
             schema_model=schema_model,
-            schema_name=stage,
+            schema_name=("specialty_initial" if stage == "initial_reasoning_output" else stage),
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
@@ -345,3 +393,7 @@ def _json(value: object) -> str:
 
 def _combined_trace(*stages) -> dict:
     return {"schema_version": "rheumatology.v1", "stages": [{"stage": name, **trace} for name, trace in stages]}
+
+
+def _append_trace(trace: dict, stage: str, stage_trace: dict) -> dict:
+    return {**trace, "stages": [*trace.get("stages", []), {"stage": stage, **stage_trace}]}

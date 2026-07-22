@@ -16,7 +16,7 @@ from src.workbench.events import EventStore
 from src.workbench.workflow import WorkbenchWorkflow
 
 
-AGENTS = ("semantic_graphing", *SPECIALTIES, "mdt_chair")
+AGENTS = ("semantic_graphing", *SPECIALTIES)
 SAFE_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 
@@ -147,7 +147,7 @@ class RunOrchestrator:
                         run_id,
                         run_dir,
                         specialty,
-                        "initial_assessment",
+                        "initial_consult",
                         self.workflow.run_specialty,
                         run_id,
                         run_dir,
@@ -163,17 +163,6 @@ class RunOrchestrator:
             if failures:
                 raise RuntimeError("；".join(failures))
 
-            await self._stage(
-                run_id,
-                run_dir,
-                "mdt_chair",
-                "initial_synthesis",
-                self.workflow.run_chair,
-                run_id,
-                run_dir,
-                case_id,
-                Path(configs["mdt_chair"]),
-            )
         except asyncio.CancelledError:
             self._update_manifest(manifest_path, status="cancelled", finished_at=self._now())
             self.events.append(run_id, "run_cancelled", {}, stage="run")

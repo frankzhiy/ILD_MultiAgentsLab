@@ -32,6 +32,7 @@ from src.agents.pathology.validation import (
     validate_evidence_map,
     validate_initial_assessment,
     validate_initial_stage,
+    validate_material_plan,
     validate_specialist_opinions,
 )
 from src.llm.base import LLMResponse
@@ -437,7 +438,7 @@ def test_no_material_state_cannot_contain_pattern_findings():
             initial_stages()[1].pattern_assessments[0]
         ],
     )
-    with pytest.raises(ValueError, match="No pathology material"):
+    with pytest.raises(ValueError, match="No assessable pathology material"):
         validate_initial_assessment(state, case)
 
 
@@ -456,18 +457,6 @@ def test_initial_assessment_without_pathology_material_does_not_invent_pattern()
             review_basis="no_material",
         ),
     )
-    morphology = InitialMorphologicAssessment(
-        domain_reviews=[
-            review(domain, "not_assessable")
-            for domain in (
-                PathologyDomain.TISSUE_ARCHITECTURE,
-                PathologyDomain.PRIMARY_PATTERN,
-                PathologyDomain.COEXISTING_AND_ACUTE,
-                PathologyDomain.ETIOLOGIC_CLUES,
-                PathologyDomain.ANCILLARY_STUDIES,
-            )
-        ]
-    )
     formulation = InitialConsultFormulation(
         domain_reviews=[
             review(PathologyDomain.PATHOLOGY_FORMULATION, "not_assessable"),
@@ -480,14 +469,38 @@ def test_initial_assessment_without_pathology_material_does_not_invent_pattern()
             confidence="unknown",
             reasoning_summary="保留不可评价状态。",
         ),
+        specialist_dependencies=[
+            {
+                "specialty": "pulmonology",
+                "question": "请核实既往是否存在病理报告、玻片、蜡块或数字切片。",
+                "why_it_matters": "决定能否进入组织学模式评估。",
+                "related_evidence": [],
+            }
+        ],
+        missing_data=[
+            {
+                "gap_type": "uncertain_availability",
+                "available_information": "当前输入没有可评价病理材料。",
+                "missing_information": "既往取材记录、完整报告及可复核材料。",
+                "why_it_matters": "病理材料是组织学判断的前提。",
+                "decision_unlocked": "确认能否评价组织学模式和标本代表性。",
+                "related_evidence": [],
+            }
+        ],
     )
-    result, _ = agent(
-        [payload(reconstruction), payload(morphology), payload(formulation)]
+    with pytest.raises(ValueError, match="decision-relevant material needs"):
+        validate_material_plan(
+            formulation.model_copy(update={"missing_data": []}), reconstruction
+        )
+    result, trace = agent(
+        [payload(reconstruction), payload(formulation)]
     ).initial_assessment(case)
 
     assert result.specimens == []
     assert result.pattern_assessments == []
     assert result.pathology_formulation.primary_pattern is None
+    assert result.missing_data[0].decision_unlocked
+    assert trace["stages"][1]["programmatic"] is True
 
 
 def test_limited_specimen_rejects_high_confidence_supported_pattern():

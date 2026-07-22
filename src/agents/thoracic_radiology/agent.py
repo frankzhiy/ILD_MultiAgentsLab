@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents.common.prompt_contract import specialty_output_contract
+from src.agents.common.initial_output import SpecialtyInitialConsultResult, SpecialtyInitialOutput
+from src.agents.common.initial_output_validation import (
+    formal_evidence_schema_constraints,
+    validate_specialty_initial_output,
+)
 from src.agents.thoracic_radiology.evidence_projection import (
     RadiologyWorkingInput,
     build_radiology_evidence_prompt_input,
@@ -34,11 +39,17 @@ from src.agents.thoracic_radiology.validation import (
     validate_specialist_opinions as _validate_specialist_opinions,
     validate_update_and_consult as _validate_update_and_consult,
 )
-from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
+from src.guidelines.runtime import (
+    PROMPT_RULES,
+    GuidelineRuntime,
+    guideline_evidence_schema_constraints,
+    resolve_guideline_evidence,
+)
 from src.llm.base import LLMClient
 from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
+from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.utils.config import load_text, load_yaml, render_template
 
 
@@ -54,6 +65,12 @@ _RULE_KEYS_BY_STAGE = {
     "initial_consult_formulation": (
         "morphology",
         "diagnostic_confidence",
+        "ipf_hrct",
+        "radiologic_progression",
+        "acquisition",
+    ),
+    "initial_reasoning_output": (
+        "morphology",
         "ipf_hrct",
         "radiologic_progression",
         "acquisition",
@@ -85,12 +102,18 @@ class ThoracicRadiologyAgent:
         retry_backoff_seconds: float = 0.0,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
         guideline_runtime: GuidelineRuntime | None = None,
+        initial_reasoning_output_prompt_path: str | Path | None = None,
     ) -> None:
         self.prompts = {
             "initial_case_reconstruction": load_text(
                 initial_case_reconstruction_prompt_path
             ),
             "initial_consult_formulation": load_text(initial_consult_formulation_prompt_path),
+            "initial_reasoning_output": (
+                load_text(initial_reasoning_output_prompt_path)
+                if initial_reasoning_output_prompt_path
+                else ""
+            ),
             "discussion_evidence_mapping": load_text(
                 discussion_evidence_mapping_prompt_path
             ),
@@ -125,6 +148,7 @@ class ThoracicRadiologyAgent:
         prompt_keys = (
             "initial_case_reconstruction_prompt",
             "initial_consult_formulation_prompt",
+            "initial_reasoning_output_prompt",
             "discussion_evidence_mapping_prompt",
             "discussion_update_and_response_prompt",
         )
@@ -294,6 +318,43 @@ class ThoracicRadiologyAgent:
             ("discussion_update_and_response", update_trace),
         )
 
+    def initial_consult(
+        self, case_input: SpecialtyCaseInput
+    ) -> SpecialtyInitialConsultResult:
+        internal_state, trace = self.initial_assessment(case_input)
+        working_input = build_radiology_working_input(case_input)
+        diagnostic_evidence_ids = {
+            evidence_id
+            for unit in working_input.evidence_units
+            for statement in unit.statements
+            if statement.thoracic_imaging_eligible
+            for evidence_id in statement.evidence_ids
+        }
+        formal_output, output_trace = self._generate(
+            stage="initial_reasoning_output",
+            schema_model=SpecialtyInitialOutput,
+            variables={
+                "working_input": _json(build_radiology_evidence_prompt_input(working_input)),
+                "internal_state": _json(internal_state),
+                "clinical_rules": _json(self.clinical_rules),
+            },
+            validation=lambda result: validate_specialty_initial_output(
+                result,
+                case_input,
+                SpecialistTarget.THORACIC_RADIOLOGY,
+                internal_state,
+                diagnostic_evidence_ids,
+            ),
+            pointer_constraints=formal_evidence_schema_constraints(
+                case_input, diagnostic_evidence_ids
+            ),
+        )
+        return SpecialtyInitialConsultResult(
+            internal_state=internal_state,
+            formal_output=formal_output,
+            trace=_append_trace(trace, "initial_reasoning_output", output_trace),
+        )
+
     def _generate(
         self,
         *,
@@ -308,6 +369,10 @@ class ThoracicRadiologyAgent:
             if self.guideline_runtime
             else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
         )
+        pointer_constraints = {
+            **(pointer_constraints or {}),
+            **guideline_evidence_schema_constraints(allowed_chunks),
+        }
         variables = {
             **variables,
             "clinical_rules": _json(
@@ -347,7 +412,7 @@ class ThoracicRadiologyAgent:
 
         result, trace = self.generator.generate(
             schema_model=schema_model,
-            schema_name=stage,
+            schema_name=("specialty_initial" if stage == "initial_reasoning_output" else stage),
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
@@ -437,3 +502,7 @@ def _combined_trace(working_input: RadiologyWorkingInput, *stages) -> dict:
         "working_input_summary": working_input.summary.model_dump(mode="json"),
         "stages": [{"stage": name, **trace} for name, trace in stages],
     }
+
+
+def _append_trace(trace: dict, stage: str, stage_trace: dict) -> dict:
+    return {**trace, "stages": [*trace.get("stages", []), {"stage": stage, **stage_trace}]}

@@ -84,14 +84,11 @@ class RunCatalog:
             for specialty in SPECIALTIES
             if f"{case_id}_{specialty}_initial.json" in names
         ]
-        chair_complete = f"{case_id}_mdt_chair_initial.json" in names
         has_error = any(name.endswith("_error.json") or "failure_trace" in name for name in names)
         if manifest.get("status") in {"queued", "running", "cancelled", "failed"}:
             status = manifest["status"]
-        elif chair_complete:
-            status = "completed"
         elif len(completed_specialties) == len(SPECIALTIES):
-            status = "chair_pending"
+            status = "completed"
         elif completed_specialties:
             status = "specialists_running"
         elif semantic_complete:
@@ -107,7 +104,6 @@ class RunCatalog:
             "status": status,
             "semantic_complete": semantic_complete,
             "completed_specialties": completed_specialties,
-            "chair_complete": chair_complete,
             "has_error_artifact": has_error,
             "orchestrated": bool(manifest),
             "manifest": manifest or None,
@@ -211,33 +207,19 @@ class RunCatalog:
         results = []
         for specialty in SPECIALTIES:
             output_path = run_dir / f"{case_id}_{specialty}_initial.json"
-            trace_path = run_dir / f"{case_id}_{specialty}_initial_trace.json"
             input_path = run_dir / f"{case_id}_{specialty}_input.json"
+            output = self._json(output_path, None)
             results.append(
                 {
                     "specialty": specialty,
                     "label": SPECIALTY_LABELS[specialty],
                     "status": "completed" if output_path.exists() else "pending",
                     "input_summary": self._json(input_path, {}).get("summary", {}),
-                    "output": self._json(output_path, None),
-                    "trace": self._json(trace_path, None),
+                    "output": output,
+                    "legacy": output is not None and not self._is_formal_output(output),
                 }
             )
         return {"case_id": case_id, "results": results}
-
-    def chair(self, run_id: str) -> dict[str, Any]:
-        run_dir = self.run_dir(run_id)
-        case_id = self.case_id(run_dir)
-        output = self._json(run_dir / f"{case_id}_mdt_chair_initial.json", None)
-        trace = self._json(run_dir / f"{case_id}_mdt_chair_initial_trace.json", None)
-        prompt_input = self._json(run_dir / f"{case_id}_mdt_chair_prompt_input.json", None)
-        return {
-            "case_id": case_id,
-            "status": "completed" if output is not None else "pending",
-            "output": output,
-            "trace": trace,
-            "prompt_input": prompt_input,
-        }
 
     def artifacts(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self.run_dir(run_id)
@@ -315,6 +297,13 @@ class RunCatalog:
                 if unit.get("graph_unit_id"):
                     result[unit["graph_unit_id"]] = unit
         return result
+
+    @staticmethod
+    def _is_formal_output(value: Any) -> bool:
+        return isinstance(value, dict) and set(value) == {
+            "professional_conclusions",
+            "clinical_reasoning",
+        }
 
     @staticmethod
     def _error_agent(filename: str) -> str:

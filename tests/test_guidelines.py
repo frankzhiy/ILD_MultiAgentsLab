@@ -9,7 +9,12 @@ from src.guidelines.models import (
     GuidelineEvidencePointer,
     GuidelineSearchHit,
 )
-from src.guidelines.runtime import GuidelineRuntime, resolve_guideline_evidence
+from src.guidelines.runtime import (
+    GuidelineRuntime,
+    guideline_evidence_schema_constraints,
+    resolve_guideline_evidence,
+)
+from src.llm.structured import json_schema_response_format
 from src.reporting.specialty_report_common import (
     render_guideline_audit,
     render_reasoning_audit,
@@ -135,6 +140,29 @@ def test_unretrieved_citation_is_rejected():
     )
     with pytest.raises(ValueError, match="was not retrieved"):
         resolve_guideline_evidence(pointer, {})
+
+
+def test_retrieved_chunk_ids_are_closed_in_structured_output_schema():
+    model = ClinicalAssessmentItem
+    allowed = {chunk().chunk_id: chunk()}
+    constraints = guideline_evidence_schema_constraints(allowed)
+    schema = json_schema_response_format(
+        model,
+        "clinical_assessment",
+        pointer_field_constraints=constraints,
+    )["json_schema"]["schema"]
+    guideline_items = schema["properties"]["guideline_evidence"]["items"]
+
+    assert guideline_items["properties"]["chunk_id"]["enum"] == [
+        "guide:p001:c001"
+    ]
+
+    empty_schema = json_schema_response_format(
+        model,
+        "clinical_assessment",
+        pointer_field_constraints=guideline_evidence_schema_constraints({}),
+    )["json_schema"]["schema"]
+    assert empty_schema["properties"]["guideline_evidence"]["maxItems"] == 0
 
 
 def test_shared_report_renders_exact_guideline_location(tmp_path):

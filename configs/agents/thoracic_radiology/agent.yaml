@@ -13,6 +13,7 @@ max_attempts: 3
 retry_backoff_seconds: 3
 initial_case_reconstruction_prompt: src/prompts/thoracic_radiology/initial_case_reconstruction.md
 initial_consult_formulation_prompt: src/prompts/thoracic_radiology/initial_consult_formulation.md
+initial_reasoning_output_prompt: src/prompts/thoracic_radiology/initial_reasoning_output.md
 discussion_evidence_mapping_prompt: src/prompts/thoracic_radiology/discussion_evidence_mapping.md
 discussion_update_and_response_prompt: src/prompts/thoracic_radiology/discussion_update_and_response.md
 
@@ -23,6 +24,7 @@ guideline_retrieval:
   limits:
     initial_case_reconstruction: 2
     initial_consult_formulation: 4
+    initial_reasoning_output: 6
     discussion_evidence_mapping: 0
     discussion_update_and_response: 4
   scope:
@@ -32,6 +34,7 @@ guideline_retrieval:
   queries:
     initial_case_reconstruction: ILD 影像会诊如何评价检查来源、HRCT 技术质量、可评价性和比较检查
     initial_consult_formulation: ILD 影像表型、形态模式、UIP 分类、急性叠加和纵向进展如何解释
+    initial_reasoning_output: ILD 影像问题、形态候选、急性叠加、纵向变化和疾病关联边界应如何论证
     discussion_evidence_mapping: ILD 多学科讨论中影像证据如何与临床和病理意见映射并处理冲突
     discussion_update_and_response: 新增影像描述和专科意见如何改变影像模式、进展判断及诊断信度
 

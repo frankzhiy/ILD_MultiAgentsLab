@@ -19,17 +19,26 @@ def test_workbench_exposes_real_run_and_semantic_projection():
     assert first["local_graph"]["nodes"]
 
 
-def test_workbench_exposes_unique_unit_routing_and_chair_citations():
+def test_workbench_exposes_unique_unit_routing_and_marks_legacy_specialty_outputs():
     client = TestClient(app)
     routing = client.get(f"/api/runs/{RUN_ID}/routing").json()
     assert len(routing["specialties"]) == 4
     assert routing["summary"]["unit_count"] == len(routing["units"])
     assert all(unit["mdt_specialty"] for unit in routing["units"])
 
-    chair = client.get(f"/api/runs/{RUN_ID}/chair").json()
-    conclusion = chair["output"]["specialty_summaries"][0]["core_conclusions"][0]
-    assert conclusion["source_citations"]
-    assert conclusion["case_evidence"]
+    specialties = client.get(f"/api/runs/{RUN_ID}/specialties").json()["results"]
+    assert len(specialties) == 4
+    assert all(item["legacy"] for item in specialties)
+    assert all("trace" not in item and "internal_state" not in item for item in specialties)
+
+
+def test_workbench_has_no_active_chair_endpoint_or_model():
+    client = TestClient(app)
+
+    assert client.get(f"/api/runs/{RUN_ID}/chair").status_code == 404
+    assert "mdt_chair" not in {
+        item["agent_id"] for item in client.get("/api/models").json()["agents"]
+    }
 
 
 def test_workbench_rejects_path_traversal():

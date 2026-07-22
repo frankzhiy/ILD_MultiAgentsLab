@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
+from src.agents.thoracic_radiology import validation as radiology_validation
 from src.agents.thoracic_radiology.agent import (
     ThoracicRadiologyAgent,
     validate_initial_assessment,
@@ -41,6 +42,7 @@ from src.agents.thoracic_radiology.validation import (
     validate_update_and_consult,
 )
 from src.llm.base import LLMResponse
+from src.llm.structured import StructuredLLMGenerator
 from src.reporting.thoracic_radiology_report import render_thoracic_radiology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 
@@ -401,6 +403,58 @@ def test_initial_assessment_runs_two_problem_oriented_stages():
     resolved = result.reconstruction.reported_statements[0].evidence[0]
     assert resolved.quote == "双肺间质增粗纹理走形杂乱"
     assert resolved.node_ids == ["seg_003_gu_003::prop_006"]
+
+
+def test_missing_active_task_assessment_retries_formulation(monkeypatch):
+    reconstruction = reconstruction_0714()
+    complete = formulation_0714()
+    incomplete = complete.model_copy(deep=True)
+    incomplete.task_assessments = [
+        item
+        for item in incomplete.task_assessments
+        if item.task != RadiologyTask.SOURCE_RECONCILIATION
+    ]
+    eligible = {
+        (pointer.graph_unit_id, proposition_id)
+        for item in complete.task_assessments
+        for pointer in [*item.supporting_evidence, *item.conflicting_evidence]
+        for proposition_id in pointer.proposition_ids
+    }
+
+    class WorkingInput:
+        @staticmethod
+        def eligible_statement_keys():
+            return eligible
+
+    def validate(value):
+        return radiology_validation.validate_initial_formulation(
+            value, reconstruction, None, WorkingInput()
+        )
+
+    monkeypatch.setattr(radiology_validation, "resolve_proposition_pointers", lambda *_: None)
+    llm = FakeLLM([llm_payload(incomplete), llm_payload(complete)])
+    generator = StructuredLLMGenerator(
+        llm,
+        temperature=0.0,
+        max_tokens=2000,
+        max_attempts=2,
+    )
+
+    result, trace = generator.generate(
+        schema_model=InitialConsultFormulation,
+        schema_name="initial_consult_formulation",
+        system_prompt="test",
+        user_prompt="test",
+        extra_validation=validate,
+    )
+
+    assert RadiologyTask.SOURCE_RECONCILIATION in {
+        item.task for item in result.task_assessments
+    }
+    assert len(trace["attempts"]) == 2
+    assert trace["attempts"][0]["validated"] is False
+    assert "source_reconciliation" in trace["attempts"][0]["validation_error"]
+    assert trace["attempts"][1]["validated"] is True
 
 
 def test_legacy_initial_can_enter_v2_discussion_without_old_route_errors():

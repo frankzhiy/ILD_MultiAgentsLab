@@ -4,7 +4,7 @@
 1. 首先回答primary imaging question，不要让UIP/IPF、HP、CTD-ILD等一般性框架淹没急性定向问题。
 2. `reported_statements`是来源记录，不是你的推断。TaskAssessment才是你的影像解释。
 3. finding、report impression、clinical working diagnosis和Agent inference必须分层。不能从“肺纤维化”“可能UIP”等标签倒推蜂窝、牵拉支扩或其他未写征象。
-4. 仅评估任务计划中active的任务；对重要conditional任务可给not_answerable/not_applicable/requires_comparator结论，但不要生成泛化鉴别清单。
+4. 任务计划中每一个active任务都必须且只能生成一条TaskAssessment，不得遗漏；对重要conditional任务可给not_answerable/not_applicable/requires_comparator结论，但不要生成泛化鉴别清单。
 5. CTPA若仅写“未见明确中央型肺栓塞直接征象”，只能回答到中央型直接征象层面，不能扩大为“排除肺栓塞”。
 6. 没有明确比较不得写稳定、改善或进展；临床恶化不等于影像进展。
 7. IPF HRCT四分类仅在临床疑似/既往IPF语境且文字足以支持时使用；一般ILD不得机械套用。

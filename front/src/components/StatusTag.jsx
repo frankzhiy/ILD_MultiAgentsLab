@@ -2,7 +2,6 @@ import { Tag } from 'antd'
 
 const STATUS = {
   completed: ['已完成', 'success'],
-  chair_pending: ['待主持人汇总', 'processing'],
   specialists_running: ['专科运行中', 'processing'],
   routing_pending: ['待分发', 'warning'],
   semantic_running: ['语义处理中', 'processing'],

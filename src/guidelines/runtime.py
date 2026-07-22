@@ -115,6 +115,14 @@ def resolve_guideline_evidence(value: object, allowed: dict[str, GuidelineChunk]
     return list(dict.fromkeys(used))
 
 
+def guideline_evidence_schema_constraints(
+    allowed: dict[str, GuidelineChunk],
+) -> dict[str, list[dict[str, set[str]]]]:
+    """Restrict every guideline pointer to chunks retrieved for this stage."""
+
+    return {"guideline_evidence": [{"chunk_id": set(allowed)}]}
+
+
 def _iter_pointers(value: object) -> Iterator[GuidelineEvidencePointer]:
     if isinstance(value, GuidelineEvidencePointer):
         yield value

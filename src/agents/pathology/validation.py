@@ -22,9 +22,18 @@ from src.agents.pathology.models import (
     PathologyDiscussionInput,
     PathologyDiscussionResponse,
     PathologyInitialAssessment,
+    InitialConsultFormulation,
+    InitialSpecimenReconstruction,
 )
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
+
+
+_NONASSESSABLE_MATERIAL = {
+    "no_pathology_material",
+    "pathology_mentioned_without_report",
+    "uncertain_availability",
+}
 
 
 def require_pathology_input(case_input: SpecialtyCaseInput) -> None:
@@ -75,6 +84,32 @@ def validate_initial_stage(
     _validate_stage_items(result, case_input, {})
     _validate_material_consistency(result)
     del clinical_rules
+    return result
+
+
+def validate_material_plan(
+    result: InitialConsultFormulation,
+    reconstruction: InitialSpecimenReconstruction,
+) -> InitialConsultFormulation:
+    source = reconstruction.source_assessment
+    if source is None or source.material_status not in _NONASSESSABLE_MATERIAL:
+        return result
+    if (
+        result.pathology_formulation is None
+        or result.pathology_formulation.classification_status
+        != "no_pathology_material"
+    ):
+        raise ValueError(
+            "No assessable pathology material requires no_pathology_material formulation"
+        )
+    if not result.missing_data:
+        raise ValueError(
+            "No assessable pathology material requires decision-relevant material needs"
+        )
+    if not result.specialist_dependencies:
+        raise ValueError(
+            "No assessable pathology material requires a material-recovery dependency"
+        )
     return result
 
 
@@ -196,11 +231,30 @@ def _validate_material_consistency(value) -> None:
     ancillary = getattr(value, "ancillary_studies", [])
     formulation = getattr(value, "pathology_formulation", None)
 
-    no_material = source is not None and source.material_status == "no_pathology_material"
+    no_material = (
+        source is not None and source.material_status in _NONASSESSABLE_MATERIAL
+    )
     if no_material and (specimens or patterns or features or associations or ancillary):
-        raise ValueError("No pathology material cannot produce specimen or morphologic findings")
-    if no_material and formulation and formulation.classification_status != "no_pathology_material":
-        raise ValueError("No pathology material requires no_pathology_material formulation")
+        raise ValueError(
+            "No assessable pathology material cannot produce specimen or morphologic findings"
+        )
+    if (
+        no_material
+        and formulation
+        and formulation.classification_status != "no_pathology_material"
+    ):
+        raise ValueError(
+            "No assessable pathology material requires no_pathology_material formulation"
+        )
+    if no_material and "missing_data" in type(value).model_fields:
+        if not getattr(value, "missing_data", []):
+            raise ValueError(
+                "No assessable pathology material requires decision-relevant material needs"
+            )
+        if not getattr(value, "specialist_dependencies", []):
+            raise ValueError(
+                "No assessable pathology material requires a material-recovery dependency"
+            )
     owns_specimens = "specimens" in type(value).model_fields
     if owns_specimens and patterns and not specimens:
         raise ValueError("Histopathologic pattern assessment requires at least one specimen record")

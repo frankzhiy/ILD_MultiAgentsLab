@@ -13,6 +13,7 @@ retry_backoff_seconds: 2
 initial_case_reconstruction_prompt: src/prompts/rheumatology/initial_case_reconstruction.md
 initial_autoimmune_assessment_prompt: src/prompts/rheumatology/initial_autoimmune_assessment.md
 initial_consult_formulation_prompt: src/prompts/rheumatology/initial_consult_formulation.md
+initial_reasoning_output_prompt: src/prompts/rheumatology/initial_reasoning_output.md
 discussion_evidence_mapping_prompt: src/prompts/rheumatology/discussion_evidence_mapping.md
 discussion_state_update_prompt: src/prompts/rheumatology/discussion_state_update.md
 discussion_consult_response_prompt: src/prompts/rheumatology/discussion_consult_response.md
@@ -25,6 +26,7 @@ guideline_retrieval:
     initial_case_reconstruction: 2
     initial_autoimmune_assessment: 4
     initial_consult_formulation: 4
+    initial_reasoning_output: 6
     discussion_evidence_mapping: 0
     discussion_state_update: 3
     discussion_consult_response: 4
@@ -38,6 +40,7 @@ guideline_retrieval:
     initial_case_reconstruction: ILD 患者风湿免疫评估应系统询问和检查哪些肺外自身免疫表现
     initial_autoimmune_assessment: 自身抗体如何结合临床表型解释并形成 CTD、未分化状态或 IPAF 分类判断
     initial_consult_formulation: CTD 与 ILD 应如何分别诊断和进行归因并排除感染药物暴露肿瘤及心脏病
+    initial_reasoning_output: 风湿病工作诊断、血清学表型匹配、ILD 归因及机制时间一致性应如何论证
     discussion_evidence_mapping: 风湿免疫科如何采用影像呼吸病理意见并处理 CTD-ILD 归因冲突
     discussion_state_update: 新增多学科证据如何改变风湿病诊断状态、ILD 归因、活动度和风险分层
     discussion_consult_response: 风湿免疫会诊结论如何回答主席问题并表达信度限制和监测建议

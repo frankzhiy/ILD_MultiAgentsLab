@@ -32,11 +32,11 @@ export function RunListPage() {
       </Header>
       <Content className="page-content">
         <div className="page-heading">
-          <div><Text className="eyebrow">RESEARCH RUNS</Text><Title level={2}>运行与复现实验</Title><Text type="secondary">从病例输入到主持人汇总，保留每一次数据流转、证据定位与模型配置。</Text></div>
+          <div><Text className="eyebrow">RESEARCH RUNS</Text><Title level={2}>运行与复现实验</Title><Text type="secondary">从病例输入到四专科首轮评估，保留每一次数据流转、证据定位与模型配置。</Text></div>
         </div>
         <Row gutter={16} className="metric-row">
           <Col span={8}><Card><Statistic title="已发现运行" value={runs.length} prefix={<ExperimentOutlined />} /></Card></Col>
-          <Col span={8}><Card><Statistic title="完整 MDT 报告" value={completed} /></Card></Col>
+          <Col span={8}><Card><Statistic title="已完成运行" value={completed} /></Card></Col>
           <Col span={8}><Card><Statistic title="当前可用病例" value={cases.length} /></Card></Col>
         </Row>
         <Card className="table-card" title="实验记录" extra={<Space><Text type="secondary">本地科研数据</Text></Space>}>

@@ -13,6 +13,7 @@ retry_backoff_seconds: 2
 initial_specimen_reconstruction_prompt: src/prompts/pathology/initial_specimen_reconstruction.md
 initial_morphologic_assessment_prompt: src/prompts/pathology/initial_morphologic_assessment.md
 initial_consult_formulation_prompt: src/prompts/pathology/initial_consult_formulation.md
+initial_reasoning_output_prompt: src/prompts/pathology/initial_reasoning_output.md
 discussion_evidence_mapping_prompt: src/prompts/pathology/discussion_evidence_mapping.md
 discussion_state_update_prompt: src/prompts/pathology/discussion_state_update.md
 discussion_consult_response_prompt: src/prompts/pathology/discussion_consult_response.md
@@ -25,6 +26,7 @@ guideline_retrieval:
     initial_specimen_reconstruction: 3
     initial_morphologic_assessment: 6
     initial_consult_formulation: 4
+    initial_reasoning_output: 6
     discussion_evidence_mapping: 0
     discussion_state_update: 4
     discussion_consult_response: 4
@@ -39,6 +41,7 @@ guideline_retrieval:
     initial_specimen_reconstruction: ILD 肺活检标本类型、取材代表性、标本充分性和采样误差应如何评价
     initial_morphologic_assessment: ILD 组织病理如何区分 UIP NSIP BIP DAD PPFE LIP OP RB-ILD AMP 及联合模式
     initial_consult_formulation: 病理模式、疾病诊断、诊断信度、不能分类 ILD 和追加组织检查应如何表达
+    initial_reasoning_output: ILD 病理材料代表性、组织学候选模式、病因提示与专业边界应如何论证
     discussion_evidence_mapping: ILD 多学科讨论中病理如何映射临床影像风湿意见并保留冲突
     discussion_state_update: 新增多学科证据如何改变病理标本代表性、病因提示和模式信度
     discussion_consult_response: ILD 病理会诊如何回答主席问题并表达模式病因提示限制和下一步诊断建议

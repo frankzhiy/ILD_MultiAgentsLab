@@ -73,7 +73,7 @@ def get_case(case_id: str) -> dict[str, str]:
 
 @app.get("/api/models")
 def models() -> dict:
-    agents = ["semantic_graphing", *SPECIALTIES, "mdt_chair"]
+    agents = ["semantic_graphing", *SPECIALTIES]
     values = []
     for agent_id in agents:
         path = ROOT / "configs/agents" / agent_id / "agent.yaml"
@@ -138,14 +138,6 @@ def routing(run_id: str) -> dict:
 def specialties(run_id: str) -> dict:
     try:
         return catalog.specialties(run_id)
-    except (FileNotFoundError, ValueError) as error:
-        raise not_found(FileNotFoundError(str(error))) from error
-
-
-@app.get("/api/runs/{run_id}/chair")
-def chair(run_id: str) -> dict:
-    try:
-        return catalog.chair(run_id)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
 

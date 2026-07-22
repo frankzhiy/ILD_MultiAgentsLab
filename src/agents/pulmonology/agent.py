@@ -7,6 +7,14 @@ from src.agents.common.evidence_projection import (
     build_specialty_evidence_prompt_input,
     build_specialty_working_input,
 )
+from src.agents.common.initial_output import (
+    SpecialtyInitialConsultResult,
+    SpecialtyInitialOutput,
+)
+from src.agents.common.initial_output_validation import (
+    formal_evidence_schema_constraints,
+    validate_specialty_initial_output,
+)
 from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.pulmonology.models import (
@@ -30,11 +38,17 @@ from src.agents.pulmonology.validation import (
     validate_specialist_opinions as _validate_specialist_opinions,
     validate_state_update as _validate_state_update,
 )
-from src.guidelines.runtime import GuidelineRuntime, PROMPT_RULES, resolve_guideline_evidence
+from src.guidelines.runtime import (
+    PROMPT_RULES,
+    GuidelineRuntime,
+    guideline_evidence_schema_constraints,
+    resolve_guideline_evidence,
+)
 from src.llm.base import LLMClient
 from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
+from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.utils.config import load_text, load_yaml, render_template
 
 
@@ -48,6 +62,7 @@ _RULE_KEYS_BY_STAGE = {
     "initial_foundation": (),
     "initial_pulmonary_assessment": ("ppf",),
     "initial_diagnostic_formulation": ("diagnostic_confidence", "ppf"),
+    "initial_reasoning_output": ("ppf",),
     "discussion_evidence_mapping": (),
     "discussion_state_update": ("diagnostic_confidence", "ppf"),
     "discussion_consult_response": ("diagnostic_confidence", "ppf"),
@@ -83,11 +98,17 @@ class PulmonologyAgent:
         retry_backoff_seconds: float = 0.0,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
         guideline_runtime: GuidelineRuntime | None = None,
+        initial_reasoning_output_prompt_path: str | Path | None = None,
     ) -> None:
         self.prompts = {
             "initial_foundation": load_text(initial_foundation_prompt_path),
             "initial_pulmonary_assessment": load_text(initial_pulmonary_assessment_prompt_path),
             "initial_diagnostic_formulation": load_text(initial_diagnostic_formulation_prompt_path),
+            "initial_reasoning_output": (
+                load_text(initial_reasoning_output_prompt_path)
+                if initial_reasoning_output_prompt_path
+                else ""
+            ),
             "discussion_evidence_mapping": load_text(discussion_evidence_mapping_prompt_path),
             "discussion_state_update": load_text(discussion_state_update_prompt_path),
             "discussion_consult_response": load_text(discussion_consult_response_prompt_path),
@@ -120,6 +141,7 @@ class PulmonologyAgent:
             "initial_foundation_prompt",
             "initial_pulmonary_assessment_prompt",
             "initial_diagnostic_formulation_prompt",
+            "initial_reasoning_output_prompt",
             "discussion_evidence_mapping_prompt",
             "discussion_state_update_prompt",
             "discussion_consult_response_prompt",
@@ -302,6 +324,30 @@ class PulmonologyAgent:
             ("discussion_consult_response", consult_trace),
         )
 
+    def initial_consult(
+        self,
+        case_input: SpecialtyCaseInput,
+    ) -> SpecialtyInitialConsultResult:
+        internal_state, trace = self.initial_assessment(case_input)
+        formal_output, output_trace = self._generate(
+            stage="initial_reasoning_output",
+            schema_model=SpecialtyInitialOutput,
+            variables={
+                "case_input": _json(build_specialty_evidence_prompt_input(case_input)),
+                "internal_state": _json(internal_state),
+                "clinical_rules": _json(self.clinical_rules),
+            },
+            validation=lambda result: validate_specialty_initial_output(
+                result, case_input, SpecialistTarget.PULMONOLOGY, internal_state
+            ),
+            pointer_constraints=formal_evidence_schema_constraints(case_input),
+        )
+        return SpecialtyInitialConsultResult(
+            internal_state=internal_state,
+            formal_output=formal_output,
+            trace=_append_trace(trace, "initial_reasoning_output", output_trace),
+        )
+
     def _generate(
         self,
         *,
@@ -316,6 +362,10 @@ class PulmonologyAgent:
             if self.guideline_runtime
             else ("[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []})
         )
+        pointer_constraints = {
+            **(pointer_constraints or {}),
+            **guideline_evidence_schema_constraints(allowed_chunks),
+        }
         variables = {
             **variables,
             "clinical_rules": _json(
@@ -357,7 +407,7 @@ class PulmonologyAgent:
 
         result, trace = self.generator.generate(
             schema_model=schema_model,
-            schema_name=stage,
+            schema_name=("specialty_initial" if stage == "initial_reasoning_output" else stage),
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
@@ -382,3 +432,7 @@ def _combined_trace(*stages) -> dict:
         "schema_version": "pulmonology.v2",
         "stages": [{"stage": name, **trace} for name, trace in stages],
     }
+
+
+def _append_trace(trace: dict, stage: str, stage_trace: dict) -> dict:
+    return {**trace, "stages": [*trace.get("stages", []), {"stage": stage, **stage_trace}]}
