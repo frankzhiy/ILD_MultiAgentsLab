@@ -30,10 +30,18 @@ def append_round_responses(
                 "background": [],
             }
             for use in answer.evidence_uses:
-                evidence[use.effect].extend(
-                    {"evidence_ids": [evidence_id]}
-                    for evidence_id in use.evidence_ids
-                )
+                evidence[use.effect].append({
+                    "segment_id": use.segment_id,
+                    "graph_unit_id": use.graph_unit_id,
+                    "evidence_ids": use.evidence_ids,
+                    "proposition_ids": use.proposition_ids,
+                    "node_ids": [
+                        node.get("node_id")
+                        for node in use.graph_nodes
+                        if node.get("node_id")
+                    ],
+                    "quote": use.quote,
+                })
             status = (
                 "not_assessable"
                 if answer.answerability == "not_assessable"
@@ -73,6 +81,14 @@ def append_round_responses(
                         else []
                     ),
                 }
+            )
+            updated[response.specialty]["professional_conclusions"][
+                "interspecialty_questions"
+            ].extend(
+                item.model_dump(mode="json") for item in answer.new_questions
+            )
+            updated[response.specialty]["professional_conclusions"]["evidence_gaps"].extend(
+                item.model_dump(mode="json") for item in answer.evidence_gaps
             )
     return updated
 
@@ -154,7 +170,9 @@ def reconcile_discussion_references(
     )
     matched: dict[int, int] = {}
     used_candidates: set[int] = set()
-    for _, old_index, candidate_index in reversed(pairs):
+    for score, old_index, candidate_index in reversed(pairs):
+        if score < 0.6:
+            continue
         if old_index not in matched and candidate_index not in used_candidates:
             matched[old_index] = candidate_index
             used_candidates.add(candidate_index)
@@ -162,15 +180,24 @@ def reconcile_discussion_references(
     questions = []
     for old_index, old in enumerate(active_previous):
         question = deepcopy(candidates[matched[old_index]]) if old_index in matched else deepcopy(old)
+        question.question = old.question
         question.source_refs = rebase(old.source_refs)
-        question.related_evidence_need_source_refs = rebase(
-            old.related_evidence_need_source_refs
-        )
+        question.related_evidence_need_source_refs = list(dict.fromkeys(
+            rebase(old.related_evidence_need_source_refs)
+            + list(question.related_evidence_need_source_refs)
+        ))
+        question.question_id = old.question_id
+        question.source_citations = []
+        question.evidence = ChairEvidenceBundle()
+        question.guideline_evidence = []
         prior_answers = []
-        for answer in old.answers:
-            answer = deepcopy(answer)
-            answer.source_refs = rebase(answer.source_refs)
-            prior_answers.append(answer)
+        for prior in old.answers:
+            prior = deepcopy(prior)
+            prior.source_refs = rebase(prior.source_refs)
+            prior.source_citations = []
+            prior.evidence = ChairEvidenceBundle()
+            prior.guideline_evidence = []
+            prior_answers.append(prior)
         round_answers = [
             QuestionAnswer(
                 source_refs=[source_ref],
@@ -187,13 +214,55 @@ def reconcile_discussion_references(
         ]
         question.answers = prior_answers + round_answers
         questions.append(question)
+    questions.extend(
+        deepcopy(candidate)
+        for index, candidate in enumerate(candidates)
+        if index not in used_candidates
+    )
     result.questions = questions
 
+    candidates = list(result.evidence_needs)
+    used_candidates = set()
     evidence_needs = []
-    for need in previous.evidence_needs:
-        need = deepcopy(need)
-        need.source_refs = rebase(need.source_refs)
+    for old in previous.evidence_needs:
+        old_refs = rebase(old.source_refs)
+        ranked = sorted(
+            (
+                (
+                    bool(set(old_refs).intersection(candidate.source_refs)),
+                    SequenceMatcher(
+                        None,
+                        old.required_information,
+                        candidate.required_information,
+                    ).ratio(),
+                    index,
+                )
+                for index, candidate in enumerate(candidates)
+                if index not in used_candidates
+            ),
+            reverse=True,
+        )
+        matched_index = None
+        if ranked and (ranked[0][0] or ranked[0][1] >= 0.85):
+            matched_index = ranked[0][2]
+        need = (
+            deepcopy(candidates[matched_index])
+            if matched_index is not None
+            else deepcopy(old)
+        )
+        if matched_index is not None:
+            used_candidates.add(matched_index)
+        need.need_id = old.need_id
+        need.source_refs = list(dict.fromkeys(old_refs + list(need.source_refs)))
+        need.source_citations = []
+        need.evidence = ChairEvidenceBundle()
+        need.guideline_evidence = []
         evidence_needs.append(need)
+    evidence_needs.extend(
+        deepcopy(candidate)
+        for index, candidate in enumerate(candidates)
+        if index not in used_candidates
+    )
     result.evidence_needs = evidence_needs
     return result
 
@@ -209,28 +278,28 @@ def stabilize_integration_ids(
         previous.integrated_conclusions,
         "conclusion_id",
         "IC",
-        lambda item: frozenset(item.source_refs),
+        _citation_key,
     )
     _stabilize(
         result.assessment_boundaries,
         previous.assessment_boundaries,
         "boundary_id",
         "B",
-        lambda item: frozenset(item.source_refs),
+        _citation_key,
     )
     _stabilize(
         result.questions,
         previous.questions,
         "question_id",
         "Q",
-        lambda item: frozenset(item.source_refs),
+        _citation_key,
     )
     _stabilize(
         result.evidence_needs,
         previous.evidence_needs,
         "need_id",
         "EN",
-        lambda item: frozenset(item.source_refs),
+        _citation_key,
     )
     _stabilize(
         result.conflicts,
@@ -238,11 +307,25 @@ def stabilize_integration_ids(
         "conflict_id",
         "CF",
         lambda item: frozenset(
-            ref for position in item.positions for ref in position.source_refs
+            identity
+            for position in item.positions
+            for identity in _citation_key(position)
         ),
     )
     _relink(result)
     return result
+
+
+def _citation_key(item) -> frozenset[tuple[str, str, str, str]]:
+    return frozenset(
+        (
+            citation.specialty,
+            citation.source_type,
+            citation.source_path,
+            citation.quote,
+        )
+        for citation in item.source_citations
+    )
 
 
 def move_stalled_issues_to_boundaries(

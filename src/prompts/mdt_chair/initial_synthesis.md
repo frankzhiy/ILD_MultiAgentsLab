@@ -28,7 +28,9 @@
 - 只输出台账中 `route=question` 或 `mixed` 的解释/澄清部分；纯资料需求不得留在问题板块。
 - `source_refs` 只引用原生问题。每条 `answer` 只能概括已有 `native_conclusion` 对该问题的直接回答、部分回答或资料边界回应，并在 `relation` 中如实区分。
 - `response_status`、提出专科、目标专科、已回应专科和仍待回答专科由程序回填。
-- `resolution_status` 独立判断问题是否已解决：有回应不必然等于已解决；资料边界回应通常应为 `blocked_by_evidence` 或仍未解决。不要同时写“已解决”与“仍待同一专科回答”。
+- `resolution_status` 判断原始问题是否已经得到专业回答，而不是判断某个疾病命题是否被肯定。明确回答“不能确认，但现有材料可以确认到某一程度”可以是 `resolved`。
+- 只有现有材料下无法形成任何有意义的专业判断时才使用 `blocked_by_evidence`。问题已得到有边界的回答时，即使关联证据需求仍未满足，也不要继续标为待同一专科回答。
+- 会中回答产生的新问题必须是新的医学判断点、可由其他专科基于现有材料回答，并保留提出它的 `native_question` 来源。不得重复或改写原问题，不得把限制条件和缺失资料包装为新问题。
 - 与资料需求有关时，在 `related_evidence_need_source_refs` 填入原始需求来源，程序会回填关联 ID。
 
 五、`evidence_needs`：决策相关证据缺口
@@ -36,6 +38,7 @@
 - `source_refs` 可引用形成需求的 `native_question / evidence_gap`，以及台账中明确列为覆盖资料的 `native_conclusion`。
 - `required_information`、`available_information`、`remaining_information` 分别说明所需、已有和仍缺资料。是否满足按实际资料覆盖判断，不能因为某科引用或回应过就视为满足。
 - `raised_by`、`provided_by` 由程序按来源类型回填；只有确实被选作覆盖资料的专科结论才计入 `provided_by`。
+- 会中回答提出的新资料需求与既有需求按医学含义合并。证据需求可以继续保持 `missing`，但不得因此把已经回答的问题重新派发。
 
 只返回符合下列 JSON Schema 的 JSON，不使用 Markdown，不添加额外字段：
 {{ output_schema }}

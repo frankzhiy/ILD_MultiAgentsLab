@@ -66,6 +66,15 @@ function LocalGraph({ unit, node, onNode }) {
     cyRef.current = cy
     return () => { cy.destroy(); cyRef.current = null }
   }, [graph, onNode])
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy || !node?.node_id) return
+    const selectedNode = cy.getElementById(node.node_id)
+    if (!selectedNode.length) return
+    cy.elements().addClass('faded').removeClass('focused')
+    selectedNode.closedNeighborhood().removeClass('faded').addClass('focused')
+    cy.animate({ fit: { eles: selectedNode.closedNeighborhood(), padding: 48 }, duration: 250 })
+  }, [node?.node_id])
   if (!graph || graph.build_status !== 'built') return <Empty description={graph?.build_issues?.[0]?.message || '当前单元没有可用的 Local Graph'} />
   return <div className="local-graph-view"><div className="graph-toolbar"><Space><Text strong>Local evidence graph</Text><Text type="secondary">{graph.nodes.length} nodes · {graph.edges.length} relations</Text></Space><Space><Button size="small" onClick={fit}>适应画布</Button><Button size="small" icon={<ReloadOutlined />} onClick={reset}>重置</Button></Space></div><div className="graph-reader"><div className="cytoscape-canvas" ref={container} /><GraphDetail node={node} unit={unit} /></div><div className="graph-legend"><span>● Graph unit</span><span>◆ Event</span><span>● Proposition</span><span>▭ Modifier</span><span>● Source actor</span></div></div>
 }
@@ -93,6 +102,11 @@ export function SemanticWorkspace({ runId }) {
   const filtered = units.filter((item) => !search || `${item.graph_unit_id} ${item.text} ${item.source_type} ${item.mdt_specialty?.join(' ')}`.toLowerCase().includes(search.toLowerCase()))
   const selectedId = params.get('unit') || units[0]?.graph_unit_id
   const selected = units.find((item) => item.graph_unit_id === selectedId) || units[0]
+  const selectedNodeId = params.get('node')
+  useEffect(() => {
+    if (!selectedNodeId || !selected?.local_graph?.nodes) return
+    setNode(selected.local_graph.nodes.find((item) => item.node_id === selectedNodeId) || null)
+  }, [selected?.graph_unit_id, selectedNodeId])
   const selectUnit = (unit) => { setNode(null); setParams({ unit: unit.graph_unit_id }) }
   if (query.isLoading) return <div className="center-spin"><Spin size="large" /></div>
   if (query.isError) return <QueryError error={query.error} retry={query.refetch} />

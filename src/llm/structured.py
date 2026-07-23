@@ -28,12 +28,15 @@ def json_schema_response_format(
     name: str,
     *,
     pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
+    string_field_constraints: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict:
     schema = model.model_json_schema()
     _remove_program_computed_offsets(schema)
     _prepare_strict_schema(schema)
     if pointer_field_constraints:
         _apply_pointer_field_constraints(schema, pointer_field_constraints)
+    if string_field_constraints:
+        _apply_string_field_constraints(schema, string_field_constraints)
     return {
         "type": "json_schema",
         "json_schema": {
@@ -75,6 +78,7 @@ class StructuredLLMGenerator:
         user_prompt: str,
         extra_validation: Callable[[T], T] | None = None,
         pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
+        string_field_constraints: dict[str, dict[str, set[str]]] | None = None,
     ) -> tuple[T, dict]:
         stage_started = time.perf_counter()
         self._emit("stage_started", {"stage": schema_name})
@@ -87,6 +91,7 @@ class StructuredLLMGenerator:
             schema_model,
             schema_name,
             pointer_field_constraints,
+            string_field_constraints,
         )
 
         last_error = None
@@ -277,12 +282,14 @@ class StructuredLLMGenerator:
         schema_model: type[BaseModel],
         schema_name: str,
         pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None,
+        string_field_constraints: dict[str, dict[str, set[str]]] | None,
     ) -> dict:
         if self.response_format_mode == "json_schema":
             return json_schema_response_format(
                 schema_model,
                 schema_name,
                 pointer_field_constraints=pointer_field_constraints,
+                string_field_constraints=string_field_constraints,
             )
         if self.response_format_mode == "json_object":
             return {"type": "json_object"}
@@ -414,11 +421,17 @@ def _apply_pointer_field_constraints(
                     item_schema = field_schema.get("items")
                     if not isinstance(item_schema, dict):
                         continue
-                    usable = [
-                        alternative
-                        for alternative in alternatives
-                        if alternative and all(allowed for allowed in alternative.values())
-                    ]
+                    usable = []
+                    for alternative in alternatives:
+                        if not alternative:
+                            continue
+                        choice_properties = pointer_schema(item_schema).get("properties", {})
+                        if all(
+                            allowed
+                            or choice_properties.get(property_name, {}).get("type") == "array"
+                            for property_name, allowed in alternative.items()
+                        ):
+                            usable.append(alternative)
                     if not usable:
                         field_schema["maxItems"] = 0
                         continue
@@ -430,8 +443,11 @@ def _apply_pointer_field_constraints(
                             property_schema = choice_properties[property_name]
                             allowed_values = sorted(allowed)
                             if property_schema.get("type") == "array":
-                                property_schema.setdefault("items", {})["enum"] = allowed_values
-                                property_schema["minItems"] = 1
+                                if allowed_values:
+                                    property_schema.setdefault("items", {})["enum"] = allowed_values
+                                    property_schema["minItems"] = 1
+                                else:
+                                    property_schema["maxItems"] = 0
                             else:
                                 property_schema["enum"] = allowed_values
                         choices.append(choice)
@@ -445,3 +461,20 @@ def _apply_pointer_field_constraints(
                 constrain(item)
 
     constrain(schema)
+
+
+def _apply_string_field_constraints(
+    schema: dict[str, Any],
+    constraints: dict[str, dict[str, set[str]]],
+) -> None:
+    """Restrict scalar or array string fields in named model definitions."""
+
+    for model_name, fields in constraints.items():
+        properties = schema.get("$defs", {}).get(model_name, {}).get("properties", {})
+        for field_name, allowed in fields.items():
+            field_schema = properties.get(field_name)
+            if not allowed or not isinstance(field_schema, dict):
+                continue
+            target = field_schema.get("items", field_schema)
+            if isinstance(target, dict):
+                target["enum"] = sorted(allowed)

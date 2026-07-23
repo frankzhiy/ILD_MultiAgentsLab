@@ -580,7 +580,8 @@ class WorkbenchWorkflow:
             )
         except Exception as error:
             state.status = "failed"
-            if state.active_round and state.active_round.get("chair_status") == "running":
+            if state.active_round:
+                state.active_round["status"] = "failed"
                 state.active_round["chair_status"] = "failed"
             if state.report_status == "running":
                 state.report_status = "failed"

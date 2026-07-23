@@ -31,8 +31,14 @@ const completed = {
       issue_type: 'question',
       issue_id: 'Q001',
       specialty: 'pulmonology',
+      prompt: '低氧的主要归因是什么？',
       remaining_clarification: '区分肺实质与肺血管因素。',
       current_result: '现有资料不足。',
+      specialty_context: [{
+        specialty: 'thoracic_radiology',
+        relation: 'partial_answer',
+        answer: '影像提示肺实质因素可能参与。',
+      }],
       evidence_candidates: [{ evidence_ref: 'gu-1:ev-1' }],
     }],
     specialty_responses: [{
@@ -45,11 +51,26 @@ const completed = {
         confidence: 'moderate',
         answer: '现有证据支持低氧存在，但不能量化各因素贡献。',
         medical_basis: '原始片段仅证明低氧存在。',
+        answer_claims: [{
+          claim_id: 'R01-A001-pulmonology-C001',
+          statement: '现有证据支持低氧存在，但不能量化各因素贡献。',
+          evidence_uses: [{
+            evidence_ref: 'E006',
+            graph_unit_id: 'gu-1',
+            quote: '静息低氧',
+            evidence_ids: ['ev-1'],
+            proposition_ids: ['gu-1::prop-1'],
+            effect: 'supporting',
+            interpretation: '证明低氧存在，但不能单独证明病因。',
+          }],
+          guideline_evidence: [],
+        }],
         evidence_uses: [{
-          evidence_ref: 'gu-1:ev-1',
+          evidence_ref: 'E006',
           graph_unit_id: 'gu-1',
           quote: '静息低氧',
           evidence_ids: ['ev-1'],
+          proposition_ids: ['gu-1::prop-1'],
           effect: 'supporting',
           interpretation: '证明低氧存在，但不能单独证明病因。',
           propositions: [{ proposition_id: 'gu-1::prop-1', concept_text: '存在低氧', status: 'present', certainty: 'high' }],
@@ -147,10 +168,14 @@ describe('DiscussionWorkspace', () => {
     renderWorkspace()
 
     expect((await screen.findAllByText('最终 MDT 统一报告')).length).toBeGreaterThan(1)
-    expect(screen.getAllByText('区分肺实质与肺血管因素。').length).toBeGreaterThan(1)
+    expect(screen.getAllByText('低氧的主要归因是什么？').length).toBeGreaterThan(1)
+    expect(screen.getByText('现有资料不足。')).toBeInTheDocument()
+    expect(screen.getByText('影像提示肺实质因素可能参与。')).toBeInTheDocument()
+    expect(screen.getByText('区分肺实质与肺血管因素。')).toBeInTheDocument()
     expect(screen.getByText('现有证据支持低氧存在，但不能量化各因素贡献。')).toBeInTheDocument()
     expect(screen.getByText('证明低氧存在，但不能单独证明病因。')).toBeInTheDocument()
-    expect(screen.getAllByText('gu-1:ev-1').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('gu-1::prop-1').length).toBeGreaterThan(0)
+    expect(screen.queryByText('E006')).not.toBeInTheDocument()
     expect(screen.getByText('主持人第 1 轮更新')).toBeInTheDocument()
     expect(screen.getByText('跨专科整合结论')).toBeInTheDocument()
   })
@@ -182,5 +207,24 @@ describe('DiscussionWorkspace', () => {
 
     expect(await screen.findByText(answer.answer)).toBeInTheDocument()
     await waitFor(() => expect(api.discussion).toHaveBeenCalledTimes(2))
+  })
+
+  it('keeps failed partial output visible without presenting it as running', async () => {
+    api.discussion.mockResolvedValue({
+      ...active,
+      status: 'failed',
+      error: '主持人结构化输出失败',
+      active_round: {
+        ...active.active_round,
+        status: 'failed',
+        chair_status: 'waiting',
+      },
+    })
+    renderWorkspace()
+
+    expect(await screen.findByText('团队讨论失败；已保留完成的步骤')).toBeInTheDocument()
+    expect(screen.getByText('主持人整合失败；已保留本轮已生成内容')).toBeInTheDocument()
+    expect(screen.queryByText(/已用时/)).not.toBeInTheDocument()
+    expect(screen.getAllByText('失败').length).toBeGreaterThan(0)
   })
 })

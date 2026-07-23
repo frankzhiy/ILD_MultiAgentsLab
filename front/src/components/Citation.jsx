@@ -8,11 +8,25 @@ function kindOf(value) {
   return 'evidence'
 }
 
+export function citationLabel(value, label) {
+  if (label && !/^E\d+$/i.test(label)) return label
+  const propositionId = value?.proposition_ids?.[0]
+    || value?.propositions?.[0]?.proposition_id
+  return propositionId
+    || value?.evidence_ids?.[0]
+    || value?.graph_unit_id
+    || value?.node_id
+    || value?.source_ref
+    || value?.guideline_id
+    || value?.document_id
+    || '查看证据'
+}
+
 export function Citation({ value, label }) {
   const selectEvidence = useWorkbenchStore((state) => state.selectEvidence)
   const kind = kindOf(value)
   const icon = kind === 'node' ? <NodeIndexOutlined /> : kind === 'guideline' ? <FileTextOutlined /> : <AimOutlined />
-  const text = label || value?.evidence_ref || value?.source_ref || value?.graph_unit_id || value?.node_id || value?.guideline_id || '查看证据'
+  const text = citationLabel(value, label)
   return (
     <Tooltip title={value?.quote || value?.text || '打开证据检查器'}>
       <Button size="small" className="citation-button" icon={icon} onClick={() => selectEvidence({ ...value, kind })}>

@@ -3,7 +3,9 @@ import json
 import pytest
 
 from src.agents.mdt_discussion.final_report import FinalReportAgent
+from src.agents.mdt_discussion.integration import append_round_responses
 from src.agents.mdt_discussion.models import (
+    DiscussionAnswerClaimDraft,
     DiscussionProposition,
     DiscussionRound,
     DiscussionEvidenceUseDraft,
@@ -19,8 +21,10 @@ from src.agents.mdt_discussion.routing import build_discussion_tasks, group_task
 from src.agents.mdt_discussion.specialty_agent import (
     SpecialtyDiscussionAgent,
     _resolve_answer,
+    discussion_evidence_schema_constraints,
 )
 from src.llm.base import LLMResponse
+from src.llm.structured import json_schema_response_format
 
 
 def documents():
@@ -204,6 +208,15 @@ def test_program_backfills_answer_and_evidence_ids_from_the_selected_task():
         answer="现有资料支持低氧，但不能完成相对贡献量化。",
         confidence="moderate",
         medical_basis="原文只提供静息低氧。",
+        answer_claims=[DiscussionAnswerClaimDraft(
+            statement="现有资料支持低氧存在，但不能完成相对贡献量化。",
+            evidence_uses=[DiscussionEvidenceUseDraft(
+                evidence_ref="gu-1:ev-1",
+                proposition_ids=[proposition.proposition_id],
+                effect="supporting",
+                interpretation="证明低氧存在，不能单独证明病因。",
+            )],
+        )],
         evidence_uses=[DiscussionEvidenceUseDraft(
             evidence_ref="gu-1:ev-1",
             proposition_ids=[proposition.proposition_id],
@@ -218,6 +231,9 @@ def test_program_backfills_answer_and_evidence_ids_from_the_selected_task():
 
     assert answer.answer_id == "R01-A001-pulmonology"
     assert answer.task_id == task.task_id
+    assert answer.answer == "现有资料支持低氧存在，但不能完成相对贡献量化。"
+    assert answer.answer_claims[0].claim_id == "R01-A001-pulmonology-C001"
+    assert answer.answer_claims[0].evidence_uses[0].quote == "静息低氧"
     assert answer.evidence_uses[0].evidence_ids == ["ev-1"]
     assert answer.evidence_uses[0].quote == "静息低氧"
     assert answer.evidence_uses[0].evidence_fragments[0]["text"] == "静息低氧"
@@ -234,6 +250,16 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
                 "answer":"低氧存在，但当前资料不能完成病因贡献量化。",
                 "confidence":"moderate",
                 "medical_basis":"原文片段只证实静息低氧。",
+                "answer_claims":[{
+                    "statement":"低氧存在，但当前资料不能完成病因贡献量化。",
+                    "evidence_uses":[{
+                        "evidence_ref":"gu-1:ev-1",
+                        "proposition_ids":["gu-1::prop-1"],
+                        "effect":"supporting",
+                        "interpretation":"证明低氧存在，不能单独证明病因。"
+                    }],
+                    "guideline_evidence":[]
+                }],
                 "evidence_uses":[{
                     "evidence_ref":"gu-1:ev-1",
                     "proposition_ids":["gu-1::prop-1"],
@@ -276,6 +302,56 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
     assert "gu-1::prop-1" in trace["prompt"]
     assert "不应进入会中提示的内部推理" not in trace["prompt"]
     assert "不应进入共享提示的完整专科原文" not in trace["prompt"]
+    assert "始终先回答 `prompt` 中的原始临床问题" in trace["prompt"]
+    assert "不能确认”也可以是对问题的完整回答" in trace["prompt"]
+
+
+def test_discussion_schema_closes_evidence_uses_to_task_candidates():
+    propositions, graphs = documents()
+    task = build_discussion_tasks(
+        chair_result=chair_question(),
+        clinical_propositions=propositions,
+        local_graphs=graphs,
+        round_number=1,
+        previous_rounds=[],
+    )[0]
+
+    schema = json_schema_response_format(
+        SpecialtyTaskAnswerDraft,
+        "discussion_answer",
+        pointer_field_constraints=discussion_evidence_schema_constraints(task),
+    )["json_schema"]["schema"]
+    expected = ["gu-1:ev-1"]
+    top_level = schema["properties"]["evidence_uses"]["items"]["properties"]
+    claim_level = schema["$defs"]["DiscussionAnswerClaimDraft"]["properties"][
+        "evidence_uses"
+    ]["items"]["properties"]
+
+    for properties in (top_level, claim_level):
+        assert properties["evidence_ref"]["enum"] == expected
+        assert properties["proposition_ids"]["items"]["enum"] == ["gu-1::prop-1"]
+
+
+def test_discussion_schema_allows_evidence_without_extracted_propositions():
+    propositions, graphs = documents()
+    task = build_discussion_tasks(
+        chair_result=chair_question(),
+        clinical_propositions=propositions,
+        local_graphs=graphs,
+        round_number=1,
+        previous_rounds=[],
+    )[0]
+    task.evidence_candidates[0].propositions = []
+
+    schema = json_schema_response_format(
+        SpecialtyTaskAnswerDraft,
+        "discussion_answer",
+        pointer_field_constraints=discussion_evidence_schema_constraints(task),
+    )["json_schema"]["schema"]
+    properties = schema["properties"]["evidence_uses"]["items"]["properties"]
+
+    assert properties["evidence_ref"]["enum"] == ["gu-1:ev-1"]
+    assert properties["proposition_ids"]["maxItems"] == 0
 
 
 def test_task_rejects_an_evidence_reference_without_source_text():
@@ -346,10 +422,11 @@ def test_final_report_uses_the_compact_chair_view():
     assert "不应在主席共享视图中重复的病例原文" not in trace["prompt"]
 
 
-def test_does_not_repeat_an_evidence_blocked_issue_after_one_discussion_attempt():
+@pytest.mark.parametrize("resolution_status", ["unresolved", "partially_resolved", "blocked_by_evidence"])
+def test_does_not_repeat_a_question_after_one_discussion_attempt(resolution_status):
     propositions, graphs = documents()
     first_task = build_discussion_tasks(
-        chair_result=chair_question(resolution_status="blocked_by_evidence"),
+        chair_result=chair_question(resolution_status=resolution_status),
         clinical_propositions=propositions,
         local_graphs=graphs,
         round_number=1,
@@ -380,7 +457,7 @@ def test_does_not_repeat_an_evidence_blocked_issue_after_one_discussion_attempt(
     )
 
     tasks = build_discussion_tasks(
-        chair_result=chair_question(resolution_status="blocked_by_evidence"),
+        chair_result=chair_question(resolution_status=resolution_status),
         clinical_propositions=propositions,
         local_graphs=graphs,
         round_number=2,
@@ -388,3 +465,60 @@ def test_does_not_repeat_an_evidence_blocked_issue_after_one_discussion_attempt(
     )
 
     assert tasks == []
+
+
+def test_round_response_projects_new_questions_and_evidence_gaps():
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-pulmonology-A",
+        task_id="R01-Q001-pulmonology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="answered",
+        answer="现有材料支持多因素共同参与，但不能量化相对贡献。",
+        confidence="moderate",
+        medical_basis="现有检查同时提示肺实质、肺血管和心脏因素。",
+        changed_from_previous=True,
+        remaining_limitation="相对贡献仍受资料边界限制。",
+        new_questions=[{
+            "target_specialty": "thoracic_radiology",
+            "question": "现有影像表现能否解释低氧程度？",
+            "why_it_matters": "区分肺实质与其他因素。",
+            "decision_unlocked": "限定肺实质因素的贡献。",
+            "related_evidence": [],
+        }],
+        evidence_gaps=[{
+            "available_information": "已有超声心动图摘要。",
+            "missing_information": "缺少右心结构和肺动脉压力数据。",
+            "why_it_matters": "影响心肺血管因素的相对贡献判断。",
+            "decision_unlocked": "提高相对贡献判断的确定性。",
+            "related_evidence": [],
+        }],
+    )
+    initial = {
+        "pulmonology": {
+            "professional_conclusions": {
+                "conclusions": [],
+                "interspecialty_questions": [],
+                "evidence_gaps": [],
+            }
+        }
+    }
+
+    updated = append_round_responses(
+        initial,
+        [SpecialtyRoundResponse(
+            case_id="case-1",
+            round_number=1,
+            specialty="pulmonology",
+            answers=[answer],
+        )],
+    )
+    professional = updated["pulmonology"]["professional_conclusions"]
+
+    assert professional["conclusions"][0]["statement"].startswith("对议题 Q001")
+    assert professional["interspecialty_questions"][0]["question"] == (
+        "现有影像表现能否解释低氧程度？"
+    )
+    assert professional["evidence_gaps"][0]["missing_information"] == (
+        "缺少右心结构和肺动脉压力数据。"
+    )

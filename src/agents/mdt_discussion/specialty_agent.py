@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents.mdt_discussion.models import (
+    DiscussionAnswerClaim,
     DiscussionEvidenceUse,
     DiscussionTask,
     SpecialtyTaskAnswer,
@@ -124,7 +125,17 @@ class SpecialtyDiscussionAgent:
 
         def validate(draft: SpecialtyTaskAnswerDraft) -> SpecialtyTaskAnswerDraft:
             candidates = {item.evidence_ref: item for item in task.evidence_candidates}
-            for use in draft.evidence_uses:
+            allowed_evidence_ids = {
+                evidence_id
+                for candidate in task.evidence_candidates
+                for evidence_id in candidate.evidence_ids
+            }
+            claim_uses = [
+                use
+                for claim in draft.answer_claims
+                for use in claim.evidence_uses
+            ]
+            for use in [*claim_uses, *draft.evidence_uses]:
                 if use.evidence_ref not in candidates:
                     raise ValueError(f"Unknown evidence_ref for {task.task_id}: {use.evidence_ref}")
                 allowed_propositions = {
@@ -135,6 +146,22 @@ class SpecialtyDiscussionAgent:
                 if unknown:
                     raise ValueError(
                         f"Unknown proposition_ids for {task.task_id}: {sorted(unknown)}"
+                    )
+            for question in draft.new_questions:
+                if question.target_specialty.value == self.specialty:
+                    raise ValueError("A new discussion question cannot target its issuing specialty")
+                if question.question.strip() == task.prompt.strip():
+                    raise ValueError("A new discussion question cannot repeat the current question")
+            for item in [*draft.new_questions, *draft.evidence_gaps]:
+                unknown = {
+                    evidence_id
+                    for pointer in item.related_evidence
+                    for evidence_id in pointer.evidence_ids
+                    if evidence_id not in allowed_evidence_ids
+                }
+                if unknown:
+                    raise ValueError(
+                        f"Unknown related evidence_ids for {task.task_id}: {sorted(unknown)}"
                     )
             retrieval_trace["used_chunk_ids"] = resolve_guideline_evidence(
                 draft, allowed_chunks
@@ -150,7 +177,10 @@ class SpecialtyDiscussionAgent:
             ),
             user_prompt=prompt,
             extra_validation=validate,
-            pointer_field_constraints=guideline_evidence_schema_constraints(allowed_chunks),
+            pointer_field_constraints={
+                **discussion_evidence_schema_constraints(task),
+                **guideline_evidence_schema_constraints(allowed_chunks),
+            },
         )
         trace["guideline_retrieval"] = retrieval_trace
         return _resolve_answer(
@@ -160,39 +190,93 @@ class SpecialtyDiscussionAgent:
         ), trace
 
 
+def discussion_evidence_schema_constraints(
+    task: DiscussionTask,
+) -> dict[str, list[dict[str, set[str]]]]:
+    """Restrict every discussion evidence use to this task's candidates."""
+
+    return {
+        "evidence_uses": [
+            {
+                "evidence_ref": {candidate.evidence_ref},
+                "proposition_ids": {
+                    proposition.proposition_id for proposition in candidate.propositions
+                },
+            }
+            for candidate in task.evidence_candidates
+        ]
+    }
+
+
 def _resolve_answer(task, draft, *, answer_id: str) -> SpecialtyTaskAnswer:
     candidates = {item.evidence_ref: item for item in task.evidence_candidates}
-    uses = []
-    for use in draft.evidence_uses:
+
+    def resolve_use(use):
         candidate = candidates[use.evidence_ref]
         selected = set(use.proposition_ids)
-        uses.append(
-            DiscussionEvidenceUse(
-                **use.model_dump(mode="json"),
-                evidence_ids=candidate.evidence_ids,
-                graph_unit_id=candidate.graph_unit_id,
-                quote=candidate.quote,
-                evidence_fragments=candidate.evidence_fragments,
-                propositions=[
-                    proposition
-                    for proposition in candidate.propositions
-                    if proposition.proposition_id in selected
-                ],
-                graph_nodes=candidate.graph_nodes,
-                graph_edges=candidate.graph_edges,
-            )
+        return DiscussionEvidenceUse(
+            **use.model_dump(mode="json"),
+            evidence_ids=candidate.evidence_ids,
+            segment_id=candidate.segment_id,
+            graph_unit_id=candidate.graph_unit_id,
+            quote=candidate.quote,
+            evidence_fragments=candidate.evidence_fragments,
+            propositions=[
+                proposition
+                for proposition in candidate.propositions
+                if proposition.proposition_id in selected
+            ],
+            graph_nodes=candidate.graph_nodes,
+            graph_edges=candidate.graph_edges,
         )
+
+    claims = [
+        DiscussionAnswerClaim(
+            claim_id=f"{answer_id}-C{index:03d}",
+            statement=claim.statement,
+            evidence_uses=[resolve_use(use) for use in claim.evidence_uses],
+            guideline_evidence=claim.guideline_evidence,
+        )
+        for index, claim in enumerate(draft.answer_claims, start=1)
+    ]
+    uses = []
+    seen = set()
+    for use in [
+        *(use for claim in claims for use in claim.evidence_uses),
+        *(resolve_use(use) for use in draft.evidence_uses),
+    ]:
+        key = (
+            use.evidence_ref,
+            tuple(use.proposition_ids),
+            use.effect,
+            use.interpretation,
+        )
+        if key not in seen:
+            seen.add(key)
+            uses.append(use)
+    guidelines = []
+    guideline_ids = set()
+    for pointer in [
+        *(pointer for claim in claims for pointer in claim.guideline_evidence),
+        *draft.guideline_evidence,
+    ]:
+        if pointer.chunk_id not in guideline_ids:
+            guideline_ids.add(pointer.chunk_id)
+            guidelines.append(pointer)
     return SpecialtyTaskAnswer(
         answer_id=answer_id,
         task_id=task.task_id,
         issue_type=task.issue_type,
         issue_id=task.issue_id,
         answerability=draft.answerability,
-        answer=draft.answer,
+        answer="\n".join(claim.statement for claim in claims),
         confidence=draft.confidence,
         medical_basis=draft.medical_basis,
+        answer_claims=claims,
         evidence_uses=uses,
-        guideline_evidence=draft.guideline_evidence,
+        guideline_evidence=guidelines,
         changed_from_previous=draft.changed_from_previous,
         remaining_limitation=draft.remaining_limitation,
+        new_questions=draft.new_questions,
+        evidence_gaps=draft.evidence_gaps,
     )

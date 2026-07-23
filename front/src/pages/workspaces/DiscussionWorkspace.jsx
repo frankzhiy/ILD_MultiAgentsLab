@@ -70,7 +70,7 @@ function useElapsed(activeRound, running) {
     const timer = window.setInterval(() => setTick((value) => value + 1), 1000)
     return () => window.clearInterval(timer)
   }, [activeRound?.started_at, running])
-  return formatDuration(activeRound?.started_at)
+  return running ? formatDuration(activeRound?.started_at) : ''
 }
 
 function useDiscussionEvents(runId, onEvent) {
@@ -106,6 +106,12 @@ function taskStatus(round, taskId, answers) {
   return round?.task_progress?.[taskId]?.status || (answers[taskId] ? 'completed' : 'waiting')
 }
 
+function chairStatus(round) {
+  if (round?.chair_result) return 'completed'
+  if (round?.status === 'failed') return 'failed'
+  return round?.chair_status || 'waiting'
+}
+
 function StatusIcon({ status }) {
   if (status === 'running') return <Spin size="small" />
   if (status === 'completed') return <CheckCircleFilled className="discussion-icon-success" />
@@ -132,7 +138,7 @@ function TaskAssignment({ round, selectedTaskId, onSelect }) {
       title: '待回答问题', dataIndex: 'prompt',
       render: (_, task) => (
         <Button type="link" className="discussion-question-link" onClick={() => onSelect(task.task_id)}>
-          {task.remaining_clarification || task.prompt}
+          {task.prompt}
         </Button>
       ),
     },
@@ -149,7 +155,7 @@ function TaskAssignment({ round, selectedTaskId, onSelect }) {
       render: (_, task) => {
         const first = task.evidence_candidates?.[0]
         if (!first) return <Text type="secondary">0 组</Text>
-        return <Space size={4}><Citation value={first} label={first.evidence_ref} />{task.evidence_candidates.length > 1 && <Text type="secondary">+{task.evidence_candidates.length - 1}</Text>}</Space>
+        return <Space size={4}><Citation value={first} />{task.evidence_candidates.length > 1 && <Text type="secondary">+{task.evidence_candidates.length - 1}</Text>}</Space>
       },
     },
   ]
@@ -173,7 +179,7 @@ function TaskAssignment({ round, selectedTaskId, onSelect }) {
 function DiscussionTrace({ round, selectedTaskId, onSelect, reportStatus }) {
   const answers = useMemo(() => taskAnswers(round), [round])
   const tasks = round?.tasks || []
-  const chairStatus = round?.chair_status || (round?.chair_result ? 'completed' : 'waiting')
+  const chairProgress = chairStatus(round)
   const items = [
     {
       color: 'blue',
@@ -205,9 +211,9 @@ function DiscussionTrace({ round, selectedTaskId, onSelect, reportStatus }) {
       ),
     },
     {
-      color: chairStatus === 'failed' ? 'red' : chairStatus === 'completed' ? 'green' : chairStatus === 'running' ? 'blue' : 'gray',
-      icon: <StatusIcon status={chairStatus} />,
-      content: <div className="discussion-trace-root"><Text strong>MDT 主持人整合</Text><Text type="secondary">{chairStatus === 'running' ? '正在汇总专科回应并更新五个板块' : chairStatus === 'completed' ? '本轮主持人更新已完成' : chairStatus === 'failed' ? '主持人整合失败' : '等待全部专科回应'}</Text></div>,
+      color: chairProgress === 'failed' ? 'red' : chairProgress === 'completed' ? 'green' : chairProgress === 'running' ? 'blue' : 'gray',
+      icon: <StatusIcon status={chairProgress} />,
+      content: <div className="discussion-trace-root"><Text strong>MDT 主持人整合</Text><Text type="secondary">{chairProgress === 'running' ? '正在汇总专科回应并更新五个板块' : chairProgress === 'completed' ? '本轮主持人更新已完成' : chairProgress === 'failed' ? '主持人整合失败' : '等待全部专科回应'}</Text></div>,
     },
     {
       color: reportStatus === 'failed' ? 'red' : reportStatus === 'completed' ? 'green' : reportStatus === 'running' ? 'blue' : 'gray',
@@ -230,8 +236,9 @@ function QuestionDetail({ task, answer, progress }) {
     ? answer.evidence_uses
     : (task.evidence_candidates || []).map((item) => ({ ...item, interpretation: '等待专科完成分析后形成结论' }))
   const [answerLabel, answerColor] = ANSWERABILITY[answer?.answerability] || ['等待回答', 'default']
+  const existingViews = [...(task.specialty_context || []), ...(task.prior_answers || [])]
   const evidenceColumns = [
-    { title: '引用证据', width: 86, render: (_, item) => <Citation value={item} label={item.evidence_ref} /> },
+    { title: '引用证据', width: 86, render: (_, item) => <Citation value={item} /> },
     { title: '证据摘要', dataIndex: 'quote', width: 118, render: (value) => value || '该证据包未携带原文摘要' },
     { title: '支持的结论', dataIndex: 'interpretation', render: (value) => value || '—' },
   ]
@@ -239,15 +246,64 @@ function QuestionDetail({ task, answer, progress }) {
     <Card title="问题与回答" className="discussion-panel discussion-detail-panel" extra={<Tag color={answerColor}>{answerLabel}</Tag>}>
       <div className="discussion-detail-section">
         <Text className="discussion-detail-label">问题</Text>
-        <Title level={5}>{task.remaining_clarification || task.prompt}</Title>
+        <Title level={5}>{task.prompt}</Title>
         <Space size={[5, 5]} wrap><Tag color="blue">{specialtyLabel(task.specialty)}</Tag><Text code>{task.issue_id}</Text>{task.why_it_matters && <Text type="secondary">{task.why_it_matters}</Text>}</Space>
       </div>
+      {task.current_result && (
+        <div className="discussion-detail-section">
+          <Text className="discussion-detail-label">主持人当前判断</Text>
+          <Paragraph>{task.current_result}</Paragraph>
+        </div>
+      )}
+      {existingViews.length > 0 && (
+        <div className="discussion-detail-section">
+          <Text className="discussion-detail-label">已有专科观点</Text>
+          {existingViews.map((item, index) => (
+            <div className="discussion-existing-view" key={`${item.specialty || 'source'}-${item.round_number || index}`}>
+              <Space size={5} wrap>
+                {item.specialty && <Tag>{specialtyLabel(item.specialty)}</Tag>}
+                {item.round_number && <Tag>第 {item.round_number} 轮</Tag>}
+                {item.relation && <Text type="secondary">{item.relation}</Text>}
+              </Space>
+              <Paragraph>{item.answer || item.position || item.quote}</Paragraph>
+            </div>
+          ))}
+        </div>
+      )}
+      {task.remaining_clarification && (
+        <div className="discussion-detail-section">
+          <Text className="discussion-detail-label">主持人关注的未决点（回答方向参考）</Text>
+          <Paragraph type="secondary">{task.remaining_clarification}</Paragraph>
+        </div>
+      )}
       <div className="discussion-detail-section">
         <Text className="discussion-detail-label">回答</Text>
         {answer
           ? <>
-            <Paragraph className={`discussion-answer ${expanded ? 'expanded' : ''}`}>{answer.answer}</Paragraph>
-            {answer.answer?.length > 260 && <Button type="link" className="discussion-answer-toggle" onClick={() => setExpanded((value) => !value)}>{expanded ? '收起完整回答' : '展开完整回答'}</Button>}
+            {answer.answer_claims?.length
+              ? answer.answer_claims.map((claim) => (
+                <Paragraph className="discussion-answer" key={claim.claim_id || claim.statement}>
+                  {claim.statement}{' '}
+                  <Space size={[4, 4]} wrap>
+                    {(claim.evidence_uses || []).map((item, index) => (
+                      <Citation
+                        key={`${item.evidence_ref}-${index}`}
+                        value={{ ...item, claim_statement: claim.statement }}
+                      />
+                    ))}
+                    {(claim.guideline_evidence || []).map((item, index) => (
+                      <Citation
+                        key={`${item.guideline_id || item.chunk_id || 'guideline'}-${index}`}
+                        value={{ ...item, claim_statement: claim.statement }}
+                      />
+                    ))}
+                  </Space>
+                </Paragraph>
+              ))
+              : <>
+                <Paragraph className={`discussion-answer ${expanded ? 'expanded' : ''}`}>{answer.answer}</Paragraph>
+                {answer.answer?.length > 260 && <Button type="link" className="discussion-answer-toggle" onClick={() => setExpanded((value) => !value)}>{expanded ? '收起完整回答' : '展开完整回答'}</Button>}
+              </>}
             <Collapse
               ghost
               size="small"
@@ -329,9 +385,9 @@ export function DiscussionWorkspace({ runId }) {
   const selectedAnswer = selectedTask ? answers[selectedTask.task_id] : null
   const selectedProgress = selectedTask ? round?.task_progress?.[selectedTask.task_id] : null
   const statuses = (round?.tasks || []).map((task) => taskStatus(round, task.task_id, answers))
-  const chairStatus = round?.chair_status || (round?.chair_result ? 'completed' : 'waiting')
+  const chairProgress = chairStatus(round)
   const progressTotal = Math.max(1, statuses.length + 1)
-  const progressDone = statuses.filter((status) => ['completed', 'failed'].includes(status)).length + (['completed', 'failed'].includes(chairStatus) ? 1 : 0)
+  const progressDone = statuses.filter((status) => ['completed', 'failed'].includes(status)).length + (['completed', 'failed'].includes(chairProgress) ? 1 : 0)
   const progressPercent = value.status === 'completed' ? 100 : Math.round(progressDone / progressTotal * 100)
   const elapsed = useElapsed(value.active_round, running)
 
@@ -339,6 +395,11 @@ export function DiscussionWorkspace({ runId }) {
   if (query.isLoading) return <Skeleton active paragraph={{ rows: 12 }} />
 
   const hasResult = rounds.length > 0 || value.final_report
+  const roundStatus = running && round?.round_number === value.active_round?.round_number
+    ? 'running'
+    : round?.status === 'failed' || (value.status === 'failed' && round?.round_number === value.active_round?.round_number)
+      ? 'failed'
+      : 'completed'
   const connectionLabel = connection === 'connected' ? '实时连接' : connection === 'connecting' ? '正在连接' : connection === 'unavailable' ? '轮询模式' : '连接已断开'
   const connectionColor = connection === 'connected' ? 'success' : connection === 'connecting' ? 'processing' : connection === 'unavailable' ? 'default' : 'error'
 
@@ -369,7 +430,7 @@ export function DiscussionWorkspace({ runId }) {
         <>
           <div className="discussion-round-switcher">
             <Segmented value={round?.round_number} onChange={setSelectedRound} options={rounds.map((item) => ({ label: `第 ${item.round_number} 轮`, value: item.round_number }))} />
-            <Space size={6}><StatusTag status={running && round?.round_number === value.active_round?.round_number ? 'running' : 'completed'} /><Text type="secondary">点击任务或流程节点查看问题、回答与证据</Text></Space>
+            <Space size={6}><StatusTag status={roundStatus} /><Text type="secondary">点击任务或流程节点查看问题、回答与证据</Text></Space>
           </div>
           <div className="discussion-live-grid">
             <TaskAssignment round={round} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} />
@@ -378,7 +439,7 @@ export function DiscussionWorkspace({ runId }) {
           </div>
           {(round?.chair_result || round?.round_number === value.active_round?.round_number) && (
             <Card className="discussion-chair-tabs" title={<Space><TeamOutlined /><span>主持人第 {round.round_number} 轮更新</span></Space>} extra={<Text type="secondary">专科回应回填后，由主持人更新同一套五板块</Text>}>
-              {round.chair_result ? <ChairResultTabs result={round.chair_result} /> : <div className="discussion-chair-pending"><Spin /><Text type="secondary">{round.chair_status === 'running' ? '主持人正在整合本轮结果…' : '等待全部专科回答后开始整合'}</Text></div>}
+              {round.chair_result ? <ChairResultTabs result={round.chair_result} /> : <div className="discussion-chair-pending">{chairProgress === 'failed' ? <ExclamationCircleFilled className="discussion-icon-error" /> : <Spin />}<Text type="secondary">{chairProgress === 'running' ? '主持人正在整合本轮结果…' : chairProgress === 'failed' ? '主持人整合失败；已保留本轮已生成内容' : '等待全部专科回答后开始整合'}</Text></div>}
             </Card>
           )}
         </>

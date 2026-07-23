@@ -52,6 +52,87 @@ class ChairPromptBundle:
     normalization_events: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _source_ref_schema_constraints(
+    bundle: ChairPromptBundle,
+    *,
+    semantic_ledger: ChairSemanticLedger | None = None,
+) -> dict[str, dict[str, set[str]]]:
+    refs = {
+        source_type: {
+            ref
+            for ref, source in bundle.source_registry.items()
+            if source.source_type == source_type
+        }
+        for source_type in ("native_conclusion", "native_question", "evidence_gap")
+    }
+    conclusions = refs["native_conclusion"]
+    questions = refs["native_question"]
+    needs = questions | refs["evidence_gap"]
+    if semantic_ledger is None:
+        return {
+            "LedgerAtomicClaim": {"source_ref": conclusions},
+            "LedgerQuestionRoute": {"source_refs": questions},
+            "LedgerAnswerLink": {"source_refs": conclusions},
+            "LedgerEvidenceNeedGroup": {
+                "source_refs": needs,
+                "coverage_source_refs": conclusions,
+            },
+        }
+    claims = {
+        disposition: {
+            claim.source_ref
+            for group in semantic_ledger.claim_groups
+            if group.disposition == disposition
+            for claim in group.claims
+        }
+        for disposition in ("integrated", "boundary", "conflict")
+    }
+    question_routes = [
+        route
+        for route in semantic_ledger.question_routes
+        if route.route in {"question", "mixed"}
+    ]
+    questions = {
+        ref
+        for route in question_routes
+        for ref in route.source_refs
+    }
+    answers = {
+        ref
+        for route in question_routes
+        for answer in route.answer_links
+        for ref in answer.source_refs
+    }
+    needs = {
+        ref
+        for group in semantic_ledger.evidence_need_groups
+        for ref in group.source_refs
+    }
+    coverage = {
+        ref
+        for group in semantic_ledger.evidence_need_groups
+        for ref in group.coverage_source_refs
+    }
+    return {
+        "IntegratedConclusion": {"source_refs": claims["integrated"]},
+        "AssessmentBoundary": {
+            "source_refs": claims["boundary"] | questions,
+            "related_evidence_need_source_refs": needs,
+        },
+        "ConflictPosition": {"source_refs": claims["conflict"]},
+        "CrossSpecialtyConflict": {
+            "related_question_source_refs": questions,
+            "related_evidence_need_source_refs": needs,
+        },
+        "IntegratedQuestion": {
+            "source_refs": questions,
+            "related_evidence_need_source_refs": needs,
+        },
+        "QuestionAnswer": {"source_refs": answers},
+        "EvidenceNeed": {"source_refs": needs | coverage},
+    }
+
+
 class _Registry:
     def __init__(self, semantic_evidence: dict[str, dict[str, Any]] | None = None) -> None:
         self.sources: dict[str, SpecialtySourceCitation] = {}
@@ -120,9 +201,28 @@ class _Registry:
         }
         key = json.dumps(value, ensure_ascii=False, sort_keys=True)
         if key not in self._evidence_keys:
-            ref = f"E{len(self.evidence) + 1:03d}"
+            ref = _canonical_evidence_ref(value)
             self._evidence_keys[key] = ref
-            self.evidence[ref] = CaseEvidenceCitation(evidence_ref=ref, **value)
+            existing = self.evidence.get(ref)
+            if existing is None:
+                self.evidence[ref] = CaseEvidenceCitation(evidence_ref=ref, **value)
+            else:
+                self.evidence[ref] = CaseEvidenceCitation(
+                    evidence_ref=ref,
+                    segment_id=existing.segment_id or value["segment_id"],
+                    graph_unit_id=existing.graph_unit_id or value["graph_unit_id"],
+                    evidence_ids=_ordered_unique([*existing.evidence_ids, *value["evidence_ids"]]),
+                    proposition_ids=_ordered_unique([
+                        *existing.proposition_ids,
+                        *value["proposition_ids"],
+                    ]),
+                    node_ids=_ordered_unique([*existing.node_ids, *value["node_ids"]]),
+                    quote="\n".join(_ordered_unique([
+                        item
+                        for item in [existing.quote, value["quote"]]
+                        if item
+                    ])),
+                )
         return self._evidence_keys[key]
 
     def _canonical_pointer(self, pointer: dict[str, Any]) -> dict[str, Any]:
@@ -135,22 +235,30 @@ class _Registry:
             return pointer
 
         proposition_ids = list(pointer.get("proposition_ids") or [])
+        local_proposition_ids = [
+            proposition_id.rsplit("::", 1)[-1]
+            for proposition_id in proposition_ids
+        ]
         propositions = unit.get("propositions", {})
         if proposition_ids:
             evidence_ids = _ordered_unique(
                 evidence_id
-                for proposition_id in proposition_ids
+                for proposition_id in local_proposition_ids
                 for evidence_id in propositions.get(proposition_id, {}).get("evidence_ids", [])
             )
             quote = "\n".join(
                 propositions.get(proposition_id, {}).get("quote", "")
-                for proposition_id in proposition_ids
+                for proposition_id in local_proposition_ids
                 if propositions.get(proposition_id, {}).get("quote")
             )
-            node_ids = [
+            proposition_ids = [
                 f"{unit_id}::{proposition_id}"
+                for proposition_id in local_proposition_ids
+            ]
+            node_ids = [
+                proposition_id
                 for proposition_id in proposition_ids
-                if f"{unit_id}::{proposition_id}" in unit.get("node_ids", set())
+                if proposition_id in unit.get("node_ids", set())
             ]
         else:
             quote = "".join(
@@ -172,6 +280,19 @@ class _Registry:
             "node_ids": node_ids,
             "quote": quote or pointer.get("quote", ""),
         }
+
+
+def _canonical_evidence_ref(pointer: dict[str, Any]) -> str:
+    proposition_ids = list(pointer.get("proposition_ids") or [])
+    if len(proposition_ids) == 1:
+        return proposition_ids[0]
+    evidence_ids = list(pointer.get("evidence_ids") or [])
+    if len(evidence_ids) == 1:
+        return evidence_ids[0]
+    graph_unit_id = str(pointer.get("graph_unit_id") or "")
+    if graph_unit_id:
+        return graph_unit_id
+    raise ValueError("A case evidence pointer must contain a semantic_graphing identifier")
 
 
 def build_semantic_evidence_catalog(
@@ -469,6 +590,7 @@ class MDTChairAgent:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=ledger_prompt,
             extra_validation=lambda value: resolve_semantic_ledger(value, bundle),
+            string_field_constraints=_source_ref_schema_constraints(bundle),
         )
 
         ledger_json = prompt_json(ledger.model_dump(mode="json"))
@@ -509,6 +631,9 @@ class MDTChairAgent:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=synthesis_prompt,
             extra_validation=resolve,
+            string_field_constraints=_source_ref_schema_constraints(
+                bundle, semantic_ledger=ledger
+            ),
         )
         trace = {
             "semantic_ledger": ledger.model_dump(mode="json"),
@@ -544,7 +669,12 @@ def resolve_chair_references(
     result.schema_version = "mdt_chair.v5"
     for index, conclusion in enumerate(result.integrated_conclusions, 1):
         conclusion.conclusion_id = f"IC{index:03d}"
-        _resolve_cited(conclusion, bundle, "native_conclusion")
+        _resolve_cited(
+            conclusion,
+            bundle,
+            "native_conclusion",
+            context=f"integrated_conclusions[{index - 1}].source_refs",
+        )
         conclusion.supporting_specialties = _ordered_unique(
             citation.specialty for citation in conclusion.source_citations
         )
@@ -556,7 +686,21 @@ def resolve_chair_references(
 
     for index, boundary in enumerate(result.assessment_boundaries, 1):
         boundary.boundary_id = f"B{index:03d}"
-        _resolve_cited(boundary, bundle, {"native_conclusion", "native_question"})
+        _resolve_cited(
+            boundary,
+            bundle,
+            {"native_conclusion", "native_question"},
+            context=f"assessment_boundaries[{index - 1}].source_refs",
+        )
+        _require_refs(
+            boundary.related_evidence_need_source_refs,
+            bundle,
+            {"native_question", "evidence_gap"},
+            context=(
+                f"assessment_boundaries[{index - 1}]"
+                ".related_evidence_need_source_refs"
+            ),
+        )
         boundary.specialties = _ordered_unique(
             citation.specialty for citation in boundary.source_citations
         )
@@ -567,6 +711,7 @@ def resolve_chair_references(
             need,
             bundle,
             {"native_question", "evidence_gap", "native_conclusion"},
+            context=f"evidence_needs[{index - 1}].source_refs",
         )
         need.raised_by = _ordered_unique(
             citation.specialty
@@ -581,7 +726,18 @@ def resolve_chair_references(
 
     for index, question in enumerate(result.questions, 1):
         question.question_id = f"Q{index:03d}"
-        _resolve_cited(question, bundle, "native_question")
+        _resolve_cited(
+            question,
+            bundle,
+            "native_question",
+            context=f"questions[{index - 1}].source_refs",
+        )
+        _require_refs(
+            question.related_evidence_need_source_refs,
+            bundle,
+            {"native_question", "evidence_gap"},
+            context=f"questions[{index - 1}].related_evidence_need_source_refs",
+        )
         question.raised_by = _ordered_unique(
             citation.specialty for citation in question.source_citations
         )
@@ -590,8 +746,15 @@ def resolve_chair_references(
             for ref in question.source_refs
             if bundle.source_metadata[ref].get("target_specialty") in SPECIALTIES
         )
-        for answer in question.answers:
-            _resolve_cited(answer, bundle, "native_conclusion")
+        for answer_index, answer in enumerate(question.answers):
+            _resolve_cited(
+                answer,
+                bundle,
+                "native_conclusion",
+                context=(
+                    f"questions[{index - 1}].answers[{answer_index}].source_refs"
+                ),
+            )
             if answer.source_citations:
                 answer.specialty = answer.source_citations[0].specialty
         question.responded_by = _ordered_unique(
@@ -724,6 +887,8 @@ def _resolve_cited(
     statement: CitedChairStatement,
     bundle: ChairPromptBundle,
     expected_source_type: str | set[str],
+    *,
+    context: str,
 ) -> None:
     statement.source_refs = _ordered_unique(statement.source_refs)
     allowed = (
@@ -731,7 +896,7 @@ def _resolve_cited(
         if isinstance(expected_source_type, str)
         else expected_source_type
     )
-    _require_refs(statement.source_refs, bundle, allowed)
+    _require_refs(statement.source_refs, bundle, allowed, context=context)
     statement.source_citations = [bundle.source_registry[ref] for ref in statement.source_refs]
     evidence = {}
     for role in EVIDENCE_ROLES:
@@ -862,9 +1027,28 @@ def _resolve_conflicts(
     }
     for index, conflict in enumerate(conflicts, 1):
         conflict.conflict_id = f"CF{index:03d}"
+        _require_refs(
+            conflict.related_question_source_refs,
+            bundle,
+            {"native_question"},
+            context=f"conflicts[{index - 1}].related_question_source_refs",
+        )
+        _require_refs(
+            conflict.related_evidence_need_source_refs,
+            bundle,
+            {"native_question", "evidence_gap"},
+            context=f"conflicts[{index - 1}].related_evidence_need_source_refs",
+        )
         specialties = []
-        for position in conflict.positions:
-            _resolve_cited(position, bundle, "native_conclusion")
+        for position_index, position in enumerate(conflict.positions):
+            _resolve_cited(
+                position,
+                bundle,
+                "native_conclusion",
+                context=(
+                    f"conflicts[{index - 1}].positions[{position_index}].source_refs"
+                ),
+            )
             if position.source_citations:
                 position.specialty = position.source_citations[0].specialty
             specialties.append(position.specialty)

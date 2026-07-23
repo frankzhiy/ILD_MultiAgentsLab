@@ -133,7 +133,7 @@ describe('ChairWorkspace', () => {
     expect(screen.getByText('已有专科回答')).toBeInTheDocument()
     expect(screen.getByText('回答来源：')).toBeInTheDocument()
     expect(screen.getByText('问题来源：')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /answer-disc/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /gu-answer/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /answer-guide/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /question-bg/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /question-guide/ })).not.toBeInTheDocument()

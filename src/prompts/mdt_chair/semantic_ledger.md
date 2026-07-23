@@ -15,11 +15,15 @@
    - 前者为 `question`，后者为 `evidence_need`，两者兼有为 `mixed`；语义相同者可以合并，必须保留全部来源 `source_ref`。
    - 仅用四科现有 `native_conclusions` 判断是否已有回应。`direct_answer` 表示现有结论直接回答，`partial_answer` 表示只回答一部分，`evidence_boundary` 表示该科已回应但明确因资料边界无法回答实体内容。
    - “有专科回应”不等于“问题已解决”。本阶段只建立回应链接，不虚构答案。
+   - 会中专科回答已经在当前输入中投影为新的 `native_conclusion`；它必须被视为对原问题的正式回答，而不是新的病例事实。
+   - 会中回答明确提出的新医学判断点只有在它是 `native_question`、可由其他专科基于现有材料回答且不重复原问题时，才保留为问题。
+   - 不得把结论中的限制、缺失材料或“仍需某项检查”改写为新问题。
 
 3. 证据需求台账 `evidence_need_groups`
    - 合并重复的 `evidence_needs`，并纳入从原生问题重分类出的资料需求。
    - `source_refs` 只能引用原始 `native_question` 或 `evidence_gap`；`coverage_source_refs` 只引用确实提供了所需资料内容的 `native_conclusion`。
    - “专科说资料不足”不是资料已经提供；缺少资料也不是阴性结果。
+   - 会中回答新增的影像、报告、标本、检查或病史需求必须在这里与既有需求去重合并，不得回流到问题路由。
 
 输入的每条项目都有 `source_type`，必须按其类型引用：`native_conclusion` 是已有正式结论，`native_question` 是原生问题，`evidence_gap` 是资料缺口。`answer_links.source_refs` 和 `coverage_source_refs` 只能放 `native_conclusion`；`evidence_gap` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
 

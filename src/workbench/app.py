@@ -169,7 +169,7 @@ async def run_chair(run_id: str) -> dict:
 def discussion(run_id: str) -> dict:
     try:
         result = catalog.discussion(run_id)
-        if orchestrator.discussion_running(run_id):
+        if result["status"] != "failed" and orchestrator.discussion_running(run_id):
             result["status"] = "running"
         return result
     except (FileNotFoundError, ValueError) as error:

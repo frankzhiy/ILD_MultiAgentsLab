@@ -63,9 +63,24 @@ def test_discussion_endpoint_is_ready_from_existing_chair_outputs():
     assert response.json()["max_rounds"] == 3
 
 
+def test_discussion_endpoint_keeps_failed_state_while_worker_cleans_up(monkeypatch):
+    monkeypatch.setattr(orchestrator.catalog, "discussion", lambda _run_id: {"status": "failed"})
+    monkeypatch.setattr(orchestrator, "discussion_running", lambda _run_id: True)
+
+    response = TestClient(app).get("/api/runs/run-1/discussion")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+
+
 def test_discussion_endpoint_starts_only_the_discussion_stage(monkeypatch):
     started = []
     monkeypatch.setattr(orchestrator, "start_discussion", started.append)
+    monkeypatch.setattr(
+        orchestrator.catalog,
+        "discussion",
+        lambda _run_id: {"status": "failed", "active_round": {"status": "failed"}},
+    )
 
     response = TestClient(app).post(f"/api/runs/{DISCUSSION_RUN_ID}/discussion")
 

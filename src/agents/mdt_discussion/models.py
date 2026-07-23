@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
+from src.agents.common.initial_output import EvidenceGap, InterspecialtyQuestion
 from src.guidelines.models import GuidelineEvidencePointer
 
 
@@ -70,12 +71,30 @@ class DiscussionEvidenceUseDraft(BaseModel):
 
 class DiscussionEvidenceUse(DiscussionEvidenceUseDraft):
     evidence_ids: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    segment_id: SkipJsonSchema[str] = ""
     graph_unit_id: SkipJsonSchema[str] = ""
     quote: SkipJsonSchema[str] = ""
     evidence_fragments: SkipJsonSchema[list[dict[str, Any]]] = Field(default_factory=list)
     propositions: SkipJsonSchema[list[DiscussionProposition]] = Field(default_factory=list)
     graph_nodes: SkipJsonSchema[list[dict[str, Any]]] = Field(default_factory=list)
     graph_edges: SkipJsonSchema[list[dict[str, Any]]] = Field(default_factory=list)
+
+
+class DiscussionAnswerClaimDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1)
+    evidence_uses: list[DiscussionEvidenceUseDraft] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
+
+
+class DiscussionAnswerClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str
+    statement: str
+    evidence_uses: list[DiscussionEvidenceUse] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
 
 
 class SpecialtyTaskAnswerDraft(BaseModel):
@@ -85,10 +104,13 @@ class SpecialtyTaskAnswerDraft(BaseModel):
     answer: str = Field(min_length=1)
     confidence: Literal["high", "moderate", "low", "unknown"]
     medical_basis: str = Field(min_length=1)
+    answer_claims: list[DiscussionAnswerClaimDraft] = Field(min_length=1)
     evidence_uses: list[DiscussionEvidenceUseDraft] = Field(default_factory=list)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     changed_from_previous: bool
     remaining_limitation: str = ""
+    new_questions: list[InterspecialtyQuestion] = Field(default_factory=list)
+    evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
 
 
 class SpecialtyTaskAnswer(BaseModel):
@@ -102,10 +124,13 @@ class SpecialtyTaskAnswer(BaseModel):
     answer: str
     confidence: Literal["high", "moderate", "low", "unknown"]
     medical_basis: str
+    answer_claims: list[DiscussionAnswerClaim] = Field(default_factory=list)
     evidence_uses: list[DiscussionEvidenceUse] = Field(default_factory=list)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     changed_from_previous: bool
     remaining_limitation: str = ""
+    new_questions: list[InterspecialtyQuestion] = Field(default_factory=list)
+    evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
 
 
 class SpecialtyRoundResponse(BaseModel):

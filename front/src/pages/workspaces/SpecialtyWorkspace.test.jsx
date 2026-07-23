@@ -10,6 +10,7 @@ import { SpecialtyWorkspace } from './SpecialtyWorkspace'
 vi.mock('../../api', () => ({
   api: {
     specialties: vi.fn(),
+    semantic: vi.fn(),
     guidelines: vi.fn().mockResolvedValue([]),
     guidelineUrl: vi.fn((name, page) => `/api/guidelines/${name}#page=${page}`),
   },
@@ -123,6 +124,27 @@ function renderWorkspace({ run = { status: 'running' }, drawer = false } = {}) {
 
 beforeEach(() => {
   api.specialties.mockReset()
+  api.semantic.mockReset()
+  api.semantic.mockResolvedValue({
+    segments: [{
+      segment_id: 'seg-1',
+      units: [{
+        graph_unit_id: 'gu-1',
+        text: '患者长期进行性呼吸困难。',
+        clinical_propositions: {
+          evidence_blocks: [{ evidence_id: 'ev-1', text: '长期进行性呼吸困难。' }],
+          propositions: [{
+            proposition_id: 'prop-1',
+            concept_text: '进行性呼吸困难',
+            status: 'present',
+            certainty: 'high',
+            modifiers: [{ text: '长期' }],
+          }],
+        },
+        local_graph: { nodes: [], edges: [] },
+      }],
+    }],
+  })
   api.guidelines.mockClear()
   useWorkbenchStore.setState({ evidence: null, evidenceOpen: false })
 })
@@ -141,9 +163,12 @@ describe('SpecialtyWorkspace', () => {
     expect(screen.getByText('临床推理论证')).toBeInTheDocument()
     ;['专科问题定位', '专业结论', '需要其他专科回答的问题', '决策相关证据缺口', '本专科判断边界', '问题表征', '候选解释', '鉴别性证据比较', '机制与时间一致性', '反证、限制与边界复核', '综合理由'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
-    fireEvent.click(screen.getAllByRole('button', { name: /gu-1/ })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /ev-1/ })[0])
     expect(await screen.findByText('证据检查器')).toBeInTheDocument()
     expect(screen.getByText('长期进行性呼吸困难。')).toBeInTheDocument()
+    expect(await screen.findByText('完整 Graph Unit 上下文')).toBeInTheDocument()
+    expect(screen.getByText('患者长期进行性呼吸困难。')).toBeInTheDocument()
+    expect(screen.getByText('原文证据块')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '定位到语义图' })).toBeInTheDocument()
   })
 

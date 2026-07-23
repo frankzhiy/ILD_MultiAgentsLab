@@ -16,6 +16,7 @@ from src.agents.mdt_chair.models import (
 from src.agents.mdt_discussion.integration import (
     append_round_responses,
     reconcile_discussion_references,
+    stabilize_integration_ids,
 )
 from src.agents.mdt_discussion.models import SpecialtyRoundResponse, SpecialtyTaskAnswer
 from src.llm.base import LLMResponse
@@ -416,6 +417,98 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
     )
 
 
+def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    previous = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(initial_bundle)),
+        initial_bundle,
+        resolved_ledger(initial_bundle),
+    )
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-thoracic_radiology-A",
+        task_id="R01-Q001-thoracic_radiology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="answered",
+        answer="现有材料不能确认具体模式，但可确认有限纤维化表型。",
+        confidence="moderate",
+        medical_basis="现有资料只有影像文字摘要。",
+        changed_from_previous=True,
+        remaining_limitation="缺少可比原始影像。",
+        new_questions=[{
+            "target_specialty": "pulmonology",
+            "question": "现有低氧程度能否由肺实质异常充分解释？",
+            "why_it_matters": "限定肺实质异常的临床贡献。",
+            "decision_unlocked": "决定是否需要并行考虑心肺血管因素。",
+            "related_evidence": [],
+        }],
+        evidence_gaps=[{
+            "available_information": "已有影像文字摘要。",
+            "missing_information": "缺少可比原始HRCT。",
+            "why_it_matters": "影响影像模式和进展判断。",
+            "decision_unlocked": "提高影像判断确定性。",
+            "related_evidence": [],
+        }],
+    )
+    responses = [SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty="thoracic_radiology",
+        answers=[answer],
+    )]
+    current_outputs = append_round_responses(initial_outputs, responses)
+    current_bundle = build_chair_prompt_bundle("case-1", current_outputs)
+    payload = integration_payload(current_bundle)
+    new_question_ref = next(
+        ref
+        for ref, item in current_bundle.source_registry.items()
+        if item.source_type == "native_question"
+        and item.quote == "现有低氧程度能否由肺实质异常充分解释？"
+    )
+    new_gap_ref = next(
+        ref
+        for ref, item in current_bundle.source_registry.items()
+        if item.source_type == "evidence_gap"
+        and item.quote == "缺少可比原始HRCT。"
+    )
+    payload["questions"].append({
+        "question": "现有低氧程度能否由肺实质异常充分解释？",
+        "answers": [],
+        "resolution_status": "unresolved",
+        "answer_summary": "尚无呼吸科会中回答。",
+        "remaining_clarification": "请基于现有材料判断。",
+        "why_it_matters": "限定肺实质异常的临床贡献。",
+        "decision_unlocked": "决定是否需要并行考虑心肺血管因素。",
+        "related_evidence_need_source_refs": [],
+        "source_refs": [new_question_ref],
+    })
+    payload["evidence_needs"].append({
+        "status": "missing",
+        "required_information": "缺少可比原始HRCT。",
+        "available_information": "已有影像文字摘要。",
+        "remaining_information": "仍缺可比原始HRCT。",
+        "why_it_matters": "影响影像模式和进展判断。",
+        "decision_unlocked": "提高影像判断确定性。",
+        "source_refs": [new_gap_ref],
+    })
+    result = MDTChairIntegration.model_validate(payload)
+
+    reconcile_discussion_references(result, previous, responses, current_bundle)
+    result = resolve_chair_references(result, current_bundle)
+    result = stabilize_integration_ids(result, previous)
+
+    assert result.questions[0].question_id == "Q001"
+    assert result.questions[0].question == previous.questions[0].question
+    assert result.questions[-1].question_id == "Q002"
+    assert result.questions[-1].question == "现有低氧程度能否由肺实质异常充分解释？"
+    assert result.evidence_needs[0].need_id == "EN001"
+    assert any(
+        need.required_information == "缺少可比原始HRCT。"
+        for need in result.evidence_needs
+    )
+
+
 def test_question_response_and_resolution_are_independent():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     result = resolve_chair_references(
@@ -499,6 +592,17 @@ def test_unknown_source_id_is_rejected_without_medical_semantic_validator():
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
 
 
+def test_integration_source_type_error_identifies_exact_field():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = integration_payload(bundle)
+    payload["questions"][0]["source_refs"] = [
+        source_ref(bundle, "pulmonology", "native_conclusion")
+    ]
+
+    with pytest.raises(ValueError, match=r"questions\[0\]\.source_refs"):
+        resolve_chair_references(MDTChairIntegration.model_validate(payload), bundle)
+
+
 def test_semantic_ledger_drops_known_gap_refs_from_answer_and_coverage_links():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     payload = ledger_payload(bundle)
@@ -535,7 +639,13 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
                 "evidence_blocks": [{
                     "evidence_id": "seg_001_gu_001_ev_001", "text": "规范原文。"
                 }],
-                "propositions": [],
+                "propositions": [{
+                    "proposition_id": "prop_001",
+                    "evidence": {
+                        "evidence_ids": ["seg_001_gu_001_ev_001"],
+                        "quote": "规范命题原文。",
+                    },
+                }],
             }],
         }]
     }
@@ -551,6 +661,19 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
     evidence = next(iter(bundle.evidence_registry.values()))
     assert evidence.segment_id == "seg_001"
     assert evidence.quote == "规范原文。"
+    assert evidence.evidence_ref == "seg_001_gu_001_ev_001"
+    assert "E001" not in bundle.evidence_registry
+
+    source_with_proposition = outputs()
+    source_with_proposition["pulmonology"]["professional_conclusions"]["conclusions"][0]["evidence"]["supporting"][0]["proposition_ids"] = ["prop_001"]
+    proposition_bundle = build_chair_prompt_bundle(
+        "case-1",
+        source_with_proposition,
+        semantic_evidence=catalog,
+    )
+    proposition_evidence = next(iter(proposition_bundle.evidence_registry.values()))
+    assert proposition_evidence.evidence_ref == "seg_001_gu_001::prop_001"
+    assert proposition_evidence.proposition_ids == ["seg_001_gu_001::prop_001"]
 
 
 def test_agent_uses_ledger_then_integration_structured_calls():
@@ -582,6 +705,24 @@ def test_agent_uses_ledger_then_integration_structured_calls():
     assert result.integrated_conclusions[0].conclusion_id == "IC001"
     assert trace["semantic_ledger"]["claim_groups"][0]["topic_id"] == "T001"
     assert "topic_ledger_chars" in trace["prompt_components"]
+    ledger_schema = llm.calls[0][1]["response_format"]["json_schema"]["schema"]
+    integration_schema = llm.calls[1][1]["response_format"]["json_schema"]["schema"]
+    assert ledger_schema["$defs"]["LedgerQuestionRoute"]["properties"][
+        "source_refs"
+    ]["items"]["enum"] == [
+        source_ref(bundle, "pulmonology", "native_question"),
+        source_ref(bundle, "pathology", "native_question"),
+    ]
+    assert integration_schema["$defs"]["IntegratedQuestion"]["properties"][
+        "source_refs"
+    ]["items"]["enum"] == [
+        source_ref(bundle, "pulmonology", "native_question"),
+    ]
+    assert integration_schema["$defs"]["QuestionAnswer"]["properties"][
+        "source_refs"
+    ]["items"]["enum"] == [
+        source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    ]
 
     alias_result, _ = agent.synthesize(bundle)
     assert len(llm.calls) == 4

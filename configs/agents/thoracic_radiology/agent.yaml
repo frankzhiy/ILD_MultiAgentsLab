@@ -1,8 +1,8 @@
 provider: apiyi
 model: gpt-5.6-luna
 # deepseek-v4-flash
-# base_url: https://api.apiyi.com/v1
-base_url: http://api.apiyi.com:16888/v1
+base_url: https://api.apiyi.com/v1
+# base_url: http://api.apiyi.com:16888/v1
 api_key_env: APIYI_API_KEY
 request_options:
   reasoning_effort: none

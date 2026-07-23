@@ -42,10 +42,7 @@ def build_discussion_tasks(
         issue_id = str(question.get("question_id") or "")
         if not issue_id or question.get("resolution_status") == "resolved":
             continue
-        if (
-            question.get("resolution_status") == "blocked_by_evidence"
-            and issue_id in attempted
-        ):
+        if issue_id in attempted:
             continue
         targets = _valid_specialties(question.get("target_specialties") or [])
         for specialty in targets:
