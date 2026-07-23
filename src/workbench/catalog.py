@@ -327,9 +327,14 @@ class RunCatalog:
             "case_id": case_id,
             "status": status,
             "runnable": runnable,
-            "current_round": len((state or {}).get("rounds", [])),
+            "current_round": (
+                ((state or {}).get("active_round") or {}).get("round_number")
+                or len((state or {}).get("rounds", []))
+            ),
             "max_rounds": (state or {}).get("max_rounds", 3),
             "rounds": (state or {}).get("rounds", []),
+            "active_round": (state or {}).get("active_round"),
+            "report_status": (state or {}).get("report_status", "waiting"),
             "latest_chair_result": (state or {}).get("latest_chair_result"),
             "stop_reason": (state or {}).get("stop_reason"),
             "final_report": (state or {}).get("final_report"),

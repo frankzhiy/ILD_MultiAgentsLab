@@ -39,6 +39,7 @@ const completed = {
       specialty: 'pulmonology',
       answers: [{
         answer_id: 'R01-A001-pulmonology',
+        task_id: 'R01-Q001-pulmonology',
         issue_id: 'Q001',
         answerability: 'partially_answered',
         confidence: 'moderate',
@@ -70,6 +71,45 @@ const completed = {
   },
 }
 
+const active = {
+  status: 'running',
+  runnable: true,
+  current_round: 1,
+  max_rounds: 3,
+  rounds: [],
+  report_status: 'waiting',
+  active_round: {
+    round_number: 1,
+    status: 'running',
+    started_at: '2026-07-23T00:00:00Z',
+    chair_status: 'waiting',
+    chair_result: null,
+    tasks: completed.rounds[0].tasks,
+    task_progress: {
+      'R01-Q001-pulmonology': {
+        status: 'running',
+        started_at: '2026-07-23T00:00:01Z',
+        completed_at: '',
+        answer: null,
+        error: '',
+      },
+    },
+  },
+}
+
+class FakeEventSource {
+  static instances = []
+  constructor(url) {
+    this.url = url
+    this.listeners = {}
+    FakeEventSource.instances.push(this)
+  }
+  addEventListener(type, listener) { this.listeners[type] = listener }
+  removeEventListener(type) { delete this.listeners[type] }
+  emit(type) { this.listeners[type]?.({ data: '{}' }) }
+  close() {}
+}
+
 function renderWorkspace() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
   return render(
@@ -84,7 +124,11 @@ beforeEach(() => {
   api.runDiscussion.mockReset()
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+  FakeEventSource.instances = []
+})
 
 describe('DiscussionWorkspace', () => {
   it('starts only the discussion stage from existing outputs', async () => {
@@ -95,20 +139,48 @@ describe('DiscussionWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: '运行团队讨论' }))
 
     await waitFor(() => expect(api.runDiscussion).toHaveBeenCalledWith('run-1'))
-    expect(screen.getByText(/不会重跑语义图、首轮专科或初始主持人/)).toBeInTheDocument()
+    expect(screen.getByText(/实时显示任务分配、专科处理、证据使用和主持人更新/)).toBeInTheDocument()
   })
 
   it('shows task routing, evidence interpretation, chair update, and final report', async () => {
     api.discussion.mockResolvedValue(completed)
     renderWorkspace()
 
-    expect(await screen.findByText('最终 MDT 统一报告')).toBeInTheDocument()
-    expect(screen.getByText('区分肺实质与肺血管因素。')).toBeInTheDocument()
+    expect((await screen.findAllByText('最终 MDT 统一报告')).length).toBeGreaterThan(1)
+    expect(screen.getAllByText('区分肺实质与肺血管因素。').length).toBeGreaterThan(1)
     expect(screen.getByText('现有证据支持低氧存在，但不能量化各因素贡献。')).toBeInTheDocument()
     expect(screen.getByText('证明低氧存在，但不能单独证明病因。')).toBeInTheDocument()
-    expect(screen.getByText('Evidence ID：ev-1')).toBeInTheDocument()
-    expect(screen.getByText('低氧节点')).toBeInTheDocument()
+    expect(screen.getAllByText('gu-1:ev-1').length).toBeGreaterThan(0)
     expect(screen.getByText('主持人第 1 轮更新')).toBeInTheDocument()
     expect(screen.getByText('跨专科整合结论')).toBeInTheDocument()
+  })
+
+  it('refreshes visible task progress when a discussion event arrives', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    api.discussion.mockResolvedValue(active)
+    renderWorkspace()
+
+    expect(await screen.findByText('专科正在使用证据形成回答…')).toBeInTheDocument()
+    expect(screen.getAllByText('分析中').length).toBeGreaterThan(0)
+
+    const answer = completed.rounds[0].specialty_responses[0].answers[0]
+    api.discussion.mockResolvedValue({
+      ...active,
+      active_round: {
+        ...active.active_round,
+        task_progress: {
+          'R01-Q001-pulmonology': {
+            ...active.active_round.task_progress['R01-Q001-pulmonology'],
+            status: 'completed',
+            completed_at: '2026-07-23T00:00:08Z',
+            answer,
+          },
+        },
+      },
+    })
+    FakeEventSource.instances[0].emit('discussion_task_completed')
+
+    expect(await screen.findByText(answer.answer)).toBeInTheDocument()
+    await waitFor(() => expect(api.discussion).toHaveBeenCalledTimes(2))
   })
 })

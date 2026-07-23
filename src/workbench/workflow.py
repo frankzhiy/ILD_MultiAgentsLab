@@ -4,8 +4,10 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
 from src.agents.common.specialty_input import build_specialty_case_input
@@ -318,6 +320,12 @@ class WorkbenchWorkflow:
         )
         traces: dict[str, Any] = {"rounds": []}
         self._write(state_path, state)
+        self.events.append(
+            run_id,
+            "discussion_started",
+            {"max_rounds": max_rounds},
+            stage="mdt_discussion",
+        )
         latest = baseline
         try:
             for round_number in range(1, max_rounds + 1):
@@ -332,6 +340,26 @@ class WorkbenchWorkflow:
                     state.stop_reason = "没有仍需专科处理的问题或冲突。"
                     break
                 grouped = group_tasks_by_specialty(tasks)
+                task_payloads = [task.model_dump(mode="json") for task in tasks]
+                state.active_round = {
+                    "round_number": round_number,
+                    "status": "running",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "tasks": task_payloads,
+                    "task_progress": {
+                        task.task_id: {
+                            "status": "waiting",
+                            "started_at": "",
+                            "completed_at": "",
+                            "answer": None,
+                            "error": "",
+                        }
+                        for task in tasks
+                    },
+                    "chair_status": "waiting",
+                    "chair_result": None,
+                }
+                self._write(state_path, state)
                 self.events.append(
                     run_id,
                     "discussion_round_started",
@@ -339,12 +367,13 @@ class WorkbenchWorkflow:
                         "round_number": round_number,
                         "task_count": len(tasks),
                         "specialties": list(grouped),
+                        "tasks": task_payloads,
                     },
                     stage="mdt_discussion",
                 )
                 self._write(
                     run_dir / f"{case_id}_mdt_round_{round_number:02d}_tasks.json",
-                    [task.model_dump(mode="json") for task in tasks],
+                    task_payloads,
                 )
 
                 answers_by_specialty = {specialty: [] for specialty in grouped}
@@ -352,22 +381,80 @@ class WorkbenchWorkflow:
                     "round_number": round_number,
                     "tasks": {},
                 }
+                progress_lock = Lock()
+
+                def timestamp() -> str:
+                    return datetime.now(timezone.utc).isoformat()
 
                 def run_task(task):
-                    config_path = config_paths[task.specialty]
-                    config = load_yaml(config_path)
-                    llm = build_llm_client(config)
-                    agent = SpecialtyDiscussionAgent.from_config(
-                        config_path,
-                        llm,
-                        specialty=task.specialty,
-                        event_callback=self._progress(run_id, task.specialty),
-                    )
-                    answer, task_trace = agent.respond_to_task(
-                        task=task,
-                        specialty_initial_output=initial_outputs[task.specialty],
-                        chair_result=latest.model_dump(mode="json"),
-                    )
+                    with progress_lock:
+                        progress = state.active_round["task_progress"][task.task_id]
+                        progress["status"] = "running"
+                        progress["started_at"] = timestamp()
+                        self._write(state_path, state)
+                        self.events.append(
+                            run_id,
+                            "discussion_task_started",
+                            {
+                                "round_number": round_number,
+                                "task_id": task.task_id,
+                                "specialty": task.specialty,
+                            },
+                            agent_id=task.specialty,
+                            stage="mdt_discussion",
+                        )
+                    try:
+                        config_path = config_paths[task.specialty]
+                        config = load_yaml(config_path)
+                        llm = build_llm_client(config)
+                        agent = SpecialtyDiscussionAgent.from_config(
+                            config_path,
+                            llm,
+                            specialty=task.specialty,
+                            event_callback=self._progress(run_id, task.specialty),
+                        )
+                        answer, task_trace = agent.respond_to_task(
+                            task=task,
+                            specialty_initial_output=initial_outputs[task.specialty],
+                            chair_result=latest.model_dump(mode="json"),
+                        )
+                    except Exception as error:
+                        with progress_lock:
+                            progress = state.active_round["task_progress"][task.task_id]
+                            progress["status"] = "failed"
+                            progress["completed_at"] = timestamp()
+                            progress["error"] = str(error)
+                            self._write(state_path, state)
+                            self.events.append(
+                                run_id,
+                                "discussion_task_failed",
+                                {
+                                    "round_number": round_number,
+                                    "task_id": task.task_id,
+                                    "specialty": task.specialty,
+                                    "error": str(error),
+                                },
+                                agent_id=task.specialty,
+                                stage="mdt_discussion",
+                            )
+                        raise
+                    with progress_lock:
+                        progress = state.active_round["task_progress"][task.task_id]
+                        progress["status"] = "completed"
+                        progress["completed_at"] = timestamp()
+                        progress["answer"] = answer.model_dump(mode="json")
+                        self._write(state_path, state)
+                        self.events.append(
+                            run_id,
+                            "discussion_task_completed",
+                            {
+                                "round_number": round_number,
+                                "task_id": task.task_id,
+                                "specialty": task.specialty,
+                            },
+                            agent_id=task.specialty,
+                            stage="mdt_discussion",
+                        )
                     return task, answer, task_trace
 
                 with ThreadPoolExecutor(max_workers=min(len(tasks), 6)) as executor:
@@ -394,6 +481,15 @@ class WorkbenchWorkflow:
                         response,
                     )
                 cumulative_outputs = append_round_responses(cumulative_outputs, responses)
+                state.active_round["chair_status"] = "running"
+                self._write(state_path, state)
+                self.events.append(
+                    run_id,
+                    "discussion_chair_started",
+                    {"round_number": round_number},
+                    agent_id="mdt_chair",
+                    stage="mdt_discussion",
+                )
                 bundle = build_chair_prompt_bundle(
                     case_id,
                     cumulative_outputs,
@@ -427,6 +523,7 @@ class WorkbenchWorkflow:
                 )
                 state.rounds.append(discussion_round)
                 state.latest_chair_result = latest.model_dump(mode="json")
+                state.active_round = None
                 round_trace["chair"] = chair_trace
                 traces["rounds"].append(round_trace)
                 self._write(
@@ -446,6 +543,15 @@ class WorkbenchWorkflow:
 
             if not state.stop_reason:
                 state.stop_reason = "讨论已结束。"
+            state.report_status = "running"
+            self._write(state_path, state)
+            self.events.append(
+                run_id,
+                "discussion_report_started",
+                {"discussion_rounds": len(state.rounds)},
+                agent_id="mdt_chair",
+                stage="mdt_discussion",
+            )
             report_config = load_yaml(config_paths["mdt_chair"])
             report_llm = build_llm_client(report_config)
             report_agent = FinalReportAgent.from_config(
@@ -461,15 +567,32 @@ class WorkbenchWorkflow:
             )
             state.final_report = report
             state.status = "completed"
+            state.report_status = "completed"
             traces["final_report"] = report_trace
             self._write(run_dir / f"{case_id}_mdt_final_report.json", report)
             self._write(state_path, state)
             self._write(trace_path, traces)
+            self.events.append(
+                run_id,
+                "discussion_completed",
+                {"discussion_rounds": len(state.rounds)},
+                stage="mdt_discussion",
+            )
         except Exception as error:
             state.status = "failed"
+            if state.active_round and state.active_round.get("chair_status") == "running":
+                state.active_round["chair_status"] = "failed"
+            if state.report_status == "running":
+                state.report_status = "failed"
             state.error = str(error)
             self._write(state_path, state)
             self._write(trace_path, traces)
+            self.events.append(
+                run_id,
+                "discussion_failed",
+                {"error": str(error)},
+                stage="mdt_discussion",
+            )
             raise
 
     def _progress(self, run_id: str, agent_id: str) -> Callable[[str, dict], None]:

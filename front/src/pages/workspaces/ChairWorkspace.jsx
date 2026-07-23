@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PlayCircleOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Skeleton, Space, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Empty, Skeleton, Space, Tabs, Tag, Typography } from 'antd'
 import { api } from '../../api'
 import { CitationGroup } from '../../components/Citation'
 import { EvidenceGroups } from '../../components/EvidenceGroups'
@@ -343,6 +343,17 @@ export function ChairResultBoards({ result }) {
       <EvidenceNeeds items={result?.evidence_needs} />
     </div>
   )
+}
+
+export function ChairResultTabs({ result }) {
+  const items = [
+    ['consensus', '共识结论', <IntegratedConclusions items={result?.integrated_conclusions} />],
+    ['boundaries', '判断边界', <AssessmentBoundaries items={result?.assessment_boundaries} />],
+    ['conflicts', '跨专科冲突', <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />],
+    ['questions', '待回答问题', <Questions items={result?.questions} />],
+    ['evidence', '证据缺口', <EvidenceNeeds items={result?.evidence_needs} />],
+  ]
+  return <Tabs className="chair-result-tabs" items={items.map(([key, label, children]) => ({ key, label, children }))} />
 }
 
 export function ChairWorkspace({ runId, run }) {

@@ -156,6 +156,8 @@ class MDTDiscussionState(BaseModel):
     status: Literal["running", "completed", "failed"]
     max_rounds: int = 3
     rounds: list[DiscussionRound] = Field(default_factory=list)
+    active_round: dict[str, Any] | None = None
+    report_status: Literal["waiting", "running", "completed", "failed"] = "waiting"
     latest_chair_result: dict[str, Any]
     stop_reason: str = ""
     final_report: MDTFinalReport | None = None

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -103,6 +104,32 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     )
     assert catalog.chair("run-1")["status"] == "completed"
     assert catalog.run_summary(run_dir)["chair_complete"] is True
+
+    baseline_path = run_dir / "case-1_mdt_chair_integration.json"
+    write_json(
+        run_dir / "case-1_mdt_discussion_state.json",
+        {
+            "schema_version": "mdt_discussion.v1",
+            "case_id": "case-1",
+            "baseline_sha256": sha256(baseline_path.read_bytes()).hexdigest(),
+            "status": "running",
+            "max_rounds": 3,
+            "rounds": [],
+            "active_round": {
+                "round_number": 1,
+                "status": "running",
+                "tasks": [{"task_id": "R01-Q001-pulmonology"}],
+                "task_progress": {"R01-Q001-pulmonology": {"status": "running"}},
+                "chair_status": "waiting",
+            },
+            "report_status": "waiting",
+            "latest_chair_result": {},
+        },
+    )
+    discussion = catalog.discussion("run-1")
+    assert discussion["status"] == "running"
+    assert discussion["current_round"] == 1
+    assert discussion["active_round"]["task_progress"]["R01-Q001-pulmonology"]["status"] == "running"
 
 
 def test_web_orchestrator_and_workflow_include_chair_without_html_reporting():

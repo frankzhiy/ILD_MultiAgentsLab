@@ -16,3 +16,9 @@ Object.defineProperty(window, 'matchMedia', {
 
 const getComputedStyle = window.getComputedStyle.bind(window)
 window.getComputedStyle = (element) => getComputedStyle(element)
+
+globalThis.ResizeObserver = class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
