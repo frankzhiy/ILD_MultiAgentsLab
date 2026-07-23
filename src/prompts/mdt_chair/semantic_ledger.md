@@ -21,6 +21,8 @@
    - `source_refs` 只能引用原始 `native_question` 或 `evidence_gap`；`coverage_source_refs` 只引用确实提供了所需资料内容的 `native_conclusion`。
    - “专科说资料不足”不是资料已经提供；缺少资料也不是阴性结果。
 
+输入的每条项目都有 `source_type`，必须按其类型引用：`native_conclusion` 是已有正式结论，`native_question` 是原生问题，`evidence_gap` 是资料缺口。`answer_links.source_refs` 和 `coverage_source_refs` 只能放 `native_conclusion`；`evidence_gap` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
+
 不要生成任何 ID；程序会统一回填。不要查询或引用指南，不使用专科内部 `clinical_reasoning`。只使用输入中存在的 `source_ref`，只返回符合 schema 的 JSON。
 
 JSON Schema：

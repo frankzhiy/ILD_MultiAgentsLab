@@ -297,6 +297,20 @@ def test_prompt_projection_excludes_internal_reasoning_and_runtime_guidelines():
     assert any(bundle.source_guidelines.values())
 
 
+def test_prompt_projection_labels_each_specialty_source_type():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    specialty = bundle.prompt_input["specialties"][0]
+    assert {item["source_type"] for item in specialty["native_conclusions"]} == {
+        "native_conclusion"
+    }
+    assert {item["source_type"] for item in specialty["native_questions"]} == {
+        "native_question"
+    }
+    assert {item["source_type"] for item in specialty["evidence_needs"]} == {
+        "evidence_gap"
+    }
+
+
 def test_llm_json_schemas_do_not_contain_program_generated_ids():
     schemas = json.dumps(
         [ChairSemanticLedger.model_json_schema(), MDTChairIntegration.model_json_schema()]
@@ -481,8 +495,35 @@ def test_unknown_source_id_is_rejected_without_medical_semantic_validator():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     payload = ledger_payload(bundle)
     payload["claim_groups"][0]["claims"][0]["source_ref"] = "S999"
-    with pytest.raises(ValueError, match="Unknown specialty source refs"):
+    with pytest.raises(ValueError, match="unknown specialty source refs"):
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_semantic_ledger_drops_known_gap_refs_from_answer_and_coverage_links():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    gap_ref = source_ref(bundle, "pulmonology", "evidence_gap")
+    payload["question_routes"][0]["answer_links"][0]["source_refs"] = [gap_ref]
+    payload["evidence_need_groups"][0]["coverage_source_refs"] = [gap_ref]
+
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    assert ledger.question_routes[0].answer_links == []
+    assert ledger.evidence_need_groups[0].coverage_source_refs == []
+    assert bundle.normalization_events == [
+        {
+            "context": "question_routes[0].answer_links[0].source_refs",
+            "action": "dropped_incompatible_known_source_refs",
+            "allowed_source_types": ["native_conclusion"],
+            "dropped": [{"source_ref": gap_ref, "source_type": "evidence_gap"}],
+        },
+        {
+            "context": "evidence_need_groups[0].coverage_source_refs",
+            "action": "dropped_incompatible_known_source_refs",
+            "allowed_source_types": ["native_conclusion"],
+            "dropped": [{"source_ref": gap_ref, "source_type": "evidence_gap"}],
+        },
+    ]
 
 
 def test_semantic_graph_catalog_repairs_specialty_locator():

@@ -9,6 +9,10 @@ from src.agents.mdt_discussion.models import (
     SpecialtyTaskAnswer,
     SpecialtyTaskAnswerDraft,
 )
+from src.agents.mdt_discussion.prompt_projection import (
+    build_chair_prompt_view,
+    build_specialty_initial_prompt_view,
+)
 from src.guidelines.runtime import (
     GuidelineRuntime,
     guideline_evidence_schema_constraints,
@@ -107,8 +111,10 @@ class SpecialtyDiscussionAgent:
             self.prompt,
             {
                 "specialty_label": SPECIALTY_LABELS[self.specialty],
-                "specialty_initial_output": prompt_json(specialty_initial_output),
-                "chair_result": prompt_json(chair_result),
+                "specialty_initial_output": prompt_json(
+                    build_specialty_initial_prompt_view(specialty_initial_output)
+                ),
+                "chair_result": prompt_json(build_chair_prompt_view(chair_result)),
                 "task": prompt_json(task.model_dump(mode="json")),
                 "clinical_rules": prompt_json(self.config.get("clinical_rules") or {}),
                 "guideline_context": guideline_context,

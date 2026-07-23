@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +49,7 @@ class ChairPromptBundle:
     source_evidence: dict[str, dict[str, list[str]]]
     source_guidelines: dict[str, list[GuidelineEvidencePointer]]
     source_metadata: dict[str, dict[str, Any]]
+    normalization_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _Registry:
@@ -290,6 +291,7 @@ def _compact_specialty(
         conclusions.append(
             {
                 "source_ref": source_ref,
+                "source_type": "native_conclusion",
                 "conclusion_id": item.get("conclusion_id"),
                 "role": item.get("role"),
                 "conclusion_type": item.get("conclusion_type"),
@@ -319,7 +321,14 @@ def _compact_specialty(
                 "decision_unlocked": item.get("decision_unlocked"),
             },
         )
-        questions.append({"source_ref": source_ref, **item, "related_evidence": evidence["background"]})
+        questions.append(
+            {
+                **item,
+                "source_ref": source_ref,
+                "source_type": "native_question",
+                "related_evidence": evidence["background"],
+            }
+        )
 
     evidence_needs = []
     for index, item in enumerate(professional.get("evidence_gaps") or []):
@@ -339,7 +348,12 @@ def _compact_specialty(
             },
         )
         evidence_needs.append(
-            {"source_ref": source_ref, **item, "related_evidence": evidence["background"]}
+            {
+                **item,
+                "source_ref": source_ref,
+                "source_type": "evidence_gap",
+                "related_evidence": evidence["background"],
+            }
         )
 
     return {
@@ -500,6 +514,7 @@ class MDTChairAgent:
             "semantic_ledger": ledger.model_dump(mode="json"),
             "ledger_generation": ledger_trace,
             "integration_generation": synthesis_trace,
+            "semantic_ledger_normalizations": bundle.normalization_events,
         }
         trace["prompt_components"] = {
             "total_chars": len(ledger_prompt) + len(synthesis_prompt),
@@ -612,23 +627,97 @@ def resolve_semantic_ledger(
         group.topic_id = f"T{topic_index:03d}"
         for claim_index, claim in enumerate(group.claims, 1):
             claim.claim_id = f"{group.topic_id}-A{claim_index:03d}"
-            _require_refs([claim.source_ref], bundle, {"native_conclusion"})
+            _require_refs(
+                [claim.source_ref],
+                bundle,
+                {"native_conclusion"},
+                context=f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}].source_ref",
+            )
     for index, route in enumerate(ledger.question_routes, 1):
         route.route_id = f"R{index:03d}"
-        _require_refs(route.source_refs, bundle, {"native_question"})
+        _require_refs(
+            route.source_refs,
+            bundle,
+            {"native_question"},
+            context=f"question_routes[{index - 1}].source_refs",
+        )
         route.target_specialties = _ordered_unique(
             bundle.source_metadata[ref].get("target_specialty")
             for ref in route.source_refs
             if bundle.source_metadata[ref].get("target_specialty") in SPECIALTIES
         )
-        for answer in route.answer_links:
-            _require_refs(answer.source_refs, bundle, {"native_conclusion"})
+        answer_links = []
+        for answer_index, answer in enumerate(route.answer_links):
+            answer.source_refs = _drop_incompatible_known_refs(
+                answer.source_refs,
+                bundle,
+                {"native_conclusion"},
+                context=(
+                    f"question_routes[{index - 1}].answer_links[{answer_index}].source_refs"
+                ),
+            )
+            if not answer.source_refs:
+                continue
+            _require_refs(
+                answer.source_refs,
+                bundle,
+                {"native_conclusion"},
+                context=(
+                    f"question_routes[{index - 1}].answer_links[{answer_index}].source_refs"
+                ),
+            )
             answer.specialty = bundle.source_registry[answer.source_refs[0]].specialty
+            answer_links.append(answer)
+        route.answer_links = answer_links
     for index, group in enumerate(ledger.evidence_need_groups, 1):
         group.group_id = f"NG{index:03d}"
-        _require_refs(group.source_refs, bundle, {"native_question", "evidence_gap"})
-        _require_refs(group.coverage_source_refs, bundle, {"native_conclusion"})
+        _require_refs(
+            group.source_refs,
+            bundle,
+            {"native_question", "evidence_gap"},
+            context=f"evidence_need_groups[{index - 1}].source_refs",
+        )
+        group.coverage_source_refs = _drop_incompatible_known_refs(
+            group.coverage_source_refs,
+            bundle,
+            {"native_conclusion"},
+            context=f"evidence_need_groups[{index - 1}].coverage_source_refs",
+        )
+        _require_refs(
+            group.coverage_source_refs,
+            bundle,
+            {"native_conclusion"},
+            context=f"evidence_need_groups[{index - 1}].coverage_source_refs",
+        )
     return ledger
+
+
+def _drop_incompatible_known_refs(
+    refs: Iterable[str],
+    bundle: ChairPromptBundle,
+    allowed_types: set[str],
+    *,
+    context: str,
+) -> list[str]:
+    """Remove only known, wrongly-typed refs and retain an audit record."""
+    kept = []
+    dropped = []
+    for ref in _ordered_unique(refs):
+        source = bundle.source_registry.get(ref)
+        if source is None or source.source_type in allowed_types:
+            kept.append(ref)
+        else:
+            dropped.append({"source_ref": ref, "source_type": source.source_type})
+    if dropped:
+        bundle.normalization_events.append(
+            {
+                "context": context,
+                "action": "dropped_incompatible_known_source_refs",
+                "allowed_source_types": sorted(allowed_types),
+                "dropped": dropped,
+            }
+        )
+    return kept
 
 
 def _resolve_cited(
@@ -670,18 +759,27 @@ def _require_refs(
     refs: Iterable[str],
     bundle: ChairPromptBundle,
     allowed_types: set[str],
+    *,
+    context: str = "source_refs",
 ) -> None:
     unique_refs = _ordered_unique(refs)
     unknown = set(unique_refs) - set(bundle.source_registry)
     if unknown:
-        raise ValueError(f"Unknown specialty source refs: {sorted(unknown)}")
+        raise ValueError(f"{context}: unknown specialty source refs: {sorted(unknown)}")
     wrong_type = [
         ref
         for ref in unique_refs
         if bundle.source_registry[ref].source_type not in allowed_types
     ]
     if wrong_type:
-        raise ValueError(f"Incompatible specialty source refs: {wrong_type}")
+        observed = {
+            ref: bundle.source_registry[ref].source_type
+            for ref in wrong_type
+        }
+        raise ValueError(
+            f"{context}: incompatible specialty source refs {observed}; "
+            f"expected source types {sorted(allowed_types)}"
+        )
 
 
 def _link_output_items(result: MDTChairIntegration) -> None:

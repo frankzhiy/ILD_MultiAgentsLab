@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents.mdt_discussion.models import DiscussionRound, MDTFinalReport
+from src.agents.mdt_discussion.prompt_projection import build_chair_prompt_view
 from src.llm.base import LLMClient
 from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
@@ -83,7 +84,7 @@ class FinalReportAgent:
             self.prompt,
             {
                 "stop_reason": stop_reason,
-                "chair_result": prompt_json(chair_result),
+                "chair_result": prompt_json(build_chair_prompt_view(chair_result)),
                 "rounds": prompt_json(round_summary),
                 "output_schema": output_schema,
             },
@@ -104,4 +105,3 @@ class FinalReportAgent:
             user_prompt=prompt,
             extra_validation=resolve,
         )
-

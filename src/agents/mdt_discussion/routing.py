@@ -216,7 +216,27 @@ def _evidence_candidates(
                 ],
             )
         )
+    _validate_evidence_candidates(candidates)
     return candidates
+
+
+def _validate_evidence_candidates(
+    candidates: list[DiscussionEvidenceCandidate],
+) -> None:
+    missing_source_text = [
+        candidate.evidence_ref
+        for candidate in candidates
+        if not candidate.quote.strip()
+        and not any(
+            str(fragment.get("text") or "").strip()
+            for fragment in candidate.evidence_fragments
+        )
+    ]
+    if missing_source_text:
+        raise ValueError(
+            "Discussion evidence is missing source text: "
+            f"{sorted(missing_source_text)}"
+        )
 
 
 def _graph_index(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
