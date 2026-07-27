@@ -7,12 +7,14 @@ from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaim,
     DiscussionEvidenceUse,
     DiscussionTask,
+    SpecialtyAnswerReview,
+    SpecialtyAnswerReviewDraft,
     SpecialtyTaskAnswer,
     SpecialtyTaskAnswerDraft,
 )
 from src.agents.mdt_discussion.prompt_projection import (
-    build_chair_prompt_view,
-    build_specialty_initial_prompt_view,
+    build_issue_chair_prompt_view,
+    build_specialty_discussion_prompt_view,
 )
 from src.guidelines.runtime import (
     GuidelineRuntime,
@@ -26,6 +28,9 @@ from src.utils.config import load_text, load_yaml, render_template
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/specialty_response.md"
+REVIEW_PROMPT_PATH = (
+    Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/answer_review.md"
+)
 SPECIALTY_LABELS = {
     "pulmonology": "呼吸科",
     "thoracic_radiology": "胸部影像科",
@@ -54,11 +59,23 @@ class SpecialtyDiscussionAgent:
         self.specialty = specialty
         self.config = config
         self.prompt = load_text(PROMPT_PATH)
+        self.review_prompt = load_text(REVIEW_PROMPT_PATH)
         self.guideline_runtime = GuidelineRuntime.from_config(config)
         self.generator = StructuredLLMGenerator(
             llm,
             temperature=float(config.get("temperature", 0.0)),
-            max_tokens=int(config.get("max_tokens", 12000)),
+            max_tokens=min(int(config.get("max_tokens", 12000)), 8000),
+            max_attempts=int(config.get("max_attempts", 2)),
+            retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
+            response_format_mode=(
+                "json_schema" if getattr(llm, "supports_json_schema", False) else "json_object"
+            ),
+            event_callback=event_callback,
+        )
+        self.review_generator = StructuredLLMGenerator(
+            llm,
+            temperature=0.0,
+            max_tokens=min(int(config.get("max_tokens", 12000)), 2500),
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
             response_format_mode=(
@@ -95,7 +112,7 @@ class SpecialtyDiscussionAgent:
         )
         if self.guideline_runtime:
             guideline_context, allowed_chunks, retrieval_trace = (
-                self.guideline_runtime.prepare_query(guideline_query, limit=6)
+                self.guideline_runtime.prepare_query(guideline_query, limit=3)
             )
         else:
             guideline_context, allowed_chunks, retrieval_trace = "[]", {}, {
@@ -113,9 +130,11 @@ class SpecialtyDiscussionAgent:
             {
                 "specialty_label": SPECIALTY_LABELS[self.specialty],
                 "specialty_initial_output": prompt_json(
-                    build_specialty_initial_prompt_view(specialty_initial_output)
+                    build_specialty_discussion_prompt_view(specialty_initial_output)
                 ),
-                "chair_result": prompt_json(build_chair_prompt_view(chair_result)),
+                "chair_result": prompt_json(
+                    build_issue_chair_prompt_view(chair_result, task.issue_id)
+                ),
                 "task": prompt_json(task.model_dump(mode="json")),
                 "clinical_rules": prompt_json(self.config.get("clinical_rules") or {}),
                 "guideline_context": guideline_context,
@@ -187,6 +206,90 @@ class SpecialtyDiscussionAgent:
             task,
             draft,
             answer_id=f"{task.task_id}-A",
+        ), trace
+
+    def review_answer(
+        self,
+        *,
+        task: DiscussionTask,
+        answer: SpecialtyTaskAnswer,
+    ) -> tuple[SpecialtyAnswerReview, dict[str, Any]]:
+        """Review one answer with a deliberately small, guideline-free prompt."""
+
+        output_schema = (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if self.review_generator.response_format_mode == "json_schema"
+            else prompt_schema_json(SpecialtyAnswerReviewDraft)
+        )
+        own_context = [
+            item
+            for item in task.specialty_context
+            if item.get("specialty") == self.specialty
+        ]
+        prompt = render_template(
+            self.review_prompt,
+            {
+                "review_context": prompt_json({
+                    "issue_id": task.issue_id,
+                    "question": task.prompt,
+                    "why_it_matters": task.why_it_matters,
+                    "requester_views": own_context,
+                }),
+                "answer": prompt_json({
+                    "answer_id": answer.answer_id,
+                    "answering_specialty": task.specialty,
+                    "answerability": answer.answerability,
+                    "answer": answer.answer,
+                    "medical_basis": answer.medical_basis,
+                    "remaining_limitation": answer.remaining_limitation,
+                    "new_questions": [
+                        item.model_dump(mode="json") for item in answer.new_questions
+                    ],
+                    "evidence_gaps": [
+                        item.model_dump(mode="json") for item in answer.evidence_gaps
+                    ],
+                }),
+                "output_schema": output_schema,
+            },
+        )
+
+        def validate(draft: SpecialtyAnswerReviewDraft) -> SpecialtyAnswerReviewDraft:
+            needs_question = draft.outcome in {
+                "request_clarification",
+                "request_corroboration",
+            }
+            if needs_question != (draft.follow_up_question is not None):
+                raise ValueError(
+                    f"{draft.outcome} requires exactly one follow_up_question"
+                )
+            if draft.outcome == "request_clarification":
+                target = draft.follow_up_question.target_specialty.value
+                if target != task.specialty:
+                    raise ValueError("Clarification must target the answering specialty")
+            if (draft.outcome == "convert_to_evidence_need") != (
+                draft.evidence_gap is not None
+            ):
+                raise ValueError(
+                    "convert_to_evidence_need requires exactly one evidence_gap"
+                )
+            return draft
+
+        draft, trace = self.review_generator.generate(
+            schema_model=SpecialtyAnswerReviewDraft,
+            schema_name=f"{self.specialty}_review_{answer.answer_id}",
+            system_prompt=(
+                f"你是严谨的 ILD MDT {SPECIALTY_LABELS[self.specialty]}会诊医生。"
+                "只复核当前问题和回答，不扩展病例，只返回符合 schema 的 JSON。"
+            ),
+            user_prompt=prompt,
+            extra_validation=validate,
+        )
+        return SpecialtyAnswerReview(
+            **draft.model_dump(mode="json"),
+            review_id=f"{answer.answer_id}-RV-{self.specialty}",
+            issue_id=answer.issue_id,
+            answer_id=answer.answer_id,
+            reviewer_specialty=self.specialty,
         ), trace
 
 

@@ -26,7 +26,7 @@
 
 四、`questions`：专科间问题
 - 只输出台账中 `route=question` 或 `mixed` 的解释/澄清部分；纯资料需求不得留在问题板块。
-- `source_refs` 只引用原生问题。每条 `answer` 只能概括已有 `native_conclusion` 对该问题的直接回答、部分回答或资料边界回应，并在 `relation` 中如实区分。
+- `source_refs` 只引用原生问题。每条 `answer` 只能概括一个专科已有的 `native_conclusion` 对该问题的直接回答、部分回答或资料边界回应，并在 `relation` 中如实区分；不同专科的回答必须拆成不同的 `answer`，不得合并为一条。
 - `response_status`、提出专科、目标专科、已回应专科和仍待回答专科由程序回填。
 - `resolution_status` 判断原始问题是否已经得到专业回答，而不是判断某个疾病命题是否被肯定。明确回答“不能确认，但现有材料可以确认到某一程度”可以是 `resolved`。
 - 只有现有材料下无法形成任何有意义的专业判断时才使用 `blocked_by_evidence`。问题已得到有边界的回答时，即使关联证据需求仍未满足，也不要继续标为待同一专科回答。

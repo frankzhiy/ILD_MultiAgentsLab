@@ -77,6 +77,16 @@ class FinalReportAgent:
                     for response in item.specialty_responses
                     for answer in response.answers
                 ],
+                "answer_reviews": [
+                    {
+                        "reviewer_specialty": review.reviewer_specialty,
+                        "issue_id": review.issue_id,
+                        "answer_id": review.answer_id,
+                        "outcome": review.outcome,
+                        "rationale": review.rationale,
+                    }
+                    for review in item.answer_reviews
+                ],
             }
             for item in rounds
         ]

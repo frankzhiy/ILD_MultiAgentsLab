@@ -18,7 +18,11 @@ from src.agents.mdt_discussion.integration import (
     reconcile_discussion_references,
     stabilize_integration_ids,
 )
-from src.agents.mdt_discussion.models import SpecialtyRoundResponse, SpecialtyTaskAnswer
+from src.agents.mdt_discussion.models import (
+    SpecialtyAnswerReview,
+    SpecialtyRoundResponse,
+    SpecialtyTaskAnswer,
+)
 from src.llm.base import LLMResponse
 
 
@@ -329,7 +333,7 @@ def test_program_backfills_v5_ids_provenance_and_separates_boundaries():
     result = resolve_chair_references(
         MDTChairIntegration.model_validate(integration_payload(bundle)), bundle, ledger
     )
-    assert result.schema_version == "mdt_chair.v5"
+    assert result.schema_version == "mdt_chair.v6"
     assert result.case_id == "case-1"
     assert result.integrated_conclusions[0].conclusion_id == "IC001"
     assert result.integrated_conclusions[0].supporting_specialties == ["pulmonology"]
@@ -365,6 +369,9 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
         initial_bundle,
         resolved_ledger(initial_bundle),
     )
+    previous.questions[0].answers[0].source_refs.append(
+        source_ref(initial_bundle, "pulmonology", "native_conclusion")
+    )
     answer = SpecialtyTaskAnswer(
         answer_id="R01-Q001-thoracic_radiology-A",
         task_id="R01-Q001-thoracic_radiology",
@@ -383,13 +390,22 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
         specialty="thoracic_radiology",
         answers=[answer],
     )]
-    current_outputs = append_round_responses(initial_outputs, responses)
+    reviews = [SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-pulmonology",
+        issue_id=answer.issue_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="pulmonology",
+        outcome="accept_answer",
+        rationale="回答已覆盖原问题。",
+    )]
+    current_outputs = append_round_responses(initial_outputs, responses, reviews)
     current_bundle = build_chair_prompt_bundle("case-1", current_outputs)
     payload = integration_payload(current_bundle)
     payload["questions"][0]["source_refs"] = [
         source_ref(current_bundle, "pulmonology", "evidence_gap"),
         source_ref(current_bundle, "rheumatology", "native_conclusion"),
     ]
+    payload["questions"][0]["question"] = "主持人本轮生成了语义差异很大的问题文本。"
     payload["questions"][0]["answers"][0]["source_refs"] = [
         source_ref(current_bundle, "pulmonology", "evidence_gap")
     ]
@@ -398,11 +414,19 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
     ]
     result = MDTChairIntegration.model_validate(payload)
 
-    reconcile_discussion_references(result, previous, responses, current_bundle)
+    reconcile_discussion_references(result, previous, responses, current_bundle, reviews)
     result = resolve_chair_references(result, current_bundle)
 
     question = result.questions[0]
     assert {item.source_type for item in question.source_citations} == {"native_question"}
+    assert {
+        current_bundle.source_registry[ref].source_type
+        for ref in question.related_evidence_need_source_refs
+    } <= {"native_question", "evidence_gap"}
+    assert all(
+        len({citation.specialty for citation in item.source_citations}) == 1
+        for item in question.answers
+    )
     assert question.answers[-1].answer == answer.answer
     assert {item.source_type for item in question.answers[-1].source_citations} == {
         "native_conclusion"
@@ -457,7 +481,15 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
         specialty="thoracic_radiology",
         answers=[answer],
     )]
-    current_outputs = append_round_responses(initial_outputs, responses)
+    reviews = [SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-pulmonology",
+        issue_id=answer.issue_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="pulmonology",
+        outcome="accept_answer",
+        rationale="接受回答及其派生问题。",
+    )]
+    current_outputs = append_round_responses(initial_outputs, responses, reviews)
     current_bundle = build_chair_prompt_bundle("case-1", current_outputs)
     payload = integration_payload(current_bundle)
     new_question_ref = next(
@@ -494,7 +526,7 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
     })
     result = MDTChairIntegration.model_validate(payload)
 
-    reconcile_discussion_references(result, previous, responses, current_bundle)
+    reconcile_discussion_references(result, previous, responses, current_bundle, reviews)
     result = resolve_chair_references(result, current_bundle)
     result = stabilize_integration_ids(result, previous)
 

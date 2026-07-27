@@ -2,19 +2,26 @@ import json
 
 import pytest
 
+from src.agents.mdt_chair.models import MDTChairIntegration
 from src.agents.mdt_discussion.final_report import FinalReportAgent
-from src.agents.mdt_discussion.integration import append_round_responses
+from src.agents.mdt_discussion.integration import (
+    append_round_responses,
+    apply_review_outcomes,
+)
 from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaimDraft,
     DiscussionProposition,
     DiscussionRound,
     DiscussionEvidenceUseDraft,
+    SpecialtyAnswerReview,
     SpecialtyRoundResponse,
     SpecialtyTaskAnswer,
     SpecialtyTaskAnswerDraft,
 )
 from src.agents.mdt_discussion.prompt_projection import (
     build_chair_prompt_view,
+    build_issue_chair_prompt_view,
+    build_specialty_discussion_prompt_view,
     build_specialty_initial_prompt_view,
 )
 from src.agents.mdt_discussion.routing import build_discussion_tasks, group_tasks_by_specialty
@@ -170,6 +177,31 @@ def test_specialty_initial_prompt_view_keeps_only_formal_conclusions():
     assert view == {"marker": "正式结论"}
 
 
+def test_discussion_prompt_views_keep_only_the_current_issue_and_compact_baseline():
+    chair = expanded_chair_result()
+    chair.update(chair_question())
+    chair["questions"][0]["answer_summary"] = "当前问题摘要"
+    chair_view = build_issue_chair_prompt_view(chair, "Q001")
+    specialty_view = build_specialty_discussion_prompt_view({
+        "professional_conclusions": {
+            "conclusions": [{
+                "conclusion_id": "C001",
+                "statement": "正式专科结论",
+                "status": "possible",
+                "medical_basis": "简要依据",
+                "decision_impact": "不应重复传入",
+                "evidence": {"supporting": [{"quote": "不应重复传入的原文"}]},
+            }],
+            "boundaries": ["既有边界"],
+        },
+    })
+
+    assert chair_view["issue"]["question_id"] == "Q001"
+    assert "保留主席语义结论" not in json.dumps(chair_view, ensure_ascii=False)
+    assert specialty_view["conclusions"][0]["statement"] == "正式专科结论"
+    assert "不应重复传入的原文" not in json.dumps(specialty_view, ensure_ascii=False)
+
+
 def test_routes_declared_specialties_and_builds_an_evidence_analysis_packet():
     propositions, graphs = documents()
     tasks = build_discussion_tasks(
@@ -288,15 +320,23 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
     answer, trace = agent.respond_to_task(
         task=task,
         specialty_initial_output={
-            "professional_conclusions": {"marker": "正式专科结论"},
+            "professional_conclusions": {
+                "conclusions": [{
+                    "conclusion_id": "C001",
+                    "statement": "正式专科结论",
+                    "status": "possible",
+                    "medical_basis": "既有依据",
+                }],
+                "boundaries": [],
+            },
             "clinical_reasoning": {"marker": "不应进入会中提示的内部推理"},
         },
-        chair_result=expanded_chair_result(),
+        chair_result={**expanded_chair_result(), **chair_question()},
     )
 
     assert answer.task_id == task.task_id
     assert answer.answer_id == f"{task.task_id}-A"
-    assert "保留主席语义结论" in trace["prompt"]
+    assert "保留主席语义结论" not in trace["prompt"]
     assert "正式专科结论" in trace["prompt"]
     assert "静息低氧" in trace["prompt"]
     assert "gu-1::prop-1" in trace["prompt"]
@@ -304,6 +344,116 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
     assert "不应进入共享提示的完整专科原文" not in trace["prompt"]
     assert "始终先回答 `prompt` 中的原始临床问题" in trace["prompt"]
     assert "不能确认”也可以是对问题的完整回答" in trace["prompt"]
+
+
+def test_requester_review_uses_only_the_current_question_and_answer():
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            assert max_tokens == 2500
+            return LLMResponse(
+                content='{"outcome":"accept_boundary","rationale":"已明确当前资料边界。"}',
+                raw={"choices": [{}]},
+            )
+
+    propositions, graphs = documents()
+    task = build_discussion_tasks(
+        chair_result=chair_question(),
+        clinical_propositions=propositions,
+        local_graphs=graphs,
+        round_number=1,
+        previous_rounds=[],
+    )[0]
+    answer = SpecialtyTaskAnswer(
+        answer_id=f"{task.task_id}-A",
+        task_id=task.task_id,
+        issue_type="question",
+        issue_id=task.issue_id,
+        answerability="partially_answered",
+        answer="现有资料只能确认低氧存在，不能完成病因归因。",
+        confidence="moderate",
+        medical_basis="缺少肺血管资料。",
+        changed_from_previous=False,
+        remaining_limitation="仍需肺血管评估。",
+    )
+    agent = SpecialtyDiscussionAgent(
+        FakeLLM(),
+        specialty="rheumatology",
+        config={"guideline_retrieval": {"enabled": False}},
+    )
+
+    review, trace = agent.review_answer(task=task, answer=answer)
+
+    assert review.outcome == "accept_boundary"
+    assert review.answer_id == answer.answer_id
+    assert task.prompt in trace["prompt"]
+    assert answer.answer in trace["prompt"]
+    assert "integrated_conclusions" not in trace["prompt"]
+    assert "guideline_context" not in trace["prompt"]
+
+
+def test_review_outcome_closes_a_boundary_without_calling_it_resolved():
+    payload = chair_question()
+    payload["questions"][0].update({
+        "source_refs": ["source-1"],
+        "answer_summary": "现有资料只能形成边界。",
+        "why_it_matters": "影响病因判断。",
+        "decision_unlocked": "明确当前讨论处置。",
+    })
+    result = MDTChairIntegration.model_validate(payload)
+    question = result.questions[0]
+    question.raised_by = ["rheumatology"]
+    review = SpecialtyAnswerReview(
+        review_id="review-1",
+        issue_id="Q001",
+        answer_id="answer-1",
+        reviewer_specialty="rheumatology",
+        outcome="accept_boundary",
+        rationale="接受现有证据边界。",
+    )
+
+    apply_review_outcomes(result, [review])
+
+    assert question.discussion_status == "closed_this_round"
+    assert question.closure_type == "boundary_answer"
+    assert question.reviewed_by == ["rheumatology"]
+
+
+def test_final_requester_review_closes_an_in_round_clarification():
+    payload = chair_question()
+    payload["questions"][0].update({
+        "source_refs": ["source-1"],
+        "answer_summary": "已完成澄清。",
+        "why_it_matters": "影响病因判断。",
+        "decision_unlocked": "明确当前讨论处置。",
+    })
+    result = MDTChairIntegration.model_validate(payload)
+    question = result.questions[0]
+    question.raised_by = ["rheumatology"]
+    reviews = [
+        SpecialtyAnswerReview(
+            review_id="review-1",
+            issue_id="Q001",
+            answer_id="answer-1",
+            reviewer_specialty="rheumatology",
+            outcome="request_clarification",
+            rationale="需要澄清。",
+        ),
+        SpecialtyAnswerReview(
+            review_id="review-2",
+            issue_id="Q001",
+            answer_id="answer-2",
+            reviewer_specialty="rheumatology",
+            outcome="accept_answer",
+            rationale="澄清后接受。",
+        ),
+    ]
+
+    apply_review_outcomes(result, reviews)
+
+    assert question.discussion_status == "closed_this_round"
+    assert question.closure_type == "clarified_answer"
 
 
 def test_discussion_schema_closes_evidence_uses_to_task_candidates():
@@ -422,7 +572,7 @@ def test_final_report_uses_the_compact_chair_view():
     assert "不应在主席共享视图中重复的病例原文" not in trace["prompt"]
 
 
-@pytest.mark.parametrize("resolution_status", ["unresolved", "partially_resolved", "blocked_by_evidence"])
+@pytest.mark.parametrize("resolution_status", ["unresolved", "partially_resolved"])
 def test_does_not_repeat_a_question_after_one_discussion_attempt(resolution_status):
     propositions, graphs = documents()
     first_task = build_discussion_tasks(
@@ -511,6 +661,14 @@ def test_round_response_projects_new_questions_and_evidence_gaps():
             round_number=1,
             specialty="pulmonology",
             answers=[answer],
+        )],
+        [SpecialtyAnswerReview(
+            review_id=f"{answer.answer_id}-RV-rheumatology",
+            issue_id=answer.issue_id,
+            answer_id=answer.answer_id,
+            reviewer_specialty="rheumatology",
+            outcome="accept_answer",
+            rationale="回答已覆盖原问题。",
         )],
     )
     professional = updated["pulmonology"]["professional_conclusions"]

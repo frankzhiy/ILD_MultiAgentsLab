@@ -94,7 +94,7 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     write_json(
         run_dir / "case-1_mdt_chair_integration.json",
         {
-            "schema_version": "mdt_chair.v5",
+            "schema_version": "mdt_chair.v6",
             "integrated_conclusions": [],
             "assessment_boundaries": [],
             "conflicts": [],
@@ -109,7 +109,7 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     write_json(
         run_dir / "case-1_mdt_discussion_state.json",
         {
-            "schema_version": "mdt_discussion.v1",
+            "schema_version": "mdt_discussion.v2",
             "case_id": "case-1",
             "baseline_sha256": sha256(baseline_path.read_bytes()).hexdigest(),
             "status": "running",

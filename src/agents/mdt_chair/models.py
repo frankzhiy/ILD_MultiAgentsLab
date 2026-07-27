@@ -206,6 +206,30 @@ class IntegratedQuestion(CitedChairStatement):
         "blocked_by_evidence",
         "disputed",
     ]
+    discussion_status: SkipJsonSchema[
+        Literal[
+            "awaiting_answer",
+            "awaiting_requester_review",
+            "clarification_in_progress",
+            "awaiting_corroboration",
+            "closed_this_round",
+            "disputed",
+            "waiting_for_new_evidence",
+        ]
+    ] = "awaiting_answer"
+    closure_type: SkipJsonSchema[
+        Literal[
+            "explicit_answer",
+            "boundary_answer",
+            "clarified_answer",
+            "corroborated_answer",
+            "converted_to_evidence_need",
+            "merged_into_existing_question",
+        ]
+        | None
+    ] = None
+    reviewed_by: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
+    awaiting_review_specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
     answer_summary: str = Field(min_length=1)
     remaining_clarification: str = Field(min_length=1)
     why_it_matters: str = Field(min_length=1)
@@ -272,7 +296,9 @@ class MDTChairIntegration(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: SkipJsonSchema[Literal["mdt_chair.v5"]] = "mdt_chair.v5"
+    schema_version: SkipJsonSchema[
+        Literal["mdt_chair.v5", "mdt_chair.v6"]
+    ] = "mdt_chair.v6"
     case_id: SkipJsonSchema[str] = ""
     integrated_conclusions: list[IntegratedConclusion] = Field(default_factory=list)
     assessment_boundaries: list[AssessmentBoundary] = Field(default_factory=list)

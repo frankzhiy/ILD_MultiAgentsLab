@@ -429,7 +429,10 @@ class RunCatalog:
 
     @staticmethod
     def _is_current_chair_output(value: Any) -> bool:
-        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v5":
+        if not isinstance(value, dict) or value.get("schema_version") not in {
+            "mdt_chair.v5",
+            "mdt_chair.v6",
+        }:
             return False
         return all(
             isinstance(value.get(field), list)

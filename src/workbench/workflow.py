@@ -272,6 +272,7 @@ class WorkbenchWorkflow:
         from src.agents.mdt_chair.models import MDTChairIntegration
         from src.agents.mdt_discussion.final_report import FinalReportAgent
         from src.agents.mdt_discussion.integration import (
+            apply_review_outcomes,
             append_round_responses,
             move_stalled_issues_to_boundaries,
             stabilize_integration_ids,
@@ -279,6 +280,7 @@ class WorkbenchWorkflow:
         from src.agents.mdt_discussion.models import (
             DiscussionRound,
             MDTDiscussionState,
+            SpecialtyAnswerReview,
             SpecialtyRoundResponse,
         )
         from src.agents.mdt_discussion.routing import (
@@ -356,6 +358,7 @@ class WorkbenchWorkflow:
                         }
                         for task in tasks
                     },
+                    "review_progress": {},
                     "chair_status": "waiting",
                     "chair_result": None,
                 }
@@ -480,7 +483,263 @@ class WorkbenchWorkflow:
                         run_dir / f"{case_id}_{specialty}_round_{round_number:02d}_response.json",
                         response,
                     )
-                cumulative_outputs = append_round_responses(cumulative_outputs, responses)
+                question_by_id = {
+                    question.question_id: question for question in latest.questions
+                }
+                task_by_id = {task.task_id: task for task in tasks}
+                review_jobs = []
+                for response in responses:
+                    for answer in response.answers:
+                        task = task_by_id[answer.task_id]
+                        question = question_by_id.get(answer.issue_id)
+                        if task.issue_type != "question" or question is None:
+                            continue
+                        for reviewer in question.raised_by:
+                            if reviewer == task.specialty:
+                                continue
+                            review_id = f"{answer.answer_id}-RV-{reviewer}"
+                            state.active_round["review_progress"][review_id] = {
+                                "status": "waiting",
+                                "answer_id": answer.answer_id,
+                                "issue_id": answer.issue_id,
+                                "reviewer_specialty": reviewer,
+                                "started_at": "",
+                                "completed_at": "",
+                                "review": None,
+                                "error": "",
+                            }
+                            review_jobs.append((review_id, reviewer, task, answer))
+                self._write(state_path, state)
+
+                def run_review(job) -> tuple[SpecialtyAnswerReview, dict[str, Any]]:
+                    review_id, reviewer, task, answer = job
+                    with progress_lock:
+                        progress = state.active_round["review_progress"][review_id]
+                        progress["status"] = "running"
+                        progress["started_at"] = timestamp()
+                        self._write(state_path, state)
+                        self.events.append(
+                            run_id,
+                            "discussion_review_started",
+                            {
+                                "round_number": round_number,
+                                "review_id": review_id,
+                                "issue_id": answer.issue_id,
+                                "reviewer_specialty": reviewer,
+                            },
+                            agent_id=reviewer,
+                            stage="mdt_discussion",
+                        )
+                    try:
+                        config_path = config_paths[reviewer]
+                        reviewer_agent = SpecialtyDiscussionAgent.from_config(
+                            config_path,
+                            build_llm_client(load_yaml(config_path)),
+                            specialty=reviewer,
+                            event_callback=self._progress(run_id, reviewer),
+                        )
+                        review, review_trace = reviewer_agent.review_answer(
+                            task=task,
+                            answer=answer,
+                        )
+                    except Exception as error:
+                        with progress_lock:
+                            progress = state.active_round["review_progress"][review_id]
+                            progress["status"] = "failed"
+                            progress["completed_at"] = timestamp()
+                            progress["error"] = str(error)
+                            self._write(state_path, state)
+                        raise
+                    with progress_lock:
+                        progress = state.active_round["review_progress"][review_id]
+                        progress["status"] = "completed"
+                        progress["completed_at"] = timestamp()
+                        progress["review"] = review.model_dump(mode="json")
+                        self._write(state_path, state)
+                        self.events.append(
+                            run_id,
+                            "discussion_review_completed",
+                            {
+                                "round_number": round_number,
+                                "review_id": review_id,
+                                "issue_id": answer.issue_id,
+                                "reviewer_specialty": reviewer,
+                                "outcome": review.outcome,
+                            },
+                            agent_id=reviewer,
+                            stage="mdt_discussion",
+                        )
+                    return review, review_trace
+
+                reviews = []
+                if review_jobs:
+                    with ThreadPoolExecutor(max_workers=min(len(review_jobs), 6)) as executor:
+                        futures = [executor.submit(run_review, job) for job in review_jobs]
+                        for future in as_completed(futures):
+                            review, review_trace = future.result()
+                            reviews.append(review)
+                            round_trace.setdefault("reviews", {})[
+                                review.review_id
+                            ] = review_trace
+
+                follow_up_jobs = []
+                seen_follow_ups = set()
+                answer_by_id = {
+                    answer.answer_id: answer
+                    for response in responses
+                    for answer in response.answers
+                }
+                for index, review in enumerate(
+                    sorted(reviews, key=lambda item: item.review_id),
+                    start=1,
+                ):
+                    follow_up = review.follow_up_question
+                    if follow_up is None:
+                        continue
+                    source_answer = answer_by_id[review.answer_id]
+                    source_task = task_by_id[source_answer.task_id]
+                    target_specialty = follow_up.target_specialty.value
+                    identity = (
+                        review.issue_id,
+                        review.reviewer_specialty,
+                        target_specialty,
+                        " ".join(follow_up.question.split()),
+                    )
+                    if identity in seen_follow_ups:
+                        continue
+                    seen_follow_ups.add(identity)
+                    follow_task = source_task.model_copy(
+                        update={
+                            "task_id": f"{source_task.task_id}-F{index:02d}",
+                            "specialty": target_specialty,
+                            "prompt": follow_up.question,
+                            "current_result": source_answer.answer,
+                            "remaining_clarification": review.rationale,
+                            "why_it_matters": follow_up.why_it_matters,
+                            "prior_answers": [
+                                *source_task.prior_answers,
+                                {
+                                    "answering_specialty": source_task.specialty,
+                                    "answer": source_answer.answer,
+                                    "remaining_limitation": (
+                                        source_answer.remaining_limitation
+                                    ),
+                                    "reviewer_specialty": review.reviewer_specialty,
+                                    "review_outcome": review.outcome,
+                                    "review_rationale": review.rationale,
+                                },
+                            ],
+                        }
+                    )
+                    tasks.append(follow_task)
+                    task_by_id[follow_task.task_id] = follow_task
+                    state.active_round["tasks"].append(
+                        follow_task.model_dump(mode="json")
+                    )
+                    state.active_round["task_progress"][follow_task.task_id] = {
+                        "status": "waiting",
+                        "started_at": "",
+                        "completed_at": "",
+                        "answer": None,
+                        "error": "",
+                    }
+                    follow_up_jobs.append(
+                        (review.reviewer_specialty, follow_task)
+                    )
+                self._write(state_path, state)
+
+                final_review_jobs = []
+                if follow_up_jobs:
+                    with ThreadPoolExecutor(
+                        max_workers=min(len(follow_up_jobs), 6)
+                    ) as executor:
+                        futures = {
+                            executor.submit(run_task, task): reviewer
+                            for reviewer, task in follow_up_jobs
+                        }
+                        for future in as_completed(futures):
+                            reviewer = futures[future]
+                            task, answer, task_trace = future.result()
+                            answers_by_specialty.setdefault(task.specialty, []).append(
+                                answer
+                            )
+                            round_trace["tasks"][task.task_id] = task_trace
+                            response = next(
+                                (
+                                    item
+                                    for item in responses
+                                    if item.specialty == task.specialty
+                                ),
+                                None,
+                            )
+                            if response is None:
+                                response = SpecialtyRoundResponse(
+                                    case_id=case_id,
+                                    round_number=round_number,
+                                    specialty=task.specialty,
+                                )
+                                responses.append(response)
+                            response.answers.append(answer)
+                            answer_by_id[answer.answer_id] = answer
+                            review_id = f"{answer.answer_id}-RV-{reviewer}"
+                            state.active_round["review_progress"][review_id] = {
+                                "status": "waiting",
+                                "answer_id": answer.answer_id,
+                                "issue_id": answer.issue_id,
+                                "reviewer_specialty": reviewer,
+                                "started_at": "",
+                                "completed_at": "",
+                                "review": None,
+                                "error": "",
+                            }
+                            final_review_jobs.append(
+                                (review_id, reviewer, task, answer)
+                            )
+                    self._write(state_path, state)
+
+                if final_review_jobs:
+                    with ThreadPoolExecutor(
+                        max_workers=min(len(final_review_jobs), 6)
+                    ) as executor:
+                        futures = [
+                            executor.submit(run_review, job)
+                            for job in final_review_jobs
+                        ]
+                        for future in as_completed(futures):
+                            review, review_trace = future.result()
+                            reviews.append(review)
+                            round_trace.setdefault("reviews", {})[
+                                review.review_id
+                            ] = review_trace
+
+                task_order = {
+                    task.task_id: index for index, task in enumerate(tasks)
+                }
+                for response in responses:
+                    response.answers.sort(
+                        key=lambda answer: task_order[answer.task_id]
+                    )
+                    self._write(
+                        run_dir
+                        / (
+                            f"{case_id}_{response.specialty}_round_"
+                            f"{round_number:02d}_response.json"
+                        ),
+                        response,
+                    )
+                self._write(
+                    run_dir / f"{case_id}_mdt_round_{round_number:02d}_tasks.json",
+                    [task.model_dump(mode="json") for task in tasks],
+                )
+                self._write(
+                    run_dir / f"{case_id}_mdt_round_{round_number:02d}_reviews.json",
+                    reviews,
+                )
+                cumulative_outputs = append_round_responses(
+                    cumulative_outputs,
+                    responses,
+                    reviews,
+                )
                 state.active_round["chair_status"] = "running"
                 self._write(state_path, state)
                 self.events.append(
@@ -506,8 +765,10 @@ class WorkbenchWorkflow:
                     bundle,
                     discussion_previous=latest,
                     discussion_responses=responses,
+                    discussion_reviews=reviews,
                 )
                 updated = stabilize_integration_ids(updated, latest)
+                updated = apply_review_outcomes(updated, reviews)
                 updated = move_stalled_issues_to_boundaries(
                     updated,
                     state.rounds,
@@ -519,6 +780,7 @@ class WorkbenchWorkflow:
                     round_number=round_number,
                     tasks=tasks,
                     specialty_responses=responses,
+                    answer_reviews=reviews,
                     chair_result=latest.model_dump(mode="json"),
                 )
                 state.rounds.append(discussion_round)

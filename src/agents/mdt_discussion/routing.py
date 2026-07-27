@@ -40,7 +40,13 @@ def build_discussion_tasks(
 
     for question in chair_result.get("questions") or []:
         issue_id = str(question.get("question_id") or "")
-        if not issue_id or question.get("resolution_status") == "resolved":
+        if not issue_id or question.get("discussion_status") in {
+            "closed_this_round",
+            "waiting_for_new_evidence",
+            "awaiting_requester_review",
+        }:
+            continue
+        if question.get("resolution_status") in {"resolved", "blocked_by_evidence"}:
             continue
         if issue_id in attempted:
             continue

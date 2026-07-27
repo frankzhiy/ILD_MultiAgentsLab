@@ -34,12 +34,23 @@ const ANSWERABILITY = {
   not_assessable: ['不可评价', 'default'],
 }
 
+const REVIEW_OUTCOME = {
+  accept_answer: ['接受回答', 'success'],
+  accept_boundary: ['接受证据边界', 'success'],
+  request_clarification: ['请求原专科澄清', 'processing'],
+  request_corroboration: ['请求其他专科佐证', 'processing'],
+  identify_conflict: ['识别出专科冲突', 'error'],
+  convert_to_evidence_need: ['转为证据需求', 'warning'],
+}
+
 const DISCUSSION_EVENTS = [
   'discussion_started',
   'discussion_round_started',
   'discussion_task_started',
   'discussion_task_completed',
   'discussion_task_failed',
+  'discussion_review_started',
+  'discussion_review_completed',
   'discussion_chair_started',
   'discussion_round_completed',
   'discussion_report_started',
@@ -100,6 +111,16 @@ function taskAnswers(round) {
     if (progress.answer) answers[taskId] = progress.answer
   })
   return answers
+}
+
+function roundReviews(round) {
+  const reviews = [...(round?.answer_reviews || [])]
+  Object.values(round?.review_progress || {}).forEach((progress) => {
+    if (progress.review && !reviews.some((item) => item.review_id === progress.review.review_id)) {
+      reviews.push(progress.review)
+    }
+  })
+  return reviews
 }
 
 function taskStatus(round, taskId, answers) {
@@ -228,7 +249,7 @@ function DiscussionTrace({ round, selectedTaskId, onSelect, reportStatus }) {
   )
 }
 
-function QuestionDetail({ task, answer, progress }) {
+function QuestionDetail({ task, answer, progress, reviews = [] }) {
   const [expanded, setExpanded] = useState(false)
   useEffect(() => setExpanded(false), [task?.task_id])
   if (!task) return <Card title="问题与回答" className="discussion-panel"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请选择一个问题查看详情" /></Card>
@@ -314,6 +335,24 @@ function QuestionDetail({ task, answer, progress }) {
                 children: <><Paragraph><Text strong>医学依据：</Text>{answer.medical_basis}</Paragraph>{answer.remaining_limitation && <div className="limitation-note"><Text strong>仍受限于：</Text>{answer.remaining_limitation}</div>}</>,
               }]}
             />
+            {reviews.length > 0 && (
+              <div className="discussion-detail-section">
+                <Text className="discussion-detail-label">提问专科复核</Text>
+                {reviews.map((review) => {
+                  const [label, color] = REVIEW_OUTCOME[review.outcome] || [review.outcome, 'default']
+                  return (
+                    <div className="discussion-existing-view" key={review.review_id}>
+                      <Space size={5} wrap>
+                        <Tag>{specialtyLabel(review.reviewer_specialty)}</Tag>
+                        <Tag color={color}>{label}</Tag>
+                      </Space>
+                      <Paragraph>{review.rationale}</Paragraph>
+                      {review.follow_up_question?.question && <Paragraph type="secondary"><Text strong>后续问题：</Text>{review.follow_up_question.question}</Paragraph>}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </>
           : progress?.status === 'failed'
             ? <Alert type="error" showIcon title="该任务失败" description={progress.error} />
@@ -383,6 +422,10 @@ export function DiscussionWorkspace({ runId }) {
   const answers = useMemo(() => taskAnswers(round), [round])
   const selectedTask = round?.tasks?.find((task) => task.task_id === selectedTaskId)
   const selectedAnswer = selectedTask ? answers[selectedTask.task_id] : null
+  const selectedReviews = useMemo(
+    () => roundReviews(round).filter((review) => review.answer_id === selectedAnswer?.answer_id),
+    [round, selectedAnswer?.answer_id],
+  )
   const selectedProgress = selectedTask ? round?.task_progress?.[selectedTask.task_id] : null
   const statuses = (round?.tasks || []).map((task) => taskStatus(round, task.task_id, answers))
   const chairProgress = chairStatus(round)
@@ -435,7 +478,7 @@ export function DiscussionWorkspace({ runId }) {
           <div className="discussion-live-grid">
             <TaskAssignment round={round} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} />
             <DiscussionTrace round={round} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} reportStatus={value.final_report ? 'completed' : value.report_status || 'waiting'} />
-            <QuestionDetail task={selectedTask} answer={selectedAnswer} progress={selectedProgress} />
+            <QuestionDetail task={selectedTask} answer={selectedAnswer} progress={selectedProgress} reviews={selectedReviews} />
           </div>
           {(round?.chair_result || round?.round_number === value.active_round?.round_number) && (
             <Card className="discussion-chair-tabs" title={<Space><TeamOutlined /><span>主持人第 {round.round_number} 轮更新</span></Space>} extra={<Text type="secondary">专科回应回填后，由主持人更新同一套五板块</Text>}>

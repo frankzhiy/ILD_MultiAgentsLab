@@ -32,11 +32,36 @@ const RESPONSE_STATUS = {
 }
 
 const RESOLUTION_STATUS = {
-  resolved: ['已解决', 'success'],
-  partially_resolved: ['部分解决', 'warning'],
-  unresolved: ['尚未解决', 'default'],
-  blocked_by_evidence: ['受证据缺口阻断', 'warning'],
+  resolved: ['本轮已闭环', 'success'],
+  partially_resolved: ['需继续讨论', 'warning'],
+  unresolved: ['待目标专科回答', 'default'],
+  blocked_by_evidence: ['等待新资料后重启', 'warning'],
   disputed: ['存在分歧', 'error'],
+}
+
+const DISCUSSION_STATUS = {
+  awaiting_answer: ['待目标专科回答', 'default'],
+  awaiting_requester_review: ['待提问专科复核', 'processing'],
+  clarification_in_progress: ['专科澄清中', 'processing'],
+  awaiting_corroboration: ['等待其他专科佐证', 'processing'],
+  closed_this_round: ['本轮已闭环', 'success'],
+  disputed: ['存在冲突', 'error'],
+  waiting_for_new_evidence: ['等待新资料后重启', 'warning'],
+}
+
+const CLOSURE_TYPE = {
+  explicit_answer: '明确回答后闭环',
+  boundary_answer: '边界性回答后闭环',
+  clarified_answer: '澄清后闭环',
+  corroborated_answer: '多专科佐证后闭环',
+  converted_to_evidence_need: '转为证据需求',
+  merged_into_existing_question: '已合并至其他问题',
+}
+
+const ANSWER_RELATION = {
+  direct_answer: '明确回答',
+  partial_answer: '部分回答',
+  evidence_boundary: '边界性回答',
 }
 
 const NEED_STATUS = {
@@ -255,10 +280,15 @@ function Questions({ items = [] }) {
               {item.response_status
                 ? <LabeledStatus label="专科回应情况" value={item.response_status} labels={RESPONSE_STATUS} />
                 : <LabeledStatus label="问题状态" value={item.status} labels={QUESTION_STATUS} />}
-              {item.resolution_status && <LabeledStatus label="问题解决情况" value={item.resolution_status} labels={RESOLUTION_STATUS} />}
+              {item.discussion_status
+                ? <LabeledStatus label="讨论处置" value={item.discussion_status} labels={DISCUSSION_STATUS} />
+                : item.resolution_status && <LabeledStatus label="讨论处置" value={item.resolution_status} labels={RESOLUTION_STATUS} />}
+              {item.closure_type && <LabeledTag label="闭环方式" value={item.closure_type} labels={CLOSURE_TYPE} />}
               <SpecialtyTags label="问题提出专科" specialties={item.raised_by} />
               <SpecialtyTags label="目标专科" specialties={item.target_specialties} color="geekblue" />
               <SpecialtyTags label="已回应专科" specialties={item.responded_by} color="green" />
+              <SpecialtyTags label="已复核专科" specialties={item.reviewed_by} color="green" />
+              <SpecialtyTags label="待复核专科" specialties={item.awaiting_review_specialties} color="orange" />
               <SpecialtyTags
                 label="仍待回答专科"
                 specialties={item.response_status === 'all_responded'
@@ -275,6 +305,7 @@ function Questions({ items = [] }) {
                 {item.answers.map((answer, answerIndex) => (
                   <div className="chair-answer" key={`${answer.specialty}-${answerIndex}`}>
                     <Tag color="blue">回答专科：{specialtyLabel(answer.specialty)}</Tag>
+                    {answer.relation && <Tag>{ANSWER_RELATION[answer.relation] || answer.relation}</Tag>}
                     <Paragraph>{answer.answer}</Paragraph>
                     <div className="chair-answer-evidence">
                       <EvidenceGroups evidence={answer.evidence} guidelineEvidence={answer.guideline_evidence} />

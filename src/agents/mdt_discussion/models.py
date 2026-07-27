@@ -17,6 +17,14 @@ Specialty = Literal[
 ]
 IssueType = Literal["question", "conflict"]
 EvidenceEffect = Literal["supporting", "weakening", "discriminating", "background"]
+ReviewOutcome = Literal[
+    "accept_answer",
+    "accept_boundary",
+    "request_clarification",
+    "request_corroboration",
+    "identify_conflict",
+    "convert_to_evidence_need",
+]
 
 
 class DiscussionProposition(BaseModel):
@@ -133,6 +141,24 @@ class SpecialtyTaskAnswer(BaseModel):
     evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
 
 
+class SpecialtyAnswerReviewDraft(BaseModel):
+    """A question raiser's compact review of one specialty answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: ReviewOutcome
+    rationale: str = Field(min_length=1)
+    follow_up_question: InterspecialtyQuestion | None = None
+    evidence_gap: EvidenceGap | None = None
+
+
+class SpecialtyAnswerReview(SpecialtyAnswerReviewDraft):
+    review_id: str
+    issue_id: str
+    answer_id: str
+    reviewer_specialty: Specialty
+
+
 class SpecialtyRoundResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -149,6 +175,7 @@ class DiscussionRound(BaseModel):
     round_number: int = Field(ge=1, le=3)
     tasks: list[DiscussionTask] = Field(default_factory=list)
     specialty_responses: list[SpecialtyRoundResponse] = Field(default_factory=list)
+    answer_reviews: list[SpecialtyAnswerReview] = Field(default_factory=list)
     chair_result: dict[str, Any]
 
 
@@ -175,7 +202,7 @@ class MDTFinalReport(BaseModel):
 class MDTDiscussionState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["mdt_discussion.v1"] = "mdt_discussion.v1"
+    schema_version: Literal["mdt_discussion.v2"] = "mdt_discussion.v2"
     case_id: str
     baseline_sha256: str
     status: Literal["running", "completed", "failed"]

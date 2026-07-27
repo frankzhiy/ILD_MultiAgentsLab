@@ -22,6 +22,58 @@ def build_specialty_initial_prompt_view(
     return professional
 
 
+def build_specialty_discussion_prompt_view(
+    initial_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep only the specialty's compact baseline needed to detect real changes."""
+
+    professional = build_specialty_initial_prompt_view(initial_output)
+    conclusions = professional.get("conclusions") or []
+    return {
+        "conclusions": [
+            _select(
+                conclusion,
+                "conclusion_id",
+                "statement",
+                "status",
+                "certainty",
+                "medical_basis",
+                "limitations",
+            )
+            for conclusion in conclusions
+        ],
+        "boundaries": professional.get("boundaries") or [],
+    }
+
+
+def build_issue_chair_prompt_view(
+    chair_result: dict[str, Any],
+    issue_id: str,
+) -> dict[str, Any]:
+    """Project only the current chair issue and its directly linked evidence needs."""
+
+    issue = next(
+        (
+            item
+            for collection in ("questions", "conflicts")
+            for item in chair_result.get(collection, [])
+            if item.get("question_id") == issue_id or item.get("conflict_id") == issue_id
+        ),
+        None,
+    )
+    if issue is None:
+        return {}
+    related_ids = set(issue.get("related_evidence_need_ids") or [])
+    return {
+        "issue": _project_value(issue),
+        "related_evidence_needs": [
+            _project_value(item)
+            for item in chair_result.get("evidence_needs", [])
+            if item.get("need_id") in related_ids
+        ],
+    }
+
+
 def _project_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_project_value(item) for item in value]

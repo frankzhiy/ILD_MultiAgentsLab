@@ -573,6 +573,7 @@ class MDTChairAgent:
         *,
         discussion_previous: MDTChairIntegration | None = None,
         discussion_responses: list[Any] | None = None,
+        discussion_reviews: list[Any] | None = None,
     ) -> tuple[MDTChairIntegration, dict]:
         compact_json = prompt_json(bundle.prompt_input)
         ledger_schema = (
@@ -618,6 +619,7 @@ class MDTChairAgent:
                     discussion_previous,
                     discussion_responses or [],
                     bundle,
+                    discussion_reviews or [],
                 )
             return resolve_chair_references(
                 value,
@@ -666,7 +668,7 @@ def resolve_chair_references(
     """Backfill deterministic IDs and provenance without judging medical semantics."""
 
     result.case_id = bundle.case_id
-    result.schema_version = "mdt_chair.v5"
+    result.schema_version = "mdt_chair.v6"
     for index, conclusion in enumerate(result.integrated_conclusions, 1):
         conclusion.conclusion_id = f"IC{index:03d}"
         _resolve_cited(
@@ -756,6 +758,13 @@ def resolve_chair_references(
                 ),
             )
             if answer.source_citations:
+                specialties = {
+                    citation.specialty for citation in answer.source_citations
+                }
+                if len(specialties) != 1:
+                    raise ValueError(
+                        "Each question answer must cite conclusions from exactly one specialty"
+                    )
                 answer.specialty = answer.source_citations[0].specialty
         question.responded_by = _ordered_unique(
             answer.specialty for answer in question.answers
@@ -772,6 +781,25 @@ def resolve_chair_references(
             if question.responded_by
             else "none_responded"
         )
+        if question.resolution_status == "resolved":
+            question.discussion_status = "closed_this_round"
+            question.closure_type = (
+                "boundary_answer"
+                if any(
+                    answer.relation in {"partial_answer", "evidence_boundary"}
+                    for answer in question.answers
+                )
+                else "explicit_answer"
+            )
+        elif question.resolution_status == "blocked_by_evidence":
+            question.discussion_status = "waiting_for_new_evidence"
+            question.closure_type = "converted_to_evidence_need"
+        elif question.resolution_status == "disputed":
+            question.discussion_status = "disputed"
+            question.closure_type = None
+        else:
+            question.discussion_status = "awaiting_answer"
+            question.closure_type = None
 
     _link_output_items(result)
     _resolve_conflicts(result.conflicts, result, bundle)
@@ -851,6 +879,25 @@ def resolve_semantic_ledger(
             bundle,
             {"native_conclusion"},
             context=f"evidence_need_groups[{index - 1}].coverage_source_refs",
+        )
+    expected_questions = {
+        ref
+        for ref, source in bundle.source_registry.items()
+        if source.source_type == "native_question"
+    }
+    routed_question_refs = [
+        ref for route in ledger.question_routes for ref in route.source_refs
+    ]
+    routed_questions = set(routed_question_refs)
+    duplicates = sorted({
+        ref for ref in routed_question_refs if routed_question_refs.count(ref) > 1
+    })
+    if expected_questions != routed_questions or duplicates:
+        missing = sorted(expected_questions - routed_questions)
+        unknown = sorted(routed_questions - expected_questions)
+        raise ValueError(
+            "Every native question must be classified exactly once; "
+            f"missing={missing}, unknown={unknown}, duplicates={duplicates}"
         )
     return ledger
 

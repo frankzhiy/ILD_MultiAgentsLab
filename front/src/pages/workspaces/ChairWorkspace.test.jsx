@@ -17,7 +17,7 @@ const answerEvidence = { evidence_ref: 'answer-disc', graph_unit_id: 'gu-answer'
 const questionEvidence = { evidence_ref: 'question-bg', graph_unit_id: 'gu-question', quote: '提问背景证据' }
 
 const result = {
-  schema_version: 'mdt_chair.v5',
+  schema_version: 'mdt_chair.v6',
   integrated_conclusions: [{
     conclusion_id: 'integrated-1',
     statement: '综合各专科意见，当前更支持慢性纤维化性间质性肺病的工作诊断。',
@@ -69,6 +69,8 @@ const result = {
     target_specialties: ['thoracic_radiology'],
     response_status: 'all_responded',
     resolution_status: 'blocked_by_evidence',
+    discussion_status: 'waiting_for_new_evidence',
+    closure_type: 'converted_to_evidence_need',
     responded_by: ['thoracic_radiology'],
     awaiting_specialties: ['thoracic_radiology'],
     answers: [{
@@ -126,7 +128,7 @@ describe('ChairWorkspace', () => {
     expect(screen.getByText('涉及专科')).toBeInTheDocument()
     ;['结论状态：可能', '结论定位：重要替代解释', '结论类型：ILD 归因'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['判断状态：不可评价', '判断范围：影像', '当前不能判断：', '原因：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
-    ;['专科回应情况：目标专科均已回应', '问题解决情况：受证据缺口阻断', '问题提出专科', '目标专科', '已回应专科', '满足状态：部分满足', '需求提出专科', '已提供专科'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
+    ;['专科回应情况：目标专科均已回应', '讨论处置：等待新资料后重启', '闭环方式：转为证据需求', '问题提出专科', '目标专科', '已回应专科', '满足状态：部分满足', '需求提出专科', '已提供专科'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('仍待回答专科')).not.toBeInTheDocument()
     ;['冲突状态：等待澄清', '冲突类别：形态/影像解释', '共同命题：', '比较前提：', '立场：肯定该命题', '立场：否定该命题', '不可兼容原因：', '解决条件：', '已有解决路径：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))

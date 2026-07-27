@@ -10,16 +10,25 @@ from src.agents.mdt_chair.models import (
     MDTChairIntegration,
     QuestionAnswer,
 )
-from src.agents.mdt_discussion.models import DiscussionRound, SpecialtyRoundResponse
+from src.agents.mdt_discussion.models import (
+    DiscussionRound,
+    SpecialtyAnswerReview,
+    SpecialtyRoundResponse,
+)
 
 
 def append_round_responses(
     specialty_outputs: dict[str, dict[str, Any]],
     responses: list[SpecialtyRoundResponse],
+    reviews: list[SpecialtyAnswerReview] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Project task answers into the existing formal specialty-output contract."""
 
     updated = deepcopy(specialty_outputs)
+    reviews = reviews or []
+    reviews_by_answer: dict[str, list[SpecialtyAnswerReview]] = {}
+    for review in reviews:
+        reviews_by_answer.setdefault(review.answer_id, []).append(review)
     for response in responses:
         conclusions = updated[response.specialty]["professional_conclusions"]["conclusions"]
         for answer in response.answers:
@@ -82,15 +91,97 @@ def append_round_responses(
                     ),
                 }
             )
-            updated[response.specialty]["professional_conclusions"][
-                "interspecialty_questions"
-            ].extend(
-                item.model_dump(mode="json") for item in answer.new_questions
+            answer_reviews = reviews_by_answer.get(answer.answer_id, [])
+            accepted = answer_reviews and all(
+                review.outcome in {"accept_answer", "accept_boundary"}
+                for review in answer_reviews
             )
+            if accepted:
+                updated[response.specialty]["professional_conclusions"][
+                    "interspecialty_questions"
+                ].extend(
+                    item.model_dump(mode="json") for item in answer.new_questions
+                )
             updated[response.specialty]["professional_conclusions"]["evidence_gaps"].extend(
                 item.model_dump(mode="json") for item in answer.evidence_gaps
             )
+    latest_reviews = {
+        (review.issue_id, review.reviewer_specialty): review for review in reviews
+    }
+    for review in latest_reviews.values():
+        reviewer_output = updated.get(review.reviewer_specialty)
+        if reviewer_output is None:
+            continue
+        professional = reviewer_output["professional_conclusions"]
+        if review.follow_up_question is not None:
+            professional["interspecialty_questions"].append(
+                review.follow_up_question.model_dump(mode="json")
+            )
+        if review.evidence_gap is not None:
+            professional["evidence_gaps"].append(
+                review.evidence_gap.model_dump(mode="json")
+            )
     return updated
+
+
+def apply_review_outcomes(
+    result: MDTChairIntegration,
+    reviews: list[SpecialtyAnswerReview],
+) -> MDTChairIntegration:
+    """Programmatically expose review and closure state; the chair cannot invent it."""
+
+    by_issue: dict[str, list[SpecialtyAnswerReview]] = {}
+    for review in reviews:
+        by_issue.setdefault(review.issue_id, []).append(review)
+    for question in result.questions:
+        all_issue_reviews = by_issue.get(question.question_id, [])
+        if not all_issue_reviews:
+            continue
+        latest_by_reviewer = {
+            review.reviewer_specialty: review for review in all_issue_reviews
+        }
+        issue_reviews = list(latest_by_reviewer.values())
+        question.reviewed_by = list(dict.fromkeys(
+            review.reviewer_specialty for review in issue_reviews
+        ))
+        question.awaiting_review_specialties = [
+            specialty
+            for specialty in question.raised_by
+            if specialty not in question.reviewed_by
+        ]
+        outcomes = {review.outcome for review in issue_reviews}
+        if question.awaiting_review_specialties:
+            question.discussion_status = "awaiting_requester_review"
+            question.closure_type = None
+        elif "identify_conflict" in outcomes:
+            question.discussion_status = "disputed"
+            question.closure_type = None
+            question.resolution_status = "disputed"
+        elif "request_corroboration" in outcomes:
+            question.discussion_status = "awaiting_corroboration"
+            question.closure_type = None
+            question.resolution_status = "partially_resolved"
+        elif "request_clarification" in outcomes:
+            question.discussion_status = "clarification_in_progress"
+            question.closure_type = None
+            question.resolution_status = "partially_resolved"
+        elif "convert_to_evidence_need" in outcomes:
+            question.discussion_status = "waiting_for_new_evidence"
+            question.closure_type = "converted_to_evidence_need"
+            question.resolution_status = "blocked_by_evidence"
+        else:
+            question.discussion_status = "closed_this_round"
+            all_outcomes = {review.outcome for review in all_issue_reviews}
+            if "request_corroboration" in all_outcomes:
+                question.closure_type = "corroborated_answer"
+            elif "request_clarification" in all_outcomes:
+                question.closure_type = "clarified_answer"
+            elif "accept_boundary" in outcomes:
+                question.closure_type = "boundary_answer"
+            else:
+                question.closure_type = "explicit_answer"
+            question.resolution_status = "resolved"
+    return result
 
 
 def reconcile_discussion_references(
@@ -98,6 +189,7 @@ def reconcile_discussion_references(
     previous: MDTChairIntegration,
     responses: list[SpecialtyRoundResponse],
     bundle: Any,
+    reviews: list[SpecialtyAnswerReview] | None = None,
 ) -> MDTChairIntegration:
     """Rebuild discussion question, answer, and evidence-need refs in program code."""
 
@@ -152,6 +244,29 @@ def reconcile_discussion_references(
                     f"Discussion answer source was not registered: {answer.answer_id}"
                 )
             answers_by_issue.setdefault(answer.issue_id, []).append((answer, source_ref))
+    reviews = reviews or []
+    reviews_by_answer: dict[str, list[SpecialtyAnswerReview]] = {}
+    for review in reviews:
+        reviews_by_answer.setdefault(review.answer_id, []).append(review)
+    allowed_new_questions = {
+        question.question
+        for response in responses
+        for answer in response.answers
+        if reviews_by_answer.get(answer.answer_id)
+        and all(
+            review.outcome in {"accept_answer", "accept_boundary"}
+            for review in reviews_by_answer[answer.answer_id]
+        )
+        for question in answer.new_questions
+    }
+    latest_reviews = {
+        (review.issue_id, review.reviewer_specialty): review for review in reviews
+    }
+    allowed_new_questions.update(
+        review.follow_up_question.question
+        for review in latest_reviews.values()
+        if review.follow_up_question is not None
+    )
 
     active_previous = [
         question
@@ -179,12 +294,22 @@ def reconcile_discussion_references(
 
     questions = []
     for old_index, old in enumerate(active_previous):
-        question = deepcopy(candidates[matched[old_index]]) if old_index in matched else deepcopy(old)
+        matched_candidate = old_index in matched
+        question = (
+            deepcopy(candidates[matched[old_index]])
+            if matched_candidate
+            else deepcopy(old)
+        )
+        candidate_need_refs = (
+            list(question.related_evidence_need_source_refs)
+            if matched_candidate
+            else []
+        )
         question.question = old.question
         question.source_refs = rebase(old.source_refs)
         question.related_evidence_need_source_refs = list(dict.fromkeys(
             rebase(old.related_evidence_need_source_refs)
-            + list(question.related_evidence_need_source_refs)
+            + candidate_need_refs
         ))
         question.question_id = old.question_id
         question.source_citations = []
@@ -193,11 +318,18 @@ def reconcile_discussion_references(
         prior_answers = []
         for prior in old.answers:
             prior = deepcopy(prior)
-            prior.source_refs = rebase(prior.source_refs)
-            prior.source_citations = []
-            prior.evidence = ChairEvidenceBundle()
-            prior.guideline_evidence = []
-            prior_answers.append(prior)
+            refs_by_specialty: dict[str, list[str]] = {}
+            for ref in rebase(prior.source_refs):
+                refs_by_specialty.setdefault(
+                    bundle.source_registry[ref].specialty, []
+                ).append(ref)
+            for refs in refs_by_specialty.values():
+                specialty_answer = deepcopy(prior)
+                specialty_answer.source_refs = refs
+                specialty_answer.source_citations = []
+                specialty_answer.evidence = ChairEvidenceBundle()
+                specialty_answer.guideline_evidence = []
+                prior_answers.append(specialty_answer)
         round_answers = [
             QuestionAnswer(
                 source_refs=[source_ref],
@@ -218,6 +350,10 @@ def reconcile_discussion_references(
         deepcopy(candidate)
         for index, candidate in enumerate(candidates)
         if index not in used_candidates
+        and any(
+            bundle.source_registry[ref].quote in allowed_new_questions
+            for ref in candidate.source_refs
+        )
     )
     result.questions = questions
 
@@ -346,6 +482,9 @@ def move_stalled_issues_to_boundaries(
 
     kept_questions = []
     for question in result.questions:
+        if question.discussion_status == "waiting_for_new_evidence":
+            kept_questions.append(question)
+            continue
         count = len(attempts.get(question.question_id, set()))
         stalled = (
             question.resolution_status == "blocked_by_evidence" and count >= 1
