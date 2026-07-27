@@ -49,10 +49,10 @@ const STATUS_COLORS = {
 }
 
 const ROLE_LABELS = {
-  primary: '主要结论',
+  primary: '主要判断',
   important_alternative: '重要替代解释',
   cannot_safely_ignore: '不能安全忽略',
-  scope_or_evaluability: '范围或可评价性',
+  scope_or_evaluability: '范围或可评价性判断',
   leading: '主导解释',
   not_currently_assessable: '当前不可评价',
 }
@@ -86,52 +86,36 @@ function Section({ title, description, children }) {
   )
 }
 
-function Conclusion({ item }) {
+function Assessment({ item }) {
   return (
     <article className="formal-item conclusion-item">
       <Space size={[6, 6]} wrap>
         <Tag color={STATUS_COLORS[item.status]}>{valueLabel(item.status, STATUS_LABELS)}</Tag>
         {item.role && <Tag>{valueLabel(item.role, ROLE_LABELS)}</Tag>}
-        {item.conclusion_type && <Tag>{valueLabel(item.conclusion_type, TYPE_LABELS)}</Tag>}
-        <Text code>{item.conclusion_id}</Text>
+        {item.assessment_type && <Tag>{valueLabel(item.assessment_type, TYPE_LABELS)}</Tag>}
+        <Text code>{item.assessment_id}</Text>
       </Space>
       <Title level={5}>{item.statement}</Title>
       {item.medical_basis && <Paragraph>{item.medical_basis}</Paragraph>}
       {item.decision_impact && <Paragraph type="secondary"><Text strong>决策影响：</Text>{item.decision_impact}</Paragraph>}
       <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
-      {item.limitations?.length > 0 && <div className="limitation-note"><Text strong>结论限制：</Text>{item.limitations.join('；')}</div>}
+      {item.limitations?.length > 0 && <div className="limitation-note"><Text strong>判断限制：</Text>{item.limitations.join('；')}</div>}
     </article>
   )
 }
 
-function ProfessionalConclusions({ value }) {
+function SpecialtyAssessments({ value }) {
   return (
-    <Card title="专业结论与外部需求" className="section-card formal-output-card professional-card">
+    <Card title="专科初步判断" className="section-card formal-output-card professional-card">
       <Section title="专科问题定位">
         <Paragraph className="lead-text">{value.specialty_question}</Paragraph>
         <Tag color={STATUS_COLORS[value.assessability]}>{valueLabel(value.assessability, STATUS_LABELS)}</Tag>
       </Section>
 
-      <Section title="专业结论" description="主导结论、替代解释与当前不可评价方向均在此校准表达。">
-        {value.conclusions?.length
-          ? <div className="formal-list">{value.conclusions.map((item) => <Conclusion item={item} key={item.conclusion_id} />)}</div>
-          : <EmptyList description="当前没有可形成的专业结论" />}
-      </Section>
-
-      <Section title="需要其他专科回答的问题">
-        {value.interspecialty_questions?.length ? (
-          <div className="formal-list">
-            {value.interspecialty_questions.map((item, index) => (
-              <article className="formal-item" key={`${item.target_specialty}-${item.question}-${index}`}>
-                <Tag color="geekblue">请 {SPECIALTY_LABELS[item.target_specialty] || item.target_specialty} 回答</Tag>
-                <Title level={5}>{item.question}</Title>
-                <Paragraph>{item.why_it_matters}</Paragraph>
-                {item.decision_unlocked && <Paragraph type="secondary"><Text strong>将影响：</Text>{item.decision_unlocked}</Paragraph>}
-                <CitationGroup refs={item.related_evidence || []} />
-              </article>
-            ))}
-          </div>
-        ) : <EmptyList description="当前没有需要其他专科回答的问题" />}
+      <Section title="初步判断" description="每项判断同时说明推理依据、反证、限制和决策影响。">
+        {value.assessments?.length
+          ? <div className="formal-list">{value.assessments.map((item) => <Assessment item={item} key={item.assessment_id} />)}</div>
+          : <EmptyList description="当前没有可形成的专科初步判断" />}
       </Section>
 
       <Section title="决策相关证据缺口">
@@ -159,80 +143,25 @@ function ProfessionalConclusions({ value }) {
   )
 }
 
-function Candidate({ item }) {
+function InterspecialtyQuestionsCard({ value }) {
   return (
-    <article className="formal-item candidate-item">
-      <Space size={[6, 6]} wrap>
-        <Tag color={item.role === 'leading' ? 'blue' : 'default'}>{valueLabel(item.role, ROLE_LABELS)}</Tag>
-        <Text code>{item.candidate_id}</Text>
-      </Space>
-      <Title level={5}>{item.explanation}</Title>
-      {item.fit_summary && <Paragraph>{item.fit_summary}</Paragraph>}
-      <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
-      {item.remaining_uncertainty && <div className="limitation-note"><Text strong>剩余不确定性：</Text>{item.remaining_uncertainty}</div>}
-    </article>
-  )
-}
-
-function ClinicalReasoning({ value }) {
-  return (
-    <Card title="临床推理论证" className="section-card formal-output-card reasoning-card">
-      <Section title="问题表征"><Paragraph className="lead-text">{value.problem_representation}</Paragraph></Section>
-
-      <Section title="候选解释">
-        {value.candidate_explanations?.length
-          ? <div className="formal-list">{value.candidate_explanations.map((item) => <Candidate item={item} key={item.candidate_id} />)}</div>
-          : <EmptyList description="当前没有可比较的候选解释" />}
-      </Section>
-
-      <Section title="鉴别性证据比较">
-        {value.evidence_comparisons?.length ? (
+    <Card title="需其他专科回答的问题" className="section-card formal-output-card reasoning-card">
+      <Section title="需其他专科回答的问题" description="仅列出需要其他专科基于其专业视角作出判断的问题。">
+        {value.questions?.length ? (
           <div className="formal-list">
-            {value.evidence_comparisons.map((item) => (
-              <article className="formal-item" key={item.comparison_id}>
-                <Space size={[6, 6]} wrap>
-                  <Tag color={{ supports: 'green', weakens: 'red', discriminates: 'blue', background: 'default' }[item.effect]}>{valueLabel(item.effect, { supports: '支持', weakens: '削弱', discriminates: '鉴别', background: '背景' })}</Tag>
-                  {(item.candidate_ids || []).map((candidateId) => <Tag key={candidateId}>{candidateId}</Tag>)}
-                </Space>
-                <Paragraph>{item.interpretation}</Paragraph>
-                <EvidenceGroups evidence={item.evidence} />
+            {value.questions.map((item, index) => (
+              <article className="formal-item" key={`${item.target_specialty}-${item.question}-${index}`}>
+                <Tag color="geekblue">请 {SPECIALTY_LABELS[item.target_specialty] || item.target_specialty} 回答</Tag>
+                <Title level={5}>{item.question}</Title>
+                <Paragraph><Text strong>提问理由：</Text>{item.why_it_matters}</Paragraph>
+                {item.decision_unlocked && <Paragraph type="secondary"><Text strong>将影响：</Text>{item.decision_unlocked}</Paragraph>}
+                {item.related_assessment_ids?.length > 0 && <Paragraph type="secondary"><Text strong>关联初步判断：</Text>{item.related_assessment_ids.join('、')}</Paragraph>}
+                <CitationGroup refs={item.related_evidence || []} />
               </article>
             ))}
           </div>
-        ) : <EmptyList description="当前没有单列的鉴别性证据比较" />}
+        ) : <EmptyList description="当前没有需其他专科回答的问题" />}
       </Section>
-
-      <Section title="机制与时间一致性">
-        {value.consistency_checks?.length ? (
-          <div className="formal-list">
-            {value.consistency_checks.map((item) => (
-              <article className="formal-item" key={item.check_id}>
-                <Space size={[6, 6]} wrap><Tag>{valueLabel(item.dimension, TYPE_LABELS)}</Tag><Tag color={STATUS_COLORS[item.status]}>{valueLabel(item.status, STATUS_LABELS)}</Tag></Space>
-                <Paragraph>{item.finding}</Paragraph>
-                {item.implication && <Paragraph type="secondary"><Text strong>推理影响：</Text>{item.implication}</Paragraph>}
-                <EvidenceGroups evidence={item.evidence} />
-              </article>
-            ))}
-          </div>
-        ) : <EmptyList description="当前没有可完成的一致性检验" />}
-      </Section>
-
-      <Section title="反证、限制与边界复核">
-        {value.boundary_reviews?.length ? (
-          <div className="formal-list">
-            {value.boundary_reviews.map((item) => (
-              <article className="formal-item" key={item.review_id}>
-                <Tag color="orange">{valueLabel(item.boundary_type, TYPE_LABELS)}</Tag>
-                <Paragraph>{item.finding}</Paragraph>
-                {item.impact && <Paragraph type="secondary"><Text strong>结论影响：</Text>{item.impact}</Paragraph>}
-                <EvidenceGroups evidence={item.evidence} />
-              </article>
-            ))}
-          </div>
-        ) : <EmptyList description="当前没有额外边界复核项" />}
-      </Section>
-
-      <Section title="综合理由"><Paragraph className="synthesis-text">{value.synthesis}</Paragraph></Section>
     </Card>
   )
 }
@@ -241,8 +170,8 @@ function isFormalOutput(output) {
   return Boolean(
     output
     && Object.keys(output).length === 2
-    && output.professional_conclusions
-    && output.clinical_reasoning,
+    && output.specialty_assessments
+    && output.interspecialty_questions,
   )
 }
 
@@ -286,12 +215,12 @@ export function SpecialtyWorkspace({ runId, run }) {
           type="warning"
           showIcon
           title="旧版专科输出不在此页面展示"
-          description="该运行缺少新的“专业结论”和“临床推理论证”结构。原始历史产物仍可在“产物审计”中查看。"
+          description="该运行缺少新的“专科初步判断”和“需其他专科回答的问题”结构。原始历史产物仍可在“产物审计”中查看。"
         />
       ) : (
         <div className="formal-output-grid">
-          <ProfessionalConclusions value={output.professional_conclusions} />
-          <ClinicalReasoning value={output.clinical_reasoning} />
+          <SpecialtyAssessments value={output.specialty_assessments} />
+          <InterspecialtyQuestionsCard value={output.interspecialty_questions} />
         </div>
       )}
     </div>

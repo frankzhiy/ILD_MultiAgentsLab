@@ -60,7 +60,7 @@ class RunOrchestrator:
             raise ValueError("source 必须是 library 或 paste。")
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_id = f"{stamp}_{case_id}_step2_step3"
+        base_id = f"{stamp}_{case_id}"
         run_id = base_id
         counter = 2
         while (self.catalog.runs_dir / run_id).exists():

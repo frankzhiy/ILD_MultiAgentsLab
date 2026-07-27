@@ -168,13 +168,22 @@ def test_chair_prompt_view_keeps_semantics_and_compacts_provenance():
     assert "完整指南原文" not in compact
 
 
-def test_specialty_initial_prompt_view_keeps_only_formal_conclusions():
+def test_specialty_initial_prompt_view_keeps_only_two_formal_sections():
     view = build_specialty_initial_prompt_view({
         "professional_conclusions": {"marker": "正式结论"},
         "clinical_reasoning": {"marker": "内部推理"},
     })
 
-    assert view == {"marker": "正式结论"}
+    assert view == {
+        "specialty_assessments": {
+            "specialty_question": None,
+            "assessability": None,
+            "assessments": [],
+            "evidence_gaps": [],
+            "boundaries": [],
+        },
+        "interspecialty_questions": {"questions": []},
+    }
 
 
 def test_discussion_prompt_views_keep_only_the_current_issue_and_compact_baseline():
@@ -198,7 +207,7 @@ def test_discussion_prompt_views_keep_only_the_current_issue_and_compact_baselin
 
     assert chair_view["issue"]["question_id"] == "Q001"
     assert "保留主席语义结论" not in json.dumps(chair_view, ensure_ascii=False)
-    assert specialty_view["conclusions"][0]["statement"] == "正式专科结论"
+    assert specialty_view["specialty_assessments"][0]["statement"] == "正式专科结论"
     assert "不应重复传入的原文" not in json.dumps(specialty_view, ensure_ascii=False)
 
 
@@ -417,7 +426,37 @@ def test_review_outcome_closes_a_boundary_without_calling_it_resolved():
 
     assert question.discussion_status == "closed_this_round"
     assert question.closure_type == "boundary_answer"
+    assert question.answer_status == "boundary_answered"
+    assert question.review_status == "accepted_boundary"
     assert question.reviewed_by == ["rheumatology"]
+
+
+def test_review_incompatibility_is_a_flag_not_a_formal_conflict_object():
+    payload = chair_question()
+    payload["questions"][0].update({
+        "source_refs": ["source-1"],
+        "answer_summary": "回答与提出方既有正式判断不兼容。",
+        "why_it_matters": "需要主持人重新比较正式结论。",
+        "decision_unlocked": "决定是否形成正式冲突。",
+    })
+    result = MDTChairIntegration.model_validate(payload)
+    question = result.questions[0]
+    question.raised_by = ["rheumatology"]
+    review = SpecialtyAnswerReview(
+        review_id="review-1",
+        issue_id="Q001",
+        answer_id="answer-1",
+        reviewer_specialty="rheumatology",
+        outcome="flag_incompatibility",
+        rationale="本轮回答与风湿科正式判断直接不兼容。",
+    )
+
+    apply_review_outcomes(result, [review])
+
+    assert question.review_status == "incompatibility_flagged"
+    assert question.discussion_status == "awaiting_conflict_assessment"
+    assert question.answer_status == "unanswered"
+    assert result.conflicts == []
 
 
 def test_final_requester_review_closes_an_in_round_clarification():
@@ -671,12 +710,14 @@ def test_round_response_projects_new_questions_and_evidence_gaps():
             rationale="回答已覆盖原问题。",
         )],
     )
-    professional = updated["pulmonology"]["professional_conclusions"]
+    assessments = updated["pulmonology"]["specialty_assessments"]
+    questions = updated["pulmonology"]["interspecialty_questions"]["questions"]
 
-    assert professional["conclusions"][0]["statement"].startswith("对议题 Q001")
-    assert professional["interspecialty_questions"][0]["question"] == (
+    assert assessments["assessments"][0]["statement"].startswith("对议题 Q001")
+    assert assessments["assessments"][0]["answered_question_id"] == "Q001"
+    assert questions[0]["question"] == (
         "现有影像表现能否解释低氧程度？"
     )
-    assert professional["evidence_gaps"][0]["missing_information"] == (
+    assert assessments["evidence_gaps"][0]["missing_information"] == (
         "缺少右心结构和肺动脉压力数据。"
     )

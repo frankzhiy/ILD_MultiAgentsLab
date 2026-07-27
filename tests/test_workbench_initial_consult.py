@@ -13,8 +13,8 @@ from src.workbench.workflow import WorkbenchWorkflow
 
 
 FORMAL_OUTPUT = {
-    "professional_conclusions": {"specialty_focus": "呼吸科首轮问题"},
-    "clinical_reasoning": {"problem_representation": "病例表征"},
+    "specialty_assessments": {"specialty_question": "呼吸科首轮问题"},
+    "interspecialty_questions": {"questions": []},
 }
 
 

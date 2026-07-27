@@ -3,20 +3,18 @@
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from src.agents.common.evidence_projection import (
     build_specialty_evidence_prompt_input,
     build_specialty_working_input,
 )
 from src.agents.common.initial_output import (
-    CandidateExplanation,
-    ClinicalReasoning,
-    EvidenceComparison,
     EvidenceGap,
     InterspecialtyQuestion,
-    ProfessionalConclusion,
-    ProfessionalConclusions,
+    InterspecialtyQuestions,
+    SpecialtyAssessment,
+    SpecialtyAssessments,
     SpecialtyInitialConsultResult,
     SpecialtyInitialOutput,
 )
@@ -68,25 +66,26 @@ _NONASSESSABLE_MATERIAL = {
 }
 
 
-class _MaterialPlanConclusion(ProfessionalConclusion):
+class _MaterialPlanAssessment(SpecialtyAssessment):
     status: Literal["not_assessable", "not_applicable"]
 
 
-class _MaterialPlanProfessionalConclusions(ProfessionalConclusions):
+class _MaterialPlanAssessments(SpecialtyAssessments):
     assessability: Literal["not_assessable"]
-    conclusions: list[_MaterialPlanConclusion] = Field(min_length=1)
-    interspecialty_questions: list[InterspecialtyQuestion] = Field(min_length=1)
+    assessments: list[_MaterialPlanAssessment] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("assessments", "conclusions"),
+    )
     evidence_gaps: list[EvidenceGap] = Field(min_length=1)
 
 
-class _MaterialPlanClinicalReasoning(ClinicalReasoning):
-    candidate_explanations: list[CandidateExplanation] = Field(max_length=0)
-    evidence_comparisons: list[EvidenceComparison] = Field(max_length=0)
+class _MaterialPlanQuestions(InterspecialtyQuestions):
+    questions: list[InterspecialtyQuestion] = Field(min_length=1)
 
 
 class _PathologyMaterialPlanOutput(SpecialtyInitialOutput):
-    professional_conclusions: _MaterialPlanProfessionalConclusions
-    clinical_reasoning: _MaterialPlanClinicalReasoning
+    specialty_assessments: _MaterialPlanAssessments
+    interspecialty_questions: _MaterialPlanQuestions
 
 _RULE_KEYS_BY_STAGE = {
     "initial_specimen_reconstruction": ("sampling", "biopsy_scope", "boundaries"),

@@ -129,11 +129,46 @@ def outputs():
 
 
 def source_ref(bundle, specialty, source_type, occurrence=0):
+    source_type = {
+        "native_conclusion": "specialty_assessment",
+        "native_question": "interspecialty_question",
+        "evidence_gap": "assessment_evidence_need",
+    }.get(source_type, source_type)
     return [
         ref
         for ref, source in bundle.source_registry.items()
         if source.specialty == specialty and source.source_type == source_type
     ][occurrence]
+
+
+def assessable_conflict_outputs():
+    values = outputs()
+    radiology = values["thoracic_radiology"]["professional_conclusions"][
+        "conclusions"
+    ][0]
+    radiology.update({
+        "role": "primary",
+        "conclusion_type": "morphologic_pattern",
+        "status": "favored",
+        "statement": "现有影像首选形态解释为模式 B。",
+    })
+    return values
+
+
+def conflict_ledger_payload(bundle, nature, claims):
+    payload = ledger_payload(bundle)
+    boundary_group = payload["claim_groups"][1]
+    payload["claim_groups"] = [{
+        "label": "需要跨专科协调的判断",
+        "disposition": "conflict",
+        "conflict_nature": nature,
+        "comparison_target": "当前主要诊断或形态解释",
+        "comparison_conditions": "当前时点、现有资料和可比较的判断层级。",
+        "why_incompatible": "两项判断不能同时作为当前首选。",
+        "decision_impact": "影响诊断信度和下一步检查路径。",
+        "claims": claims,
+    }, boundary_group]
+    return payload
 
 
 def ledger_payload(bundle):
@@ -156,6 +191,8 @@ def ledger_payload(bundle):
                     "dimension": "工作诊断层级",
                     "timeframe": "当前",
                     "evidence_scope": "现有临床资料",
+                    "professional_level": "disease_diagnosis",
+                    "position_role": "preferred",
                     "epistemic_status": "affirms",
                 }],
             },
@@ -170,6 +207,8 @@ def ledger_payload(bundle):
                         "dimension": "专业判断",
                         "timeframe": "当前",
                         "evidence_scope": "现有资料",
+                        "professional_level": "assessability",
+                        "position_role": "boundary",
                         "epistemic_status": "not_assessable",
                     }
                     for ref, subject in (
@@ -255,7 +294,7 @@ def integration_payload(bundle):
                 "answer": "现有文字不足以形成具体影像模式判断。",
                 "source_refs": [radiology],
             }],
-            "resolution_status": "blocked_by_evidence",
+            "resolution_status": "partially_resolved",
             "answer_summary": "影像科已经回应其当前判断边界。",
             "remaining_clarification": "实体影像问题仍受资料限制。",
             "why_it_matters": "避免把回应误当作问题已经解决。",
@@ -305,14 +344,14 @@ def test_prompt_projection_excludes_internal_reasoning_and_runtime_guidelines():
 def test_prompt_projection_labels_each_specialty_source_type():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     specialty = bundle.prompt_input["specialties"][0]
-    assert {item["source_type"] for item in specialty["native_conclusions"]} == {
-        "native_conclusion"
+    assert {item["source_type"] for item in specialty["specialty_assessments"]} == {
+        "specialty_assessment"
     }
-    assert {item["source_type"] for item in specialty["native_questions"]} == {
-        "native_question"
+    assert {item["source_type"] for item in specialty["interspecialty_questions"]} == {
+        "interspecialty_question"
     }
     assert {item["source_type"] for item in specialty["evidence_needs"]} == {
-        "evidence_gap"
+        "assessment_evidence_need"
     }
 
 
@@ -333,7 +372,7 @@ def test_program_backfills_v5_ids_provenance_and_separates_boundaries():
     result = resolve_chair_references(
         MDTChairIntegration.model_validate(integration_payload(bundle)), bundle, ledger
     )
-    assert result.schema_version == "mdt_chair.v6"
+    assert result.schema_version == "mdt_chair.v8"
     assert result.case_id == "case-1"
     assert result.integrated_conclusions[0].conclusion_id == "IC001"
     assert result.integrated_conclusions[0].supporting_specialties == ["pulmonology"]
@@ -357,7 +396,7 @@ def test_assessment_boundary_accepts_unresolved_native_question_source():
     )
 
     boundary = result.assessment_boundaries[0]
-    assert boundary.source_citations[0].source_type == "native_question"
+    assert boundary.source_citations[0].source_type == "interspecialty_question"
     assert boundary.specialties == ["pulmonology"]
 
 
@@ -368,9 +407,6 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
         MDTChairIntegration.model_validate(integration_payload(initial_bundle)),
         initial_bundle,
         resolved_ledger(initial_bundle),
-    )
-    previous.questions[0].answers[0].source_refs.append(
-        source_ref(initial_bundle, "pulmonology", "native_conclusion")
     )
     answer = SpecialtyTaskAnswer(
         answer_id="R01-Q001-thoracic_radiology-A",
@@ -418,21 +454,28 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
     result = resolve_chair_references(result, current_bundle)
 
     question = result.questions[0]
-    assert {item.source_type for item in question.source_citations} == {"native_question"}
+    assert {item.source_type for item in question.source_citations} == {
+        "interspecialty_question"
+    }
     assert {
         current_bundle.source_registry[ref].source_type
         for ref in question.related_evidence_need_source_refs
-    } <= {"native_question", "evidence_gap"}
+    } <= {"interspecialty_question", "assessment_evidence_need"}
     assert all(
         len({citation.specialty for citation in item.source_citations}) == 1
         for item in question.answers
     )
     assert question.answers[-1].answer == answer.answer
     assert {item.source_type for item in question.answers[-1].source_citations} == {
-        "native_conclusion"
+        "specialty_assessment"
     }
     assert all(
-        citation.source_type in {"native_question", "evidence_gap", "native_conclusion"}
+        citation.source_type
+        in {
+            "interspecialty_question",
+            "assessment_evidence_need",
+            "specialty_assessment",
+        }
         for need in result.evidence_needs
         for citation in need.source_citations
     )
@@ -495,13 +538,13 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
     new_question_ref = next(
         ref
         for ref, item in current_bundle.source_registry.items()
-        if item.source_type == "native_question"
+        if item.source_type == "interspecialty_question"
         and item.quote == "现有低氧程度能否由肺实质异常充分解释？"
     )
     new_gap_ref = next(
         ref
         for ref, item in current_bundle.source_registry.items()
-        if item.source_type == "evidence_gap"
+        if item.source_type == "assessment_evidence_need"
         and item.quote == "缺少可比原始HRCT。"
     )
     payload["questions"].append({
@@ -541,7 +584,7 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
     )
 
 
-def test_question_response_and_resolution_are_independent():
+def test_partially_answered_question_remains_on_public_board():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     result = resolve_chair_references(
         MDTChairIntegration.model_validate(integration_payload(bundle)),
@@ -550,7 +593,7 @@ def test_question_response_and_resolution_are_independent():
     )
     question = result.questions[0]
     assert question.response_status == "all_responded"
-    assert question.resolution_status == "blocked_by_evidence"
+    assert question.answer_status == "partially_answered"
     assert question.responded_by == ["thoracic_radiology"]
     assert question.awaiting_specialties == []
     assert question.related_evidence_need_ids == ["EN002"]
@@ -584,7 +627,7 @@ def test_empty_integrated_conclusions_is_a_valid_current_result():
 
 
 def test_conflict_ids_specialties_links_and_status_are_program_backfilled():
-    bundle = build_chair_prompt_bundle("case-1", outputs())
+    bundle = build_chair_prompt_bundle("case-1", assessable_conflict_outputs())
     payload = integration_payload(bundle)
     pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
     radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
@@ -592,8 +635,9 @@ def test_conflict_ids_specialties_links_and_status_are_program_backfilled():
     data_request = source_ref(bundle, "pathology", "native_question")
     payload["conflicts"] = [{
         "topic": "同一资料下的直接相反判断",
+        "conflict_nature": "direct_contradiction",
         "conflict_domain": "diagnostic_interpretation",
-        "shared_claim": "当前资料直接确认命题 X。",
+        "comparison_target": "当前资料直接确认命题 X。",
         "comparison_conditions": "同一对象、时间、资料和判断层级。",
         "positions": [
             {"stance": "affirms", "position": "直接肯定。", "source_refs": [pulmonary]},
@@ -605,8 +649,35 @@ def test_conflict_ids_specialties_links_and_status_are_program_backfilled():
         "related_question_source_refs": [question],
         "related_evidence_need_source_refs": [data_request],
     }]
+    ledger_payload_value = conflict_ledger_payload(bundle, "direct_contradiction", [
+        {
+            "source_ref": pulmonary,
+            "statement": "直接肯定命题 X。",
+            "subject": "命题 X",
+            "dimension": "诊断判断",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "disease_diagnosis",
+            "position_role": "preferred",
+            "epistemic_status": "affirms",
+        },
+        {
+            "source_ref": radiology,
+            "statement": "直接否定命题 X。",
+            "subject": "命题 X",
+            "dimension": "诊断判断",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "disease_diagnosis",
+            "position_role": "preferred",
+            "epistemic_status": "denies",
+        },
+    ])
+    ledger = resolve_semantic_ledger(
+        ChairSemanticLedger.model_validate(ledger_payload_value), bundle
+    )
     result = resolve_chair_references(
-        MDTChairIntegration.model_validate(payload), bundle, resolved_ledger(bundle)
+        MDTChairIntegration.model_validate(payload), bundle, ledger
     )
     conflict = result.conflicts[0]
     assert conflict.conflict_id == "CF001"
@@ -614,6 +685,176 @@ def test_conflict_ids_specialties_links_and_status_are_program_backfilled():
     assert conflict.related_question_ids == ["Q001"]
     assert conflict.related_evidence_need_ids == ["EN002"]
     assert conflict.status == "pending_clarification_and_evidence"
+
+
+def test_initial_ledger_accepts_decision_relevant_discordance():
+    bundle = build_chair_prompt_bundle("case-1", assessable_conflict_outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    payload = conflict_ledger_payload(bundle, "decision_relevant_discordance", [
+        {
+            "source_ref": pulmonary,
+            "statement": "当前首选模式 A。",
+            "subject": "当前主要形态解释",
+            "dimension": "形态模式",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "morphologic_pattern",
+            "position_role": "preferred",
+            "epistemic_status": "possible",
+        },
+        {
+            "source_ref": radiology,
+            "statement": "当前首选模式 B。",
+            "subject": "当前主要形态解释",
+            "dimension": "形态模式",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "morphologic_pattern",
+            "position_role": "preferred",
+            "epistemic_status": "possible",
+        },
+    ])
+
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    assert ledger.claim_groups[0].conflict_nature == "decision_relevant_discordance"
+
+
+def test_initial_integration_exposes_decision_relevant_discordance():
+    bundle = build_chair_prompt_bundle("case-1", assessable_conflict_outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    ledger_payload_value = conflict_ledger_payload(
+        bundle,
+        "decision_relevant_discordance",
+        [
+            {
+                "source_ref": ref,
+                "statement": statement,
+                "subject": "当前主要形态解释",
+                "dimension": "形态模式",
+                "timeframe": "当前",
+                "evidence_scope": "现有资料",
+                "professional_level": "morphologic_pattern",
+                "position_role": "preferred",
+                "epistemic_status": "possible",
+            }
+            for ref, statement in (
+                (pulmonary, "当前首选模式 A。"),
+                (radiology, "当前首选模式 B。"),
+            )
+        ],
+    )
+    ledger = resolve_semantic_ledger(
+        ChairSemanticLedger.model_validate(ledger_payload_value), bundle
+    )
+    payload = integration_payload(bundle)
+    payload["conflicts"] = [{
+        "topic": "主要形态解释不同",
+        "conflict_nature": "decision_relevant_discordance",
+        "conflict_domain": "morphologic_interpretation",
+        "comparison_target": "当前主要形态解释",
+        "comparison_conditions": "当前时点和现有资料。",
+        "positions": [
+            {"stance": "favors", "position": "首选模式 A。", "source_refs": [pulmonary]},
+            {"stance": "favors", "position": "首选模式 B。", "source_refs": [radiology]},
+        ],
+        "why_incompatible": "不能同时作为当前首选形态解释。",
+        "decision_impact": "影响诊断信度和取材策略。",
+        "resolution_requirement": "由 MDT 比较影像与临床依据。",
+        "related_question_source_refs": [],
+        "related_evidence_need_source_refs": [],
+    }]
+
+    result = resolve_chair_references(
+        MDTChairIntegration.model_validate(payload), bundle, ledger
+    )
+
+    assert result.conflicts[0].conflict_nature == "decision_relevant_discordance"
+    assert {item.stance for item in result.conflicts[0].positions} == {"favors"}
+
+
+def test_initial_ledger_rejects_tentative_alternatives_as_discordance():
+    values = assessable_conflict_outputs()
+    values["thoracic_radiology"]["professional_conclusions"]["conclusions"][0][
+        "status"
+    ] = "possible"
+    bundle = build_chair_prompt_bundle("case-1", values)
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    payload = conflict_ledger_payload(bundle, "decision_relevant_discordance", [
+        {
+            "source_ref": pulmonary,
+            "statement": "模式 A 可能。",
+            "subject": "形态解释",
+            "dimension": "形态模式",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "morphologic_pattern",
+            "position_role": "tentative",
+            "epistemic_status": "possible",
+        },
+        {
+            "source_ref": radiology,
+            "statement": "模式 B 可能。",
+            "subject": "形态解释",
+            "dimension": "形态模式",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "morphologic_pattern",
+            "position_role": "tentative",
+            "epistemic_status": "possible",
+        },
+    ])
+
+    with pytest.raises(ValueError, match="preferred primary specialty assessments"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_initial_ledger_rejects_direct_contradiction_across_levels():
+    bundle = build_chair_prompt_bundle("case-1", assessable_conflict_outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    payload = conflict_ledger_payload(bundle, "direct_contradiction", [
+        {
+            "source_ref": pulmonary,
+            "statement": "肯定疾病诊断 X。",
+            "subject": "疾病 X",
+            "dimension": "疾病诊断",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "disease_diagnosis",
+            "position_role": "preferred",
+            "epistemic_status": "affirms",
+        },
+        {
+            "source_ref": radiology,
+            "statement": "否定形态模式 X。",
+            "subject": "模式 X",
+            "dimension": "形态模式",
+            "timeframe": "当前",
+            "evidence_scope": "现有资料",
+            "professional_level": "morphologic_pattern",
+            "position_role": "preferred",
+            "epistemic_status": "denies",
+        },
+    ])
+
+    with pytest.raises(ValueError, match="one professional level"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_complete_boundary_answer_is_removed_from_public_question_board():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = integration_payload(bundle)
+    payload["questions"][0]["answer_status"] = "boundary_answered"
+    payload["questions"][0].pop("resolution_status", None)
+
+    result = resolve_chair_references(
+        MDTChairIntegration.model_validate(payload), bundle, resolved_ledger(bundle)
+    )
+    assert result.questions == []
 
 
 def test_unknown_source_id_is_rejected_without_medical_semantic_validator():
@@ -635,32 +876,43 @@ def test_integration_source_type_error_identifies_exact_field():
         resolve_chair_references(MDTChairIntegration.model_validate(payload), bundle)
 
 
-def test_mixed_specialty_answers_report_every_exact_source():
+def test_mixed_specialty_answer_refs_are_repaired_from_question_ledger():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     payload = integration_payload(bundle)
     pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
     rheumatology = source_ref(bundle, "rheumatology", "native_conclusion")
     radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
-    pathology = source_ref(bundle, "pathology", "native_conclusion")
     payload["questions"][0]["answers"][0]["source_refs"] = [
         pulmonary,
         rheumatology,
     ]
-    payload["questions"].append({
-        **payload["questions"][0],
-        "answers": [{
-            **payload["questions"][0]["answers"][0],
-            "source_refs": [radiology, pathology],
-        }],
-    })
 
-    with pytest.raises(ValueError) as error:
-        resolve_chair_references(MDTChairIntegration.model_validate(payload), bundle)
+    result = resolve_chair_references(
+        MDTChairIntegration.model_validate(payload), bundle, resolved_ledger(bundle)
+    )
 
-    message = str(error.value)
-    assert "split these answers by specialty" in message
-    assert f"questions[0].answers[0]: {pulmonary}=pulmonology, {rheumatology}=rheumatology" in message
-    assert f"questions[1].answers[0]: {radiology}=thoracic_radiology, {pathology}=pathology" in message
+    assert result.questions[0].answers[0].source_refs == [radiology]
+    assert result.questions[0].answers[0].specialty == "thoracic_radiology"
+    assert [event["action"] for event in bundle.normalization_events[-2:]] == [
+        "dropped_invalid_question_answer_source_refs",
+        "restored_question_answer_source_refs_from_ledger",
+    ]
+
+
+def test_non_target_answer_without_ledger_becomes_unanswered():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = integration_payload(bundle)
+    payload["questions"][0]["answers"][0]["source_refs"] = [
+        source_ref(bundle, "pulmonology", "specialty_assessment")
+    ]
+
+    result = resolve_chair_references(
+        MDTChairIntegration.model_validate(payload), bundle
+    )
+
+    assert result.questions[0].answers == []
+    assert result.questions[0].answer_status == "unanswered"
+    assert result.questions[0].response_status == "none_responded"
 
 
 def test_semantic_ledger_drops_known_gap_refs_from_answer_and_coverage_links():
@@ -678,16 +930,44 @@ def test_semantic_ledger_drops_known_gap_refs_from_answer_and_coverage_links():
         {
             "context": "question_routes[0].answer_links[0].source_refs",
             "action": "dropped_incompatible_known_source_refs",
-            "allowed_source_types": ["native_conclusion"],
-            "dropped": [{"source_ref": gap_ref, "source_type": "evidence_gap"}],
+            "allowed_source_types": ["specialty_assessment"],
+            "dropped": [
+                {"source_ref": gap_ref, "source_type": "assessment_evidence_need"}
+            ],
         },
         {
             "context": "evidence_need_groups[0].coverage_source_refs",
             "action": "dropped_incompatible_known_source_refs",
-            "allowed_source_types": ["native_conclusion"],
-            "dropped": [{"source_ref": gap_ref, "source_type": "evidence_gap"}],
+            "allowed_source_types": ["specialty_assessment"],
+            "dropped": [
+                {"source_ref": gap_ref, "source_type": "assessment_evidence_need"}
+            ],
         },
     ]
+
+
+def test_non_target_specialty_assessment_cannot_answer_a_question():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    pulmonary_assessment = source_ref(
+        bundle, "pulmonology", "specialty_assessment"
+    )
+    payload["question_routes"][0]["answer_links"][0]["source_refs"] = [
+        pulmonary_assessment
+    ]
+
+    ledger = resolve_semantic_ledger(
+        ChairSemanticLedger.model_validate(payload), bundle
+    )
+
+    assert ledger.question_routes[0].target_specialties == ["thoracic_radiology"]
+    assert ledger.question_routes[0].answer_links == []
+    assert bundle.normalization_events[-1] == {
+        "context": "question_routes[0].answer_links[0].source_refs",
+        "action": "dropped_non_target_specialty_answers",
+        "target_specialties": ["thoracic_radiology"],
+        "dropped": [pulmonary_assessment],
+    }
 
 
 def test_semantic_graph_catalog_repairs_specialty_locator():

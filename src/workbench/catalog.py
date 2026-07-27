@@ -423,8 +423,8 @@ class RunCatalog:
     @staticmethod
     def _is_formal_output(value: Any) -> bool:
         return isinstance(value, dict) and set(value) == {
-            "professional_conclusions",
-            "clinical_reasoning",
+            "specialty_assessments",
+            "interspecialty_questions",
         }
 
     @staticmethod
@@ -432,6 +432,8 @@ class RunCatalog:
         if not isinstance(value, dict) or value.get("schema_version") not in {
             "mdt_chair.v5",
             "mdt_chair.v6",
+            "mdt_chair.v7",
+            "mdt_chair.v8",
         }:
             return False
         return all(

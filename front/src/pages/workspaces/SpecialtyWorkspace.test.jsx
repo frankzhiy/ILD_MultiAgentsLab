@@ -24,13 +24,13 @@ const pointer = {
 
 function formalOutput(question = '判断疾病层面的首轮工作诊断') {
   return {
-    professional_conclusions: {
+    specialty_assessments: {
       specialty_question: question,
       assessability: 'partially_assessable',
-      conclusions: [{
-        conclusion_id: 'conclusion-1',
+      assessments: [{
+        assessment_id: 'assessment-1',
         role: 'primary',
-        conclusion_type: 'working_diagnosis',
+        assessment_type: 'working_diagnosis',
         statement: '倾向慢性纤维化性间质性肺病',
         status: 'favored',
         medical_basis: '病程和现有肺部资料形成连贯解释。',
@@ -39,56 +39,24 @@ function formalOutput(question = '判断疾病层面的首轮工作诊断') {
         guideline_evidence: [{ guideline_id: 'guide-1', source_file: 'guide.pdf', page: 3 }],
         limitations: ['缺少原始影像。'],
       }],
-      interspecialty_questions: [{
-        target_specialty: 'thoracic_radiology',
-        question: '现有资料能否支持 UIP 形态模式？',
-        why_it_matters: '影响疾病层工作诊断。',
-        decision_unlocked: '调整诊断强度。',
-        related_evidence: [pointer],
-      }],
       evidence_gaps: [{
         available_information: '仅有影像报告摘录。',
         missing_information: '缺少原始薄层 CT。',
         why_it_matters: '不能可靠判断形态模式。',
         decision_unlocked: '完成影像模式判断。',
-        related_evidence: [pointer],
+        related_assessment_ids: ['assessment-1'], related_evidence: [pointer],
       }],
       boundaries: ['本结论不是最终 MDT 诊断。'],
     },
-    clinical_reasoning: {
-      problem_representation: '慢性进展性纤维化性肺病，病因资料不完整。',
-      candidate_explanations: [{
-        candidate_id: 'candidate-1',
-        explanation: '特发性纤维化性间质性肺病',
-        role: 'leading',
-        fit_summary: '能够解释当前核心综合征。',
-        evidence: { supporting: [pointer], weakening: [], discriminating: [pointer], background: [] },
-        guideline_evidence: [],
-        remaining_uncertainty: '继发病因尚未充分排除。',
+    interspecialty_questions: {
+      questions: [{
+        target_specialty: 'thoracic_radiology',
+        question: '现有资料能否支持 UIP 形态模式？',
+        why_it_matters: '影响疾病层工作诊断。',
+        decision_unlocked: '调整诊断强度。',
+        related_assessment_ids: ['assessment-1'],
+        related_evidence: [pointer],
       }],
-      evidence_comparisons: [{
-        comparison_id: 'comparison-1',
-        effect: 'discriminates',
-        candidate_ids: ['candidate-1'],
-        interpretation: '慢性进展病程具有鉴别价值。',
-        evidence: { supporting: [], weakening: [], discriminating: [pointer], background: [] },
-      }],
-      consistency_checks: [{
-        check_id: 'check-1',
-        dimension: 'time',
-        status: 'consistent',
-        finding: '时间进程与慢性纤维化过程一致。',
-        implication: '支持主导解释。',
-        evidence: { supporting: [pointer], weakening: [], discriminating: [], background: [] },
-      }],
-      boundary_reviews: [{
-        review_id: 'review-1',
-        boundary_type: 'pattern_is_not_disease',
-        finding: '未将形态模式直接升级为疾病诊断。',
-        impact: '结论保持在工作诊断层。',
-        evidence: { supporting: [], weakening: [], discriminating: [], background: [pointer] },
-      }],
-      synthesis: '综合病程、证据鉴别力与当前边界，形成校准后的工作结论。',
     },
   }
 }
@@ -159,10 +127,11 @@ describe('SpecialtyWorkspace', () => {
     api.specialties.mockResolvedValue(payload())
     renderWorkspace({ run: { status: 'completed' }, drawer: true })
 
-    expect(await screen.findByText('专业结论与外部需求')).toBeInTheDocument()
-    expect(screen.getByText('临床推理论证')).toBeInTheDocument()
-    ;['专科问题定位', '专业结论', '需要其他专科回答的问题', '决策相关证据缺口', '本专科判断边界', '问题表征', '候选解释', '鉴别性证据比较', '机制与时间一致性', '反证、限制与边界复核', '综合理由'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
-    ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
+    expect(await screen.findByText('专科初步判断')).toBeInTheDocument()
+    expect(screen.getAllByText('需其他专科回答的问题').length).toBeGreaterThan(0)
+    ;['专科问题定位', '初步判断', '决策相关证据缺口', '本专科判断边界'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
+    expect(screen.queryByText('临床推理论证')).not.toBeInTheDocument()
+    ;['支持证据', '削弱证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
     fireEvent.click(screen.getAllByRole('button', { name: /ev-1/ })[0])
     expect(await screen.findByText('证据检查器')).toBeInTheDocument()
     expect(screen.getByText('长期进行性呼吸困难。')).toBeInTheDocument()
@@ -201,7 +170,7 @@ describe('SpecialtyWorkspace', () => {
     expect(await screen.findByText('数据加载失败')).toBeInTheDocument()
     expect(screen.getByText('network down')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /重试/ }))
-    expect(await screen.findByText('专业结论与外部需求')).toBeInTheDocument()
+    expect(await screen.findByText('专科初步判断')).toBeInTheDocument()
   })
 
   it('polls an active run until the specialty output is ready', async () => {
@@ -212,7 +181,7 @@ describe('SpecialtyWorkspace', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     expect(screen.getByText('呼吸科尚无首轮正式输出，页面会自动刷新')).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-    expect(screen.getByText('专业结论与外部需求')).toBeInTheDocument()
+    expect(screen.getByText('专科初步判断')).toBeInTheDocument()
     expect(api.specialties).toHaveBeenCalledTimes(2)
   })
 })

@@ -31,21 +31,37 @@ const RESPONSE_STATUS = {
   all_responded: ['目标专科均已回应', 'success'],
 }
 
-const RESOLUTION_STATUS = {
-  resolved: ['本轮已闭环', 'success'],
-  partially_resolved: ['需继续讨论', 'warning'],
-  unresolved: ['待目标专科回答', 'default'],
+const ANSWER_STATUS = {
+  answered: ['内容已回答', 'success'],
+  boundary_answered: ['已形成边界性回答', 'success'],
+  partially_answered: ['内容部分回答', 'warning'],
+  unanswered: ['内容待回答', 'default'],
   blocked_by_evidence: ['等待新资料后重启', 'warning'],
-  disputed: ['存在分歧', 'error'],
+  resolved: ['内容已回答', 'success'],
+  partially_resolved: ['内容部分回答', 'warning'],
+  unresolved: ['内容待回答', 'default'],
+}
+
+const REVIEW_STATUS = {
+  not_reviewed: ['尚未复核', 'default'],
+  awaiting_review: ['等待提问专科复核', 'processing'],
+  accepted: ['提问专科已接受', 'success'],
+  accepted_boundary: ['提问专科接受判断边界', 'success'],
+  clarification_requested: ['已请求澄清', 'processing'],
+  corroboration_requested: ['已请求佐证', 'processing'],
+  incompatibility_flagged: ['提出方发现不兼容', 'error'],
+  converted_to_evidence_need: ['已转证据需求', 'warning'],
 }
 
 const DISCUSSION_STATUS = {
+  not_started: ['尚未进入会中闭环', 'default'],
   awaiting_answer: ['待目标专科回答', 'default'],
   awaiting_requester_review: ['待提问专科复核', 'processing'],
   clarification_in_progress: ['专科澄清中', 'processing'],
   awaiting_corroboration: ['等待其他专科佐证', 'processing'],
+  awaiting_conflict_assessment: ['等待主持人判定正式冲突', 'error'],
   closed_this_round: ['本轮已闭环', 'success'],
-  disputed: ['存在冲突', 'error'],
+  disputed: ['提出方发现不兼容', 'error'],
   waiting_for_new_evidence: ['等待新资料后重启', 'warning'],
 }
 
@@ -85,9 +101,15 @@ const CONFLICT_DOMAIN = {
   assessability_or_scope: '可评价性/证据范围',
 }
 
+const CONFLICT_NATURE = {
+  direct_contradiction: '硬冲突',
+  decision_relevant_discordance: '决策相关分歧',
+}
+
 const CONFLICT_STANCE = {
   affirms: ['肯定该命题', 'success'],
   denies: ['否定该命题', 'error'],
+  favors: ['首选该解释', 'processing'],
 }
 
 const CONCLUSION_STATUS = {
@@ -212,6 +234,10 @@ function AssessmentBoundaries({ items = [] }) {
             <Paragraph><Text strong>当前不能判断：</Text>{item.statement}</Paragraph>
             <Paragraph><Text strong>原因：</Text>{item.reason}</Paragraph>
             <Paragraph type="secondary"><Text strong>决策影响：</Text>{item.decision_impact}</Paragraph>
+            <Space size={[6, 6]} wrap>
+              {item.assessment_source_refs?.length > 0 && <Tag color="blue">初步判断来源 {item.assessment_source_refs.length}</Tag>}
+              {item.question_source_refs?.length > 0 && <Tag color="purple">问题来源 {item.question_source_refs.length}</Tag>}
+            </Space>
             <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
             <Sources item={item} />
           </article>
@@ -243,10 +269,11 @@ function Conflicts({ items = [], questions = [], evidenceNeeds = [] }) {
             <Space size={[6, 6]} wrap>
               <SpecialtyTags label="相关专科" specialties={item.specialties} color="volcano" />
               <LabeledStatus label="冲突状态" value={item.status} labels={CONFLICT_STATUS} />
+              <LabeledTag label="冲突性质" value={item.conflict_nature || 'direct_contradiction'} labels={CONFLICT_NATURE} />
               <LabeledTag label="冲突类别" value={item.conflict_domain} labels={CONFLICT_DOMAIN} />
             </Space>
             <Title level={5}>{item.topic}</Title>
-            <Paragraph><Text strong>共同命题：</Text>{item.shared_claim}</Paragraph>
+            <Paragraph><Text strong>比较目标：</Text>{item.comparison_target || item.shared_claim}</Paragraph>
             <Paragraph type="secondary"><Text strong>比较前提：</Text>{item.comparison_conditions}</Paragraph>
             <div className="conflict-positions">
               {item.positions?.map((position, positionIndex) => (
@@ -272,7 +299,7 @@ function Conflicts({ items = [], questions = [], evidenceNeeds = [] }) {
 
 function Questions({ items = [] }) {
   return (
-    <Card title="待回答问题" className="section-card chair-board chair-questions">
+    <Card title="仍需其他专科回答的问题" className="section-card chair-board chair-questions">
       {items.length ? <div className="formal-list">
         {items.map((item, index) => (
           <article className="formal-item question-item" key={item.question_id || index}>
@@ -280,9 +307,9 @@ function Questions({ items = [] }) {
               {item.response_status
                 ? <LabeledStatus label="专科回应情况" value={item.response_status} labels={RESPONSE_STATUS} />
                 : <LabeledStatus label="问题状态" value={item.status} labels={QUESTION_STATUS} />}
-              {item.discussion_status
-                ? <LabeledStatus label="讨论处置" value={item.discussion_status} labels={DISCUSSION_STATUS} />
-                : item.resolution_status && <LabeledStatus label="讨论处置" value={item.resolution_status} labels={RESOLUTION_STATUS} />}
+              <LabeledStatus label="回答状态" value={item.answer_status || item.resolution_status} labels={ANSWER_STATUS} />
+              {item.review_status && <LabeledStatus label="复核状态" value={item.review_status} labels={REVIEW_STATUS} />}
+              {item.discussion_status && <LabeledStatus label="讨论处置" value={item.discussion_status} labels={DISCUSSION_STATUS} />}
               {item.closure_type && <LabeledTag label="闭环方式" value={item.closure_type} labels={CLOSURE_TYPE} />}
               <SpecialtyTags label="问题提出专科" specialties={item.raised_by} />
               <SpecialtyTags label="目标专科" specialties={item.target_specialties} color="geekblue" />
@@ -321,7 +348,7 @@ function Questions({ items = [] }) {
             <Sources item={item} label="问题来源：" />
           </article>
         ))}
-      </div> : <EmptyList description="当前没有待回答的跨专科问题" />}
+      </div> : <EmptyList description="当前没有仍需其他专科回答的问题" />}
     </Card>
   )
 }
@@ -355,6 +382,10 @@ function EvidenceNeeds({ items = [] }) {
             </div>
             {item.why_it_matters && <Paragraph className="need-impact"><Text strong>缺口意义：</Text>{item.why_it_matters}</Paragraph>}
             {item.decision_unlocked && <Paragraph type="secondary"><Text strong>满足后可改善：</Text>{item.decision_unlocked}</Paragraph>}
+            <Space size={[6, 6]} wrap>
+              {item.assessment_source_refs?.length > 0 && <Tag color="blue">初步判断来源 {item.assessment_source_refs.length}</Tag>}
+              {item.question_source_refs?.length > 0 && <Tag color="purple">问题来源 {item.question_source_refs.length}</Tag>}
+            </Space>
             <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
             <Sources item={item} />
           </article>
@@ -381,7 +412,7 @@ export function ChairResultTabs({ result }) {
     ['consensus', '共识结论', <IntegratedConclusions items={result?.integrated_conclusions} />],
     ['boundaries', '判断边界', <AssessmentBoundaries items={result?.assessment_boundaries} />],
     ['conflicts', '跨专科冲突', <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />],
-    ['questions', '待回答问题', <Questions items={result?.questions} />],
+    ['questions', '仍需回答的问题', <Questions items={result?.questions} />],
     ['evidence', '证据缺口', <EvidenceNeeds items={result?.evidence_needs} />],
   ]
   return <Tabs className="chair-result-tabs" items={items.map(([key, label, children]) => ({ key, label, children }))} />

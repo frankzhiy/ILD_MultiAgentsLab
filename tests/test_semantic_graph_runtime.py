@@ -194,6 +194,63 @@ def test_graph_unit_validation_rejects_omitted_clinical_text():
         normalize_and_validate_graph_units(result, segment)
 
 
+def _normalize_test_graph_units(text: str, *unit_texts: str) -> SegmentGraphUnits:
+    segment = ClassifiedSegment(
+        segment_id="seg_001",
+        text=text,
+        unit_type=DiscourseUnitType.CLINICAL_EPISODE,
+        clinical_frame="present_illness",
+        start_char=0,
+        end_char=len(text),
+        confidence=1,
+        rationale="test",
+    )
+    result = SegmentGraphUnits(
+        segment_id=segment.segment_id,
+        graph_units=[
+            GraphUnit(
+                graph_unit_id=f"seg_001_gu_{index:03d}",
+                segment_id=segment.segment_id,
+                text=unit_text,
+                source_type=SourceType.PRESENT_ILLNESS,
+                mdt_specialty=[MdtSpecialty.PULMONOLOGY],
+                rationale="test",
+            )
+            for index, unit_text in enumerate(unit_texts, start=1)
+        ],
+    )
+    return normalize_and_validate_graph_units(result, segment)
+
+
+def test_graph_unit_validation_absorbs_omitted_boundary_punctuation():
+    normalized = _normalize_test_graph_units(
+        "患者,女,77岁,主因咳嗽。",
+        "患者,女,77岁",
+        "主因咳嗽。",
+    )
+
+    assert normalized.graph_units[0].text == "患者,女,77岁,"
+    assert normalized.graph_units[0].segment_end_char == 9
+    assert normalized.graph_units[1].text == "主因咳嗽。"
+
+
+def test_graph_unit_validation_drops_duplicated_boundary_punctuation():
+    normalized = _normalize_test_graph_units(
+        "患者,女,77岁,主因咳嗽。",
+        "患者,女,77岁,",
+        ",主因咳嗽。",
+    )
+
+    assert normalized.graph_units[0].text == "患者,女,77岁,"
+    assert normalized.graph_units[1].text == "主因咳嗽。"
+    assert normalized.graph_units[1].segment_start_char == 9
+
+
+def test_graph_unit_validation_does_not_repair_changed_dosage():
+    with pytest.raises(ValueError, match="text='目前口服药物1片/次。'"):
+        _normalize_test_graph_units("目前口服药物2片/次。", "目前口服药物1片/次。")
+
+
 def test_document_validation_rejects_omitted_clinical_text():
     text = "活动后气短。ANA阳性。"
     source_units = build_source_units(text)

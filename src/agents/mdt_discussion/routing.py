@@ -17,6 +17,8 @@ SPECIALTIES = {
     "rheumatology",
     "pathology",
 }
+
+
 def build_discussion_tasks(
     *,
     chair_result: dict[str, Any],
@@ -46,7 +48,16 @@ def build_discussion_tasks(
             "awaiting_requester_review",
         }:
             continue
-        if question.get("resolution_status") in {"resolved", "blocked_by_evidence"}:
+        answer_status = question.get("answer_status")
+        if answer_status is None:
+            answer_status = {
+                "resolved": "answered",
+                "partially_resolved": "partially_answered",
+                "unresolved": "unanswered",
+                "blocked_by_evidence": "blocked_by_evidence",
+                "disputed": "answered",
+            }.get(question.get("resolution_status"))
+        if answer_status in {"answered", "boundary_answered", "blocked_by_evidence"}:
             continue
         if issue_id in attempted:
             continue
@@ -82,7 +93,11 @@ def build_discussion_tasks(
         prompt = "\n".join(
             value
             for value in (
-                str(conflict.get("shared_claim") or ""),
+                str(
+                    conflict.get("comparison_target")
+                    or conflict.get("shared_claim")
+                    or ""
+                ),
                 str(conflict.get("why_incompatible") or ""),
             )
             if value

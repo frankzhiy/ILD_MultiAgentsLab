@@ -14,12 +14,30 @@ def build_chair_prompt_view(chair_result: dict[str, Any]) -> dict[str, Any]:
 def build_specialty_initial_prompt_view(
     initial_output: dict[str, Any],
 ) -> dict[str, Any]:
-    """Expose only the specialty's formal initial conclusions during discussion."""
+    """Expose only the specialty's two formal initial-output sections."""
 
-    professional = initial_output.get("professional_conclusions")
-    if not isinstance(professional, dict):
-        raise ValueError("Specialty initial output is missing professional_conclusions")
-    return professional
+    assessments = initial_output.get("specialty_assessments")
+    questions = initial_output.get("interspecialty_questions")
+    if isinstance(assessments, dict) and isinstance(questions, dict):
+        return {
+            "specialty_assessments": assessments,
+            "interspecialty_questions": questions,
+        }
+    legacy = initial_output.get("professional_conclusions")
+    if not isinstance(legacy, dict):
+        raise ValueError("Specialty initial output is missing specialty_assessments")
+    return {
+        "specialty_assessments": {
+            "specialty_question": legacy.get("specialty_question"),
+            "assessability": legacy.get("assessability"),
+            "assessments": legacy.get("conclusions") or [],
+            "evidence_gaps": legacy.get("evidence_gaps") or [],
+            "boundaries": legacy.get("boundaries") or [],
+        },
+        "interspecialty_questions": {
+            "questions": legacy.get("interspecialty_questions") or []
+        },
+    }
 
 
 def build_specialty_discussion_prompt_view(
@@ -27,12 +45,14 @@ def build_specialty_discussion_prompt_view(
 ) -> dict[str, Any]:
     """Keep only the specialty's compact baseline needed to detect real changes."""
 
-    professional = build_specialty_initial_prompt_view(initial_output)
-    conclusions = professional.get("conclusions") or []
+    formal = build_specialty_initial_prompt_view(initial_output)
+    assessments = formal["specialty_assessments"]
+    items = assessments.get("assessments") or assessments.get("conclusions") or []
     return {
-        "conclusions": [
+        "specialty_assessments": [
             _select(
-                conclusion,
+                assessment,
+                "assessment_id",
                 "conclusion_id",
                 "statement",
                 "status",
@@ -40,9 +60,9 @@ def build_specialty_discussion_prompt_view(
                 "medical_basis",
                 "limitations",
             )
-            for conclusion in conclusions
+            for assessment in items
         ],
-        "boundaries": professional.get("boundaries") or [],
+        "boundaries": assessments.get("boundaries") or [],
     }
 
 

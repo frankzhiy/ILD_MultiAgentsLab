@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.agents.common.initial_output import EvidenceGap, InterspecialtyQuestion
@@ -22,7 +22,7 @@ ReviewOutcome = Literal[
     "accept_boundary",
     "request_clarification",
     "request_corroboration",
-    "identify_conflict",
+    "flag_incompatibility",
     "convert_to_evidence_need",
 ]
 
@@ -150,6 +150,14 @@ class SpecialtyAnswerReviewDraft(BaseModel):
     rationale: str = Field(min_length=1)
     follow_up_question: InterspecialtyQuestion | None = None
     evidence_gap: EvidenceGap | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_outcome(cls, value):
+        if isinstance(value, dict) and value.get("outcome") == "identify_conflict":
+            value = dict(value)
+            value["outcome"] = "flag_incompatibility"
+        return value
 
 
 class SpecialtyAnswerReview(SpecialtyAnswerReviewDraft):

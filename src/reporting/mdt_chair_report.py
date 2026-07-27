@@ -41,7 +41,7 @@ def render_mdt_chair_report(result: MDTChairSynthesis, output: str | Path) -> Pa
         "未识别到有充分双侧证据支持的跨专科冲突。"
     )
     issues = "".join(_issue(item) for item in result.open_issues) or _empty(
-        "当前没有待解决问题。"
+        "当前没有仍需其他专科回答的问题。"
     )
     output.write_text(
         f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -49,12 +49,12 @@ def render_mdt_chair_report(result: MDTChairSynthesis, output: str | Path) -> Pa
 <title>{escape(result.case_id)} · MDT主持人首轮整理</title><style>{_CSS}</style></head><body>
 <header><div class="wrap"><div class="eyebrow">ILD MDT · RESPIRATORY CHAIR</div>
 <h1>{escape(result.case_id)} · 主持人首轮整理</h1>
-<p>专科意见压缩、证据回填、冲突识别与待解决问题清单</p>
+<p>专科初步判断整合、冲突识别与仍需其他专科回答的问题清单</p>
 <div class="boundary">本阶段不裁决冲突，不输出最终 MDT 诊断或治疗方案。</div></div></header>
-<nav><a href="#summaries">专科摘要</a><a href="#conflicts">跨专科冲突</a><a href="#issues">待解决问题</a></nav>
+<nav><a href="#summaries">专科初步判断</a><a href="#conflicts">跨专科冲突</a><a href="#issues">仍需回答的问题</a></nav>
 <main class="wrap"><section id="summaries"><h2>一、专科摘要</h2>{summaries}</section>
 <section id="conflicts"><h2>二、跨专科冲突</h2>{conflicts}</section>
-<section id="issues"><h2>三、待解决问题</h2>{issues}</section></main></body></html>""",
+<section id="issues"><h2>三、仍需其他专科回答的问题</h2>{issues}</section></main></body></html>""",
         encoding="utf-8",
     )
     return output
@@ -63,7 +63,7 @@ def render_mdt_chair_report(result: MDTChairSynthesis, output: str | Path) -> Pa
 def _specialty_summary(item) -> str:
     scope = item.evaluation_scope
     conclusions = "".join(
-        '<article class="conclusion"><div class="card-head"><h4>核心专科结论</h4>'
+        '<article class="conclusion"><div class="card-head"><h4>核心专科初步判断</h4>'
         f'{_badge(conclusion.confidence)}</div><p>{escape(conclusion.conclusion)}</p>'
         f"{_citations(conclusion)}</article>"
         for conclusion in item.core_conclusions

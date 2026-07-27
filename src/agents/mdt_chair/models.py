@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
@@ -14,7 +14,15 @@ Specialty = Literal[
     "rheumatology",
     "pathology",
 ]
-SourceType = Literal["native_conclusion", "native_question", "evidence_gap"]
+SourceType = Literal[
+    "specialty_assessment",
+    "interspecialty_question",
+    "assessment_evidence_need",
+    # Read-only compatibility for existing run artifacts.
+    "native_conclusion",
+    "native_question",
+    "evidence_gap",
+]
 EpistemicStatus = Literal[
     "affirms",
     "denies",
@@ -22,6 +30,19 @@ EpistemicStatus = Literal[
     "indeterminate",
     "not_assessable",
     "not_applicable",
+]
+ProfessionalLevel = Literal[
+    "observation",
+    "morphologic_pattern",
+    "disease_diagnosis",
+    "etiologic_attribution",
+    "severity_or_trajectory",
+    "assessability",
+]
+PositionRole = Literal["preferred", "alternative", "tentative", "boundary"]
+ConflictNature = Literal[
+    "direct_contradiction",
+    "decision_relevant_discordance",
 ]
 
 
@@ -72,7 +93,7 @@ class CitedChairStatement(BaseModel):
 
 
 class LedgerAtomicClaim(BaseModel):
-    """One minimal proposition extracted from a native specialty conclusion."""
+    """One minimal proposition extracted from a specialty assessment."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -83,6 +104,8 @@ class LedgerAtomicClaim(BaseModel):
     dimension: str = Field(min_length=1)
     timeframe: str = Field(min_length=1)
     evidence_scope: str = Field(min_length=1)
+    professional_level: ProfessionalLevel
+    position_role: PositionRole
     epistemic_status: EpistemicStatus
 
 
@@ -94,6 +117,11 @@ class LedgerClaimGroup(BaseModel):
     topic_id: SkipJsonSchema[str] = ""
     label: str = Field(min_length=1)
     disposition: Literal["integrated", "boundary", "conflict", "follow_up"]
+    conflict_nature: ConflictNature | None = None
+    comparison_target: str = ""
+    comparison_conditions: str = ""
+    why_incompatible: str = ""
+    decision_impact: str = ""
     claims: list[LedgerAtomicClaim] = Field(min_length=1)
 
 
@@ -180,6 +208,8 @@ class AssessmentBoundary(CitedChairStatement):
     related_evidence_need_source_refs: list[str] = Field(default_factory=list)
     related_evidence_need_ids: SkipJsonSchema[list[str]] = Field(default_factory=list)
     specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
+    assessment_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    question_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
 
 
 class QuestionAnswer(CitedChairStatement):
@@ -199,21 +229,34 @@ class IntegratedQuestion(CitedChairStatement):
     response_status: SkipJsonSchema[
         Literal["none_responded", "partially_responded", "all_responded"]
     ] = "none_responded"
-    resolution_status: Literal[
-        "resolved",
-        "partially_resolved",
-        "unresolved",
+    answer_status: Literal[
+        "answered",
+        "partially_answered",
+        "unanswered",
+        "boundary_answered",
         "blocked_by_evidence",
-        "disputed",
-    ]
+    ] = Field(validation_alias=AliasChoices("answer_status", "resolution_status"))
+    review_status: SkipJsonSchema[
+        Literal[
+            "not_reviewed",
+            "awaiting_review",
+            "accepted",
+            "accepted_boundary",
+            "clarification_requested",
+            "corroboration_requested",
+            "incompatibility_flagged",
+            "converted_to_evidence_need",
+        ]
+    ] = "not_reviewed"
     discussion_status: SkipJsonSchema[
         Literal[
+            "not_started",
             "awaiting_answer",
             "awaiting_requester_review",
             "clarification_in_progress",
             "awaiting_corroboration",
+            "awaiting_conflict_assessment",
             "closed_this_round",
-            "disputed",
             "waiting_for_new_evidence",
         ]
     ] = "awaiting_answer"
@@ -237,6 +280,28 @@ class IntegratedQuestion(CitedChairStatement):
     related_evidence_need_source_refs: list[str] = Field(default_factory=list)
     related_evidence_need_ids: SkipJsonSchema[list[str]] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_statuses(cls, value):
+        if not isinstance(value, dict) or "answer_status" in value:
+            return value
+        legacy = value.get("resolution_status")
+        mapping = {
+            "resolved": "answered",
+            "partially_resolved": "partially_answered",
+            "unresolved": "unanswered",
+            "blocked_by_evidence": "blocked_by_evidence",
+            "disputed": "answered",
+        }
+        if legacy in mapping:
+            value = dict(value)
+            value["answer_status"] = mapping[legacy]
+            value.pop("resolution_status", None)
+            if legacy == "disputed":
+                value.setdefault("review_status", "incompatibility_flagged")
+                value.setdefault("discussion_status", "awaiting_conflict_assessment")
+        return value
+
 
 class EvidenceNeed(CitedChairStatement):
     need_id: SkipJsonSchema[str] = ""
@@ -248,21 +313,24 @@ class EvidenceNeed(CitedChairStatement):
     provided_by: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
     why_it_matters: str = Field(min_length=1)
     decision_unlocked: str = Field(min_length=1)
+    assessment_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    question_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
 
 
 class ConflictPosition(CitedChairStatement):
     specialty: SkipJsonSchema[Specialty] = "pulmonology"
-    stance: Literal["affirms", "denies"]
+    stance: Literal["affirms", "denies", "favors"]
     position: str = Field(min_length=1)
 
 
 class CrossSpecialtyConflict(BaseModel):
-    """An unresolved incompatibility between formal specialty conclusions."""
+    """An unresolved incompatibility between specialty assessments."""
 
     model_config = ConfigDict(extra="forbid")
 
     conflict_id: SkipJsonSchema[str] = ""
     topic: str = Field(min_length=1)
+    conflict_nature: ConflictNature
     conflict_domain: Literal[
         "diagnostic_interpretation",
         "morphologic_interpretation",
@@ -278,7 +346,10 @@ class CrossSpecialtyConflict(BaseModel):
             "pending_clarification_and_evidence",
         ]
     ] = "unresolved"
-    shared_claim: str = Field(min_length=1)
+    comparison_target: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("comparison_target", "shared_claim"),
+    )
     comparison_conditions: str = Field(min_length=1)
     positions: list[ConflictPosition] = Field(min_length=2)
     why_incompatible: str = Field(min_length=1)
@@ -290,6 +361,31 @@ class CrossSpecialtyConflict(BaseModel):
     related_evidence_need_ids: SkipJsonSchema[list[str]] = Field(default_factory=list)
     specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_conflict(cls, value):
+        if not isinstance(value, dict):
+            return value
+        value = dict(value)
+        value.setdefault("conflict_nature", "direct_contradiction")
+        if "comparison_target" not in value and "shared_claim" in value:
+            value["comparison_target"] = value.pop("shared_claim")
+        return value
+
+    @model_validator(mode="after")
+    def validate_position_shape(self):
+        stances = {position.stance for position in self.positions}
+        if self.conflict_nature == "direct_contradiction":
+            if stances != {"affirms", "denies"}:
+                raise ValueError(
+                    "direct_contradiction requires both affirms and denies positions"
+                )
+        elif stances != {"favors"}:
+            raise ValueError(
+                "decision_relevant_discordance requires only favors positions"
+            )
+        return self
+
 
 class MDTChairIntegration(BaseModel):
     """The chair's public cross-specialty integration result."""
@@ -297,8 +393,8 @@ class MDTChairIntegration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: SkipJsonSchema[
-        Literal["mdt_chair.v5", "mdt_chair.v6"]
-    ] = "mdt_chair.v6"
+        Literal["mdt_chair.v5", "mdt_chair.v6", "mdt_chair.v7", "mdt_chair.v8"]
+    ] = "mdt_chair.v8"
     case_id: SkipJsonSchema[str] = ""
     integrated_conclusions: list[IntegratedConclusion] = Field(default_factory=list)
     assessment_boundaries: list[AssessmentBoundary] = Field(default_factory=list)

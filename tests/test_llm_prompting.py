@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from pydantic import BaseModel
 
 from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.semantic_graphing.clinical_proposition_extractor import (
@@ -14,11 +15,26 @@ from src.agents.thoracic_radiology.models import EvidencePointer as RadiologyPoi
 from src.agents.thoracic_radiology.models import SpecialistQuestion as RadiologyQuestion
 from src.guidelines.models import GuidelineEvidencePointer
 from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.base import LLMResponse
 from src.llm.structured import (
     StructuredGenerationError,
     StructuredLLMGenerator,
     json_schema_response_format,
 )
+
+
+class _RetryResult(BaseModel):
+    text: str
+
+
+class _TwoResponseLLM:
+    def __init__(self):
+        self.messages = []
+
+    def complete(self, messages, *, temperature, max_tokens, response_format=None):
+        self.messages.append(messages)
+        text = "诊断概率为 80%。" if len(self.messages) == 1 else "现有资料支持工作判断。"
+        return LLMResponse(content=json.dumps({"text": text}), raw={})
 
 
 def test_prompt_json_removes_program_filled_fields_recursively():
@@ -150,3 +166,32 @@ def test_declared_json_schema_support_does_not_silently_downgrade():
 
     assert len(llm.formats) == 1
     assert llm.formats[0]["type"] == "json_schema"
+
+
+def test_retry_explicitly_corrects_formal_probability_validation_error():
+    llm = _TwoResponseLLM()
+    generator = StructuredLLMGenerator(
+        llm,
+        temperature=0,
+        max_tokens=100,
+        max_attempts=2,
+    )
+
+    result, _ = generator.generate(
+        schema_model=_RetryResult,
+        schema_name="formal_initial",
+        system_prompt="system",
+        user_prompt="user",
+        extra_validation=lambda output: (
+            (_ for _ in ()).throw(
+                ValueError("Formal initial output must not express probability or confidence")
+            )
+            if "概率" in output.text
+            else output
+        ),
+    )
+
+    assert result.text == "现有资料支持工作判断。"
+    retry_prompt = llm.messages[1][1].content
+    assert "重新检查所有面向人的字符串字段" in retry_prompt
+    assert "不得出现“概率”“可能性”“置信度”“可信度”或 confidence" in retry_prompt

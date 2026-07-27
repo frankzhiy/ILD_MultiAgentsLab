@@ -63,19 +63,23 @@ def _source_ref_schema_constraints(
             for ref, source in bundle.source_registry.items()
             if source.source_type == source_type
         }
-        for source_type in ("native_conclusion", "native_question", "evidence_gap")
+        for source_type in (
+            "specialty_assessment",
+            "interspecialty_question",
+            "assessment_evidence_need",
+        )
     }
-    conclusions = refs["native_conclusion"]
-    questions = refs["native_question"]
-    needs = questions | refs["evidence_gap"]
+    assessments = refs["specialty_assessment"]
+    questions = refs["interspecialty_question"]
+    needs = questions | refs["assessment_evidence_need"]
     if semantic_ledger is None:
         return {
-            "LedgerAtomicClaim": {"source_ref": conclusions},
+            "LedgerAtomicClaim": {"source_ref": assessments},
             "LedgerQuestionRoute": {"source_refs": questions},
-            "LedgerAnswerLink": {"source_refs": conclusions},
+            "LedgerAnswerLink": {"source_refs": assessments},
             "LedgerEvidenceNeedGroup": {
                 "source_refs": needs,
-                "coverage_source_refs": conclusions,
+                "coverage_source_refs": assessments,
             },
         }
     claims = {
@@ -337,7 +341,7 @@ def build_chair_prompt_bundle(
     input_summaries: dict[str, dict[str, Any]] | None = None,
     semantic_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> ChairPromptBundle:
-    """Project only each specialty's formal professional_conclusions section."""
+    """Project only each specialty's two formal initial-output sections."""
     del input_summaries  # retained only for compatibility with the former caller API
     missing = sorted(set(SPECIALTIES) - set(specialty_outputs))
     if missing:
@@ -378,19 +382,34 @@ def _compact_specialty(
     output: dict[str, Any],
     registry: _Registry,
 ) -> dict[str, Any]:
-    professional = output.get("professional_conclusions")
-    if not isinstance(professional, dict):
-        raise ValueError(f"{specialty} output is missing professional_conclusions")
+    assessments_block = output.get("specialty_assessments")
+    questions_block = output.get("interspecialty_questions")
+    if not isinstance(assessments_block, dict):
+        assessments_block = output.get("professional_conclusions")
+        if not isinstance(assessments_block, dict):
+            raise ValueError(f"{specialty} output is missing specialty_assessments")
+        questions = list(assessments_block.get("interspecialty_questions") or [])
+    else:
+        questions = (
+            list(questions_block.get("questions") or [])
+            if isinstance(questions_block, dict)
+            else []
+        )
 
-    conclusions = []
-    for index, item in enumerate(professional.get("conclusions") or []):
-        path = f"professional_conclusions.conclusions[{index}]"
+    projected_assessments = []
+    assessment_items = (
+        assessments_block.get("assessments")
+        or assessments_block.get("conclusions")
+        or []
+    )
+    for index, item in enumerate(assessment_items):
+        path = f"specialty_assessments.assessments[{index}]"
         statement = str(item.get("statement") or "").strip()
         medical_basis = str(item.get("medical_basis") or "").strip()
         decision_impact = str(item.get("decision_impact") or "").strip()
         quote = "\n".join(
             (
-                f"结论：{statement}",
+                f"初步判断：{statement}",
                 f"医学依据：{medical_basis}",
                 f"决策影响：{decision_impact}",
             )
@@ -398,24 +417,29 @@ def _compact_specialty(
         evidence = _formal_evidence_refs(item.get("evidence") or {}, registry)
         source_ref = registry.source(
             specialty,
-            "native_conclusion",
+            "specialty_assessment",
             path,
             quote,
             evidence=evidence,
             guidelines=list(item.get("guideline_evidence") or []),
             metadata={
-                "conclusion_id": item.get("conclusion_id"),
+                "assessment_id": item.get("assessment_id") or item.get("conclusion_id"),
                 "original_statement": statement,
+                "role": item.get("role"),
+                "assessment_type": item.get("assessment_type") or item.get("conclusion_type"),
+                "status": item.get("status"),
                 "limitations": list(item.get("limitations") or []),
+                "origin": item.get("origin", "initial_assessment"),
+                "answered_question_id": item.get("answered_question_id", ""),
             },
         )
-        conclusions.append(
+        projected_assessments.append(
             {
                 "source_ref": source_ref,
-                "source_type": "native_conclusion",
-                "conclusion_id": item.get("conclusion_id"),
+                "source_type": "specialty_assessment",
+                "assessment_id": item.get("assessment_id") or item.get("conclusion_id"),
                 "role": item.get("role"),
-                "conclusion_type": item.get("conclusion_type"),
+                "assessment_type": item.get("assessment_type") or item.get("conclusion_type"),
                 "statement": statement,
                 "status": item.get("status"),
                 "medical_basis": medical_basis,
@@ -425,14 +449,14 @@ def _compact_specialty(
             }
         )
 
-    questions = []
-    for index, item in enumerate(professional.get("interspecialty_questions") or []):
-        path = f"professional_conclusions.interspecialty_questions[{index}]"
+    projected_questions = []
+    for index, item in enumerate(questions):
+        path = f"interspecialty_questions.questions[{index}]"
         question = str(item.get("question") or "").strip()
         evidence = _related_evidence_refs(item.get("related_evidence") or [], registry)
         source_ref = registry.source(
             specialty,
-            "native_question",
+            "interspecialty_question",
             path,
             question,
             evidence=evidence,
@@ -442,23 +466,23 @@ def _compact_specialty(
                 "decision_unlocked": item.get("decision_unlocked"),
             },
         )
-        questions.append(
+        projected_questions.append(
             {
                 **item,
                 "source_ref": source_ref,
-                "source_type": "native_question",
+                "source_type": "interspecialty_question",
                 "related_evidence": evidence["background"],
             }
         )
 
     evidence_needs = []
-    for index, item in enumerate(professional.get("evidence_gaps") or []):
-        path = f"professional_conclusions.evidence_gaps[{index}]"
+    for index, item in enumerate(assessments_block.get("evidence_gaps") or []):
+        path = f"specialty_assessments.evidence_gaps[{index}]"
         required = str(item.get("missing_information") or "").strip()
         evidence = _related_evidence_refs(item.get("related_evidence") or [], registry)
         source_ref = registry.source(
             specialty,
-            "evidence_gap",
+            "assessment_evidence_need",
             path,
             required,
             evidence=evidence,
@@ -472,18 +496,18 @@ def _compact_specialty(
             {
                 **item,
                 "source_ref": source_ref,
-                "source_type": "evidence_gap",
+                "source_type": "assessment_evidence_need",
                 "related_evidence": evidence["background"],
             }
         )
 
     return {
         "specialty": specialty,
-        "specialty_question": professional.get("specialty_question"),
-        "assessability": professional.get("assessability"),
-        "boundaries": list(professional.get("boundaries") or []),
-        "native_conclusions": conclusions,
-        "native_questions": questions,
+        "specialty_question": assessments_block.get("specialty_question"),
+        "assessability": assessments_block.get("assessability"),
+        "boundaries": list(assessments_block.get("boundaries") or []),
+        "specialty_assessments": projected_assessments,
+        "interspecialty_questions": projected_questions,
         "evidence_needs": evidence_needs,
     }
 
@@ -583,7 +607,18 @@ class MDTChairAgent:
         )
         ledger_prompt = render_template(
             self.ledger_prompt,
-            {"chair_input": compact_json, "output_schema": ledger_schema},
+            {
+                "chair_input": compact_json,
+                "output_schema": ledger_schema,
+                "conflict_detection_scope": (
+                    "当前是四科初次正式意见整合：对初次 specialty_assessments 启用"
+                    "硬冲突和决策相关分歧检测。"
+                    if discussion_previous is None
+                    else "当前是会中重整：保留初次正式意见能够形成的两类冲突，"
+                    "但暂不把新增的‘对议题的会中回应’识别为新的决策相关分歧；"
+                    "会中新增意见只沿用既有硬冲突检测。"
+                ),
+            },
         )
         ledger, ledger_trace = self.generator.generate(
             schema_model=ChairSemanticLedger,
@@ -668,13 +703,13 @@ def resolve_chair_references(
     """Backfill deterministic IDs and provenance without judging medical semantics."""
 
     result.case_id = bundle.case_id
-    result.schema_version = "mdt_chair.v6"
+    result.schema_version = "mdt_chair.v8"
     for index, conclusion in enumerate(result.integrated_conclusions, 1):
         conclusion.conclusion_id = f"IC{index:03d}"
         _resolve_cited(
             conclusion,
             bundle,
-            "native_conclusion",
+            "specialty_assessment",
             context=f"integrated_conclusions[{index - 1}].source_refs",
         )
         conclusion.supporting_specialties = _ordered_unique(
@@ -691,13 +726,13 @@ def resolve_chair_references(
         _resolve_cited(
             boundary,
             bundle,
-            {"native_conclusion", "native_question"},
+            {"specialty_assessment", "interspecialty_question"},
             context=f"assessment_boundaries[{index - 1}].source_refs",
         )
         _require_refs(
             boundary.related_evidence_need_source_refs,
             bundle,
-            {"native_question", "evidence_gap"},
+            {"interspecialty_question", "assessment_evidence_need"},
             context=(
                 f"assessment_boundaries[{index - 1}]"
                 ".related_evidence_need_source_refs"
@@ -706,39 +741,64 @@ def resolve_chair_references(
         boundary.specialties = _ordered_unique(
             citation.specialty for citation in boundary.source_citations
         )
+        boundary.assessment_source_refs = [
+            citation.source_ref
+            for citation in boundary.source_citations
+            if citation.source_type == "specialty_assessment"
+        ]
+        boundary.question_source_refs = [
+            citation.source_ref
+            for citation in boundary.source_citations
+            if citation.source_type == "interspecialty_question"
+        ]
 
     for index, need in enumerate(result.evidence_needs, 1):
         need.need_id = f"EN{index:03d}"
         _resolve_cited(
             need,
             bundle,
-            {"native_question", "evidence_gap", "native_conclusion"},
+            {
+                "interspecialty_question",
+                "assessment_evidence_need",
+                "specialty_assessment",
+            },
             context=f"evidence_needs[{index - 1}].source_refs",
         )
         need.raised_by = _ordered_unique(
             citation.specialty
             for citation in need.source_citations
-            if citation.source_type in {"native_question", "evidence_gap"}
+            if citation.source_type
+            in {"interspecialty_question", "assessment_evidence_need"}
         )
         need.provided_by = _ordered_unique(
             citation.specialty
             for citation in need.source_citations
-            if citation.source_type == "native_conclusion"
+            if citation.source_type == "specialty_assessment"
         )
+        need.assessment_source_refs = [
+            citation.source_ref
+            for citation in need.source_citations
+            if citation.source_type
+            in {"specialty_assessment", "assessment_evidence_need"}
+        ]
+        need.question_source_refs = [
+            citation.source_ref
+            for citation in need.source_citations
+            if citation.source_type == "interspecialty_question"
+        ]
 
-    invalid_answer_citations: list[str] = []
     for index, question in enumerate(result.questions, 1):
         question.question_id = f"Q{index:03d}"
         _resolve_cited(
             question,
             bundle,
-            "native_question",
+            "interspecialty_question",
             context=f"questions[{index - 1}].source_refs",
         )
         _require_refs(
             question.related_evidence_need_source_refs,
             bundle,
-            {"native_question", "evidence_gap"},
+            {"interspecialty_question", "assessment_evidence_need"},
             context=f"questions[{index - 1}].related_evidence_need_source_refs",
         )
         question.raised_by = _ordered_unique(
@@ -749,29 +809,100 @@ def resolve_chair_references(
             for ref in question.source_refs
             if bundle.source_metadata[ref].get("target_specialty") in SPECIALTIES
         )
+        allowed_by_specialty: dict[str, list[str]] = {}
+        relation_by_ref: dict[str, str] = {}
+        if ledger is not None:
+            for route in ledger.question_routes:
+                if route.route not in {"question", "mixed"} or not set(
+                    route.source_refs
+                ).intersection(question.source_refs):
+                    continue
+                for link in route.answer_links:
+                    allowed_by_specialty.setdefault(link.specialty, []).extend(
+                        link.source_refs
+                    )
+                    relation_by_ref.update(
+                        {ref: link.relation for ref in link.source_refs}
+                    )
+
+        normalized_answers = []
         for answer_index, answer in enumerate(question.answers):
-            _resolve_cited(
-                answer,
+            context = f"questions[{index - 1}].answers[{answer_index}].source_refs"
+            answer.source_refs = _drop_incompatible_known_refs(
+                answer.source_refs,
                 bundle,
-                "native_conclusion",
-                context=(
-                    f"questions[{index - 1}].answers[{answer_index}].source_refs"
-                ),
+                {"specialty_assessment"},
+                context=context,
             )
-            if answer.source_citations:
-                specialties = {
-                    citation.specialty for citation in answer.source_citations
+            _require_refs(
+                answer.source_refs,
+                bundle,
+                {"specialty_assessment"},
+                context=context,
+            )
+            if ledger is not None:
+                allowed_refs = {
+                    ref for refs in allowed_by_specialty.values() for ref in refs
                 }
-                if len(specialties) != 1:
-                    refs = ", ".join(
-                        f"{citation.source_ref}={citation.specialty}"
-                        for citation in answer.source_citations
+                eligible_refs = [
+                    ref for ref in answer.source_refs if ref in allowed_refs
+                ]
+            else:
+                eligible_refs = [
+                    ref
+                    for ref in answer.source_refs
+                    if bundle.source_registry[ref].specialty
+                    in question.target_specialties
+                ]
+            dropped_refs = [
+                ref for ref in answer.source_refs if ref not in eligible_refs
+            ]
+            if dropped_refs:
+                bundle.normalization_events.append(
+                    {
+                        "context": context,
+                        "action": "dropped_invalid_question_answer_source_refs",
+                        "target_specialties": question.target_specialties,
+                        "dropped": dropped_refs,
+                    }
+                )
+            if not eligible_refs and len(allowed_by_specialty) == 1:
+                eligible_refs = _ordered_unique(
+                    next(iter(allowed_by_specialty.values()))
+                )
+                bundle.normalization_events.append(
+                    {
+                        "context": context,
+                        "action": "restored_question_answer_source_refs_from_ledger",
+                        "restored": eligible_refs,
+                    }
+                )
+
+            refs_by_specialty: dict[str, list[str]] = {}
+            for ref in eligible_refs:
+                specialty = bundle.source_registry[ref].specialty
+                refs_by_specialty.setdefault(specialty, []).append(ref)
+            for specialty, refs in refs_by_specialty.items():
+                normalized = answer.model_copy(deep=True)
+                normalized.source_refs = refs
+                if ledger is not None:
+                    relations = {relation_by_ref[ref] for ref in refs}
+                    normalized.relation = (
+                        "partial_answer"
+                        if "partial_answer" in relations
+                        else "evidence_boundary"
+                        if relations == {"evidence_boundary"}
+                        else "direct_answer"
                     )
-                    invalid_answer_citations.append(
-                        f"questions[{index - 1}].answers[{answer_index}]: {refs}"
-                    )
-                else:
-                    answer.specialty = answer.source_citations[0].specialty
+                _resolve_cited(
+                    normalized,
+                    bundle,
+                    "specialty_assessment",
+                    context=context,
+                )
+                normalized.specialty = specialty
+                normalized_answers.append(normalized)
+        question.answers = normalized_answers
         question.responded_by = _ordered_unique(
             answer.specialty for answer in question.answers
         )
@@ -780,6 +911,13 @@ def resolve_chair_references(
             for specialty in question.target_specialties
             if specialty not in question.responded_by
         ]
+        if not question.answers:
+            question.answer_status = "unanswered"
+        elif question.awaiting_specialties and question.answer_status in {
+            "answered",
+            "boundary_answered",
+        }:
+            question.answer_status = "partially_answered"
         question.response_status = (
             "all_responded"
             if question.target_specialties and not question.awaiting_specialties
@@ -787,32 +925,31 @@ def resolve_chair_references(
             if question.responded_by
             else "none_responded"
         )
-        if question.resolution_status == "resolved":
-            question.discussion_status = "closed_this_round"
-            question.closure_type = (
-                "boundary_answer"
-                if any(
-                    answer.relation in {"partial_answer", "evidence_boundary"}
-                    for answer in question.answers
-                )
-                else "explicit_answer"
+        if question.answer_status in {"answered", "boundary_answered"}:
+            question.review_status = (
+                "not_reviewed" if ledger is not None else "awaiting_review"
             )
-        elif question.resolution_status == "blocked_by_evidence":
+            question.discussion_status = (
+                "not_started" if ledger is not None else "awaiting_requester_review"
+            )
+            question.closure_type = None
+        elif question.answer_status == "blocked_by_evidence":
+            question.review_status = "converted_to_evidence_need"
             question.discussion_status = "waiting_for_new_evidence"
             question.closure_type = "converted_to_evidence_need"
-        elif question.resolution_status == "disputed":
-            question.discussion_status = "disputed"
-            question.closure_type = None
         else:
+            question.review_status = "not_reviewed"
             question.discussion_status = "awaiting_answer"
             question.closure_type = None
 
-    if invalid_answer_citations:
-        raise ValueError(
-            "Each question answer must cite conclusions from exactly one specialty; "
-            "split these answers by specialty: "
-            + "; ".join(invalid_answer_citations)
-        )
+    # The public board contains only questions that still need an explicit answer.
+    result.questions = [
+        question
+        for question in result.questions
+        if question.answer_status in {"unanswered", "partially_answered"}
+    ]
+    for index, question in enumerate(result.questions, 1):
+        question.question_id = f"Q{index:03d}"
 
     _link_output_items(result)
     _resolve_conflicts(result.conflicts, result, bundle)
@@ -834,15 +971,16 @@ def resolve_semantic_ledger(
             _require_refs(
                 [claim.source_ref],
                 bundle,
-                {"native_conclusion"},
+                {"specialty_assessment"},
                 context=f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}].source_ref",
             )
+        _validate_conflict_group(group, bundle, topic_index - 1)
     for index, route in enumerate(ledger.question_routes, 1):
         route.route_id = f"R{index:03d}"
         _require_refs(
             route.source_refs,
             bundle,
-            {"native_question"},
+            {"interspecialty_question"},
             context=f"question_routes[{index - 1}].source_refs",
         )
         route.target_specialties = _ordered_unique(
@@ -855,7 +993,7 @@ def resolve_semantic_ledger(
             answer.source_refs = _drop_incompatible_known_refs(
                 answer.source_refs,
                 bundle,
-                {"native_conclusion"},
+                {"specialty_assessment"},
                 context=(
                     f"question_routes[{index - 1}].answer_links[{answer_index}].source_refs"
                 ),
@@ -865,12 +1003,43 @@ def resolve_semantic_ledger(
             _require_refs(
                 answer.source_refs,
                 bundle,
-                {"native_conclusion"},
+                {"specialty_assessment"},
                 context=(
                     f"question_routes[{index - 1}].answer_links[{answer_index}].source_refs"
                 ),
             )
-            answer.specialty = bundle.source_registry[answer.source_refs[0]].specialty
+            eligible_refs = [
+                ref
+                for ref in answer.source_refs
+                if bundle.source_registry[ref].specialty in route.target_specialties
+            ]
+            dropped_refs = [
+                ref for ref in answer.source_refs if ref not in eligible_refs
+            ]
+            if dropped_refs:
+                bundle.normalization_events.append(
+                    {
+                        "context": (
+                            f"question_routes[{index - 1}]"
+                            f".answer_links[{answer_index}].source_refs"
+                        ),
+                        "action": "dropped_non_target_specialty_answers",
+                        "target_specialties": route.target_specialties,
+                        "dropped": dropped_refs,
+                    }
+                )
+            answer.source_refs = eligible_refs
+            if not answer.source_refs:
+                continue
+            specialties = {
+                bundle.source_registry[ref].specialty for ref in answer.source_refs
+            }
+            if len(specialties) != 1:
+                raise ValueError(
+                    f"question_routes[{index - 1}].answer_links[{answer_index}] "
+                    "must cite assessments from exactly one target specialty"
+                )
+            answer.specialty = next(iter(specialties))
             answer_links.append(answer)
         route.answer_links = answer_links
     for index, group in enumerate(ledger.evidence_need_groups, 1):
@@ -878,25 +1047,25 @@ def resolve_semantic_ledger(
         _require_refs(
             group.source_refs,
             bundle,
-            {"native_question", "evidence_gap"},
+            {"interspecialty_question", "assessment_evidence_need"},
             context=f"evidence_need_groups[{index - 1}].source_refs",
         )
         group.coverage_source_refs = _drop_incompatible_known_refs(
             group.coverage_source_refs,
             bundle,
-            {"native_conclusion"},
+            {"specialty_assessment"},
             context=f"evidence_need_groups[{index - 1}].coverage_source_refs",
         )
         _require_refs(
             group.coverage_source_refs,
             bundle,
-            {"native_conclusion"},
+            {"specialty_assessment"},
             context=f"evidence_need_groups[{index - 1}].coverage_source_refs",
         )
     expected_questions = {
         ref
         for ref, source in bundle.source_registry.items()
-        if source.source_type == "native_question"
+        if source.source_type == "interspecialty_question"
     }
     routed_question_refs = [
         ref for route in ledger.question_routes for ref in route.source_refs
@@ -913,6 +1082,67 @@ def resolve_semantic_ledger(
             f"missing={missing}, unknown={unknown}, duplicates={duplicates}"
         )
     return ledger
+
+
+def _validate_conflict_group(group, bundle: ChairPromptBundle, index: int) -> None:
+    context = f"claim_groups[{index}]"
+    if group.disposition != "conflict":
+        if group.conflict_nature is not None:
+            raise ValueError(f"{context}.conflict_nature is only valid for conflict groups")
+        return
+    if group.conflict_nature is None:
+        raise ValueError(f"{context}.conflict_nature is required")
+    for field_name in (
+        "comparison_target",
+        "comparison_conditions",
+        "why_incompatible",
+        "decision_impact",
+    ):
+        if not str(getattr(group, field_name)).strip():
+            raise ValueError(f"{context}.{field_name} is required")
+    specialties = {
+        bundle.source_registry[claim.source_ref].specialty for claim in group.claims
+    }
+    if len(specialties) < 2:
+        raise ValueError(f"{context} must compare at least two specialties")
+    if group.conflict_nature == "direct_contradiction":
+        statuses = {claim.epistemic_status for claim in group.claims}
+        if statuses != {"affirms", "denies"}:
+            raise ValueError(
+                f"{context} direct_contradiction requires affirms and denies claims"
+            )
+        levels = {claim.professional_level for claim in group.claims}
+        if len(levels) != 1:
+            raise ValueError(
+                f"{context} direct_contradiction requires one professional level"
+            )
+        invalid = [
+            claim.source_ref
+            for claim in group.claims
+            if bundle.source_metadata[claim.source_ref].get("status")
+            not in {"supported", "favored"}
+        ]
+        if invalid:
+            raise ValueError(
+                f"{context} direct_contradiction requires assessable specialty assessments: "
+                f"{invalid}"
+            )
+        return
+    invalid = [
+        claim.source_ref
+        for claim in group.claims
+        if claim.position_role != "preferred"
+        or claim.epistemic_status
+        in {"indeterminate", "not_assessable", "not_applicable"}
+        or bundle.source_metadata[claim.source_ref].get("role") != "primary"
+        or bundle.source_metadata[claim.source_ref].get("status")
+        not in {"supported", "favored"}
+    ]
+    if invalid:
+        raise ValueError(
+            f"{context} decision_relevant_discordance requires assessable "
+            f"preferred primary specialty assessments: {invalid}"
+        )
 
 
 def _drop_incompatible_known_refs(
@@ -1072,6 +1302,21 @@ def _validate_output_refs_against_ledger(
     unknown = output_refs - ledger_refs
     if unknown:
         raise ValueError(f"Output source refs are absent from semantic ledger: {sorted(unknown)}")
+    for index, conflict in enumerate(result.conflicts):
+        refs = {
+            ref for position in conflict.positions for ref in position.source_refs
+        }
+        matched = any(
+            group.disposition == "conflict"
+            and group.conflict_nature == conflict.conflict_nature
+            and refs.issubset({claim.source_ref for claim in group.claims})
+            for group in ledger.claim_groups
+        )
+        if not matched:
+            raise ValueError(
+                f"conflicts[{index}] is not supported by a matching semantic-ledger "
+                "conflict group"
+            )
 
 
 def _resolve_conflicts(
@@ -1090,13 +1335,13 @@ def _resolve_conflicts(
         _require_refs(
             conflict.related_question_source_refs,
             bundle,
-            {"native_question"},
+            {"interspecialty_question"},
             context=f"conflicts[{index - 1}].related_question_source_refs",
         )
         _require_refs(
             conflict.related_evidence_need_source_refs,
             bundle,
-            {"native_question", "evidence_gap"},
+            {"interspecialty_question", "assessment_evidence_need"},
             context=f"conflicts[{index - 1}].related_evidence_need_source_refs",
         )
         specialties = []
@@ -1104,7 +1349,7 @@ def _resolve_conflicts(
             _resolve_cited(
                 position,
                 bundle,
-                "native_conclusion",
+                "specialty_assessment",
                 context=(
                     f"conflicts[{index - 1}].positions[{position_index}].source_refs"
                 ),
@@ -1113,6 +1358,27 @@ def _resolve_conflicts(
                 position.specialty = position.source_citations[0].specialty
             specialties.append(position.specialty)
         conflict.specialties = _ordered_unique(specialties)
+        if len(conflict.specialties) < 2:
+            raise ValueError(
+                f"conflicts[{index - 1}] must compare at least two specialties"
+            )
+        refs = [ref for position in conflict.positions for ref in position.source_refs]
+        invalid = [
+            ref
+            for ref in refs
+            if bundle.source_metadata[ref].get("status")
+            not in {"supported", "favored"}
+            or (
+                conflict.conflict_nature == "decision_relevant_discordance"
+                and bundle.source_metadata[ref].get("role") != "primary"
+            )
+        ]
+        if invalid:
+            raise ValueError(
+                f"conflicts[{index - 1}] requires assessable"
+                f"{' preferred primary' if conflict.conflict_nature == 'decision_relevant_discordance' else ''} "
+                f"specialty assessments: {invalid}"
+            )
         conflict.related_question_ids = [
             item.question_id
             for item in result.questions

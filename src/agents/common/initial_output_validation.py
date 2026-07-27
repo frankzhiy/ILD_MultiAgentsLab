@@ -102,53 +102,38 @@ def validate_specialty_initial_output(
                 )
         validate_pointers(groups.background, units)
 
-    for question in result.professional_conclusions.interspecialty_questions:
+    assessments = result.specialty_assessments
+    questions = result.interspecialty_questions.questions
+    assessment_ids = {item.assessment_id for item in assessments.assessments}
+    for question in questions:
         if question.target_specialty == specialty:
             raise ValueError("An interspecialty question cannot target the issuing specialty")
+        unknown = sorted(set(question.related_assessment_ids) - assessment_ids)
+        if unknown:
+            raise ValueError(
+                f"Interspecialty question references unknown assessment_ids: {unknown}"
+            )
         validate_pointers(question.related_evidence, units)
-    for gap in result.professional_conclusions.evidence_gaps:
+    for gap in assessments.evidence_gaps:
+        unknown = sorted(set(gap.related_assessment_ids) - assessment_ids)
+        if unknown:
+            raise ValueError(f"Evidence gap references unknown assessment_ids: {unknown}")
         validate_pointers(gap.related_evidence, units)
 
     _require_unique(
-        [item.conclusion_id for item in result.professional_conclusions.conclusions],
-        "conclusion_id",
+        [item.assessment_id for item in assessments.assessments],
+        "assessment_id",
     )
-    candidates = result.clinical_reasoning.candidate_explanations
-    candidate_ids = [item.candidate_id for item in candidates]
-    _require_unique(candidate_ids, "candidate_id")
-    _require_unique(
-        [item.comparison_id for item in result.clinical_reasoning.evidence_comparisons],
-        "comparison_id",
-    )
-    _require_unique(
-        [item.check_id for item in result.clinical_reasoning.consistency_checks],
-        "check_id",
-    )
-    _require_unique(
-        [item.review_id for item in result.clinical_reasoning.boundary_reviews],
-        "review_id",
-    )
-    known_candidates = set(candidate_ids)
-    for comparison in result.clinical_reasoning.evidence_comparisons:
-        unknown = sorted(set(comparison.candidate_ids) - known_candidates)
-        if unknown:
-            raise ValueError(
-                f"Evidence comparison references unknown candidate_ids: {unknown}"
-            )
-        if len(comparison.candidate_ids) != len(set(comparison.candidate_ids)):
-            raise ValueError(
-                f"Evidence comparison {comparison.comparison_id} repeats candidate_ids"
-            )
 
-    conclusion_types = {
-        item.conclusion_type for item in result.professional_conclusions.conclusions
+    assessment_types = {
+        item.assessment_type for item in assessments.assessments
     }
     if specialty == SpecialistTarget.RHEUMATOLOGY:
         required = {"rheumatic_disease", "ild_attribution"}
-        missing = sorted(required - conclusion_types)
+        missing = sorted(required - assessment_types)
         if missing:
             raise ValueError(
-                f"Rheumatology formal output requires separate conclusion types: {missing}"
+                f"Rheumatology formal output requires separate assessment types: {missing}"
             )
     if specialty == SpecialistTarget.PATHOLOGY and internal_state is not None:
         source = getattr(internal_state, "source_assessment", None)
@@ -158,27 +143,23 @@ def validate_specialty_initial_output(
             "uncertain_availability",
         }:
             invalid = [
-                item.conclusion_id
-                for item in result.professional_conclusions.conclusions
+                item.assessment_id
+                for item in assessments.assessments
                 if item.status not in {"not_assessable", "not_applicable"}
             ]
-            if (
-                invalid
-                or result.clinical_reasoning.candidate_explanations
-                or result.clinical_reasoning.evidence_comparisons
-            ):
+            if invalid:
                 raise ValueError(
                     "Pathology without assessable material cannot construct a pattern candidate"
                 )
-            if result.professional_conclusions.assessability != "not_assessable":
+            if assessments.assessability != "not_assessable":
                 raise ValueError(
                     "Pathology without assessable material must be not_assessable"
                 )
-            if not result.professional_conclusions.evidence_gaps:
+            if not assessments.evidence_gaps:
                 raise ValueError(
                     "Pathology without assessable material must specify what evidence to obtain"
                 )
-            if not result.professional_conclusions.interspecialty_questions:
+            if not questions:
                 raise ValueError(
                     "Pathology without assessable material must assign a material-recovery question"
                 )

@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 
 
-ConclusionStatus = Literal[
+AssessmentStatus = Literal[
     "supported",
     "favored",
     "possible",
@@ -21,26 +21,13 @@ ConclusionStatus = Literal[
     "not_applicable",
 ]
 Assessability = Literal["assessable", "partially_assessable", "not_assessable"]
-CandidateRole = Literal[
-    "leading",
-    "important_alternative",
-    "cannot_safely_ignore",
-    "not_currently_assessable",
-]
-ConsistencyStatus = Literal[
-    "consistent",
-    "partially_consistent",
-    "inconsistent",
-    "not_assessable",
-    "not_applicable",
-]
-ConclusionRole = Literal[
+AssessmentRole = Literal[
     "primary",
     "important_alternative",
     "cannot_safely_ignore",
     "scope_or_evaluability",
 ]
-ConclusionType = Literal[
+AssessmentType = Literal[
     "working_diagnosis",
     "morphologic_pattern",
     "etiologic_attribution",
@@ -54,19 +41,6 @@ ConclusionType = Literal[
     "etiologic_association",
     "other",
 ]
-EvidenceEffect = Literal["supports", "weakens", "discriminates", "background"]
-ConsistencyDimension = Literal["mechanism", "time", "mechanism_and_time"]
-BoundaryType = Literal[
-    "specialty_scope",
-    "missing_is_not_negative",
-    "pattern_is_not_disease",
-    "association_is_not_causation",
-    "evidence_sufficiency",
-    "material_representativeness",
-    "other",
-]
-
-
 class CaseEvidencePointer(BaseModel):
     """LLM selects one evidence block; source location is resolved locally."""
 
@@ -92,14 +66,19 @@ class EvidenceBundle(BaseModel):
     background: list[CaseEvidencePointer] = Field(default_factory=list)
 
 
-class ProfessionalConclusion(BaseModel):
+class SpecialtyAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    conclusion_id: str = Field(min_length=1)
-    role: ConclusionRole
-    conclusion_type: ConclusionType
+    assessment_id: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("assessment_id", "conclusion_id"),
+    )
+    role: AssessmentRole
+    assessment_type: AssessmentType = Field(
+        validation_alias=AliasChoices("assessment_type", "conclusion_type")
+    )
     statement: str = Field(min_length=1)
-    status: ConclusionStatus
+    status: AssessmentStatus
     medical_basis: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
     evidence: EvidenceBundle
@@ -119,6 +98,7 @@ class InterspecialtyQuestion(BaseModel):
     )
     why_it_matters: str = Field(min_length=1)
     decision_unlocked: str = Field(min_length=1)
+    related_assessment_ids: list[str] = Field(default_factory=list)
     related_evidence: list[CaseEvidencePointer] = Field(default_factory=list)
 
 
@@ -134,72 +114,27 @@ class EvidenceGap(BaseModel):
     )
     why_it_matters: str = Field(min_length=1)
     decision_unlocked: str = Field(min_length=1)
+    related_assessment_ids: list[str] = Field(default_factory=list)
     related_evidence: list[CaseEvidencePointer] = Field(default_factory=list)
 
 
-class ProfessionalConclusions(BaseModel):
+class SpecialtyAssessments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     specialty_question: str = Field(min_length=1)
     assessability: Assessability
-    conclusions: list[ProfessionalConclusion] = Field(min_length=1)
-    interspecialty_questions: list[InterspecialtyQuestion] = Field(default_factory=list)
+    assessments: list[SpecialtyAssessment] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("assessments", "conclusions"),
+    )
     evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
     boundaries: list[str] = Field(min_length=1)
 
 
-class CandidateExplanation(BaseModel):
+class InterspecialtyQuestions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    candidate_id: str = Field(min_length=1)
-    explanation: str = Field(min_length=1)
-    role: CandidateRole
-    fit_summary: str = Field(min_length=1)
-    evidence: EvidenceBundle
-    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    remaining_uncertainty: str = Field(min_length=1)
-
-
-class EvidenceComparison(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    comparison_id: str = Field(min_length=1)
-    effect: EvidenceEffect
-    candidate_ids: list[str] = Field(min_length=1)
-    interpretation: str = Field(min_length=1)
-    evidence: EvidenceBundle
-
-
-class ConsistencyCheck(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    check_id: str = Field(min_length=1)
-    dimension: ConsistencyDimension
-    status: ConsistencyStatus
-    finding: str = Field(min_length=1)
-    implication: str = Field(min_length=1)
-    evidence: EvidenceBundle
-
-
-class BoundaryReview(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    review_id: str = Field(min_length=1)
-    boundary_type: BoundaryType
-    finding: str = Field(min_length=1)
-    impact: str = Field(min_length=1)
-    evidence: EvidenceBundle
-
-
-class ClinicalReasoning(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    problem_representation: str = Field(min_length=1)
-    candidate_explanations: list[CandidateExplanation] = Field(default_factory=list)
-    evidence_comparisons: list[EvidenceComparison] = Field(default_factory=list)
-    consistency_checks: list[ConsistencyCheck] = Field(default_factory=list)
-    boundary_reviews: list[BoundaryReview] = Field(min_length=1)
-    synthesis: str = Field(min_length=1)
+    questions: list[InterspecialtyQuestion] = Field(default_factory=list)
 
 
 class SpecialtyInitialOutput(BaseModel):
@@ -207,9 +142,29 @@ class SpecialtyInitialOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    professional_conclusions: ProfessionalConclusions
-    clinical_reasoning: ClinicalReasoning
+    specialty_assessments: SpecialtyAssessments
+    interspecialty_questions: InterspecialtyQuestions
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_output(cls, value):
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        legacy = migrated.pop("professional_conclusions", None)
+        migrated.pop("clinical_reasoning", None)
+        if "specialty_assessments" not in migrated and isinstance(legacy, dict):
+            legacy = dict(legacy)
+            questions = legacy.pop("interspecialty_questions", [])
+            migrated["specialty_assessments"] = legacy
+            migrated.setdefault("interspecialty_questions", {"questions": questions})
+        elif isinstance(migrated.get("specialty_assessments"), dict):
+            assessments = dict(migrated["specialty_assessments"])
+            questions = assessments.pop("interspecialty_questions", None)
+            migrated["specialty_assessments"] = assessments
+            if questions is not None:
+                migrated.setdefault("interspecialty_questions", {"questions": questions})
+        return migrated
 
 @dataclass(frozen=True, slots=True)
 class SpecialtyInitialConsultResult:

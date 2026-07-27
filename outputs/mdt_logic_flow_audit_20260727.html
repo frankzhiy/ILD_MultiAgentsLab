@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ILD MDT 当前逻辑链路核查：结论与待回答问题是否混用</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5d677b;
+      --line: #dfe4ee;
+      --paper: #ffffff;
+      --canvas: #f5f7fb;
+      --blue: #2855d9;
+      --blue-soft: #eef3ff;
+      --red: #b42318;
+      --red-soft: #fff1f0;
+      --amber: #9a6700;
+      --amber-soft: #fff8df;
+      --green: #087443;
+      --green-soft: #eaf8f1;
+      --purple: #6f42c1;
+      --purple-soft: #f3eeff;
+      --shadow: 0 12px 34px rgba(34, 48, 83, .08);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font: 15px/1.72 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    header {
+      color: white;
+      background: linear-gradient(132deg, #172554, #2855d9 64%, #597cf1);
+      padding: 54px max(24px, calc((100vw - 1180px) / 2));
+    }
+    header p { max-width: 900px; margin: 12px 0 0; color: #dfe8ff; font-size: 17px; }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 44px); line-height: 1.22; letter-spacing: -.03em; }
+    h2 { margin: 0 0 20px; font-size: 27px; line-height: 1.3; }
+    h3 { margin: 0 0 12px; font-size: 20px; }
+    h4 { margin: 20px 0 8px; font-size: 16px; }
+    p { margin: 8px 0; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 28px auto 70px; }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+    nav a {
+      color: var(--blue);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 13px;
+      text-decoration: none;
+    }
+    section {
+      margin: 22px 0;
+      padding: 28px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    .verdict {
+      border: 2px solid #efaaa5;
+      background: linear-gradient(180deg, #fff, var(--red-soft));
+    }
+    .verdict h2 { color: var(--red); }
+    .lead { font-size: 18px; }
+    .callout {
+      margin: 16px 0;
+      padding: 15px 17px;
+      border-left: 4px solid var(--blue);
+      border-radius: 8px;
+      background: var(--blue-soft);
+    }
+    .callout.danger { border-color: var(--red); background: var(--red-soft); }
+    .callout.warn { border-color: var(--amber); background: var(--amber-soft); }
+    .callout.good { border-color: var(--green); background: var(--green-soft); }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: stretch;
+      margin: 18px 0;
+    }
+    .flow-card { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: #fbfcff; }
+    .flow-card strong { display: block; margin-bottom: 6px; color: var(--blue); }
+    .arrow { align-self: center; font-size: 25px; color: #8190ac; }
+    .bad-path { color: var(--red); font-weight: 700; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .specialty { border-top: 4px solid var(--blue); }
+    .specialty.radiology { border-top-color: #6f42c1; }
+    .specialty.rheumatology { border-top-color: #087443; }
+    .specialty.pathology { border-top-color: #b45309; }
+    .meta { color: var(--muted); font-size: 14px; }
+    .pill {
+      display: inline-block;
+      margin: 2px 5px 2px 0;
+      padding: 2px 9px;
+      color: #33415f;
+      background: #edf0f6;
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .pill.question { color: #542c98; background: var(--purple-soft); }
+    .pill.conclusion { color: #2146b7; background: var(--blue-soft); }
+    .pill.gap { color: #795100; background: var(--amber-soft); }
+    .pill.skip { color: var(--red); background: var(--red-soft); }
+    .pill.route { color: var(--green); background: var(--green-soft); }
+    ul, ol { margin: 8px 0; padding-left: 22px; }
+    li + li { margin-top: 7px; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { background: #f1f4f9; color: #34415e; }
+    tbody tr:nth-child(even) { background: #fafbfe; }
+    code { color: #304267; background: #eef1f6; border-radius: 5px; padding: 2px 5px; }
+    details { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; }
+    summary { cursor: pointer; color: #394968; font-weight: 650; }
+    .source { color: var(--muted); font-size: 13px; }
+    .result-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+    .metric { padding: 14px; text-align: center; border: 1px solid var(--line); border-radius: 12px; background: #fafbfe; }
+    .metric b { display: block; font-size: 27px; color: var(--blue); }
+    footer { color: var(--muted); text-align: center; padding-top: 8px; }
+    @media (max-width: 820px) {
+      .grid-2, .result-strip { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); justify-self: center; }
+      section { padding: 20px; }
+      table { display: block; overflow-x: auto; white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>当前逻辑链路核查：专业结论与待回答问题是否混用</h1>
+    <p>基于当前代码与最近一次完整主持人结果（76-IPF，运行目录 20260727_124143_76-IPF_step2_step3）。本页描述程序现在实际做了什么，并与预期语义分工对照。</p>
+  </header>
+
+  <main>
+    <nav aria-label="页面目录">
+      <a href="#verdict">核查结论</a>
+      <a href="#schema">初次输出结构</a>
+      <a href="#specialties">四科真实输出</a>
+      <a href="#chair">主持人处理</a>
+      <a href="#discussion">MDT 如何讨论</a>
+      <a href="#root-cause">错误链路</a>
+      <a href="#expected">应有流程</a>
+    </nav>
+
+    <section id="verdict" class="verdict">
+      <h2>核查结论：是，存在你指出的逻辑错误</h2>
+      <p class="lead"><strong>准确地说：</strong>程序没有从“专业结论”里生成新的问题；但主持人会用四科的首轮专业结论，提前判断“需要其他专科回答的问题”是否已被回答。随后 MDT 调度会跳过被判为 <code>answered</code> 或 <code>boundary_answered</code> 的问题。</p>
+      <div class="callout danger">
+        这等于把“该专科首轮形成过相关结论”当成“该专科已经正式接收并回答了另一专科的问题”。按你的设想，这两个事件不能等价：首轮结论用于跨科比较与冲突识别；问题必须在后续 MDT 中显式交给目标专科回答。
+      </div>
+      <p><strong>本例直接后果：</strong>7 个原生跨专科问题中，Q002 和 Q003 在 MDT 开始前已被标记为 <code>boundary_answered</code>，第一轮不会派发；另外 3 个问题被首轮结论预填为 <code>partially_answered</code>。实际第一轮只生成 5 个任务。</p>
+    </section>
+
+    <section id="schema">
+      <h2>一、每个专科当前的初次输出结构</h2>
+      <p>四个专科共享同一正式输出结构。顶层分为两个板块；主持人当前只读取 <code>professional_conclusions</code>，不读取 <code>clinical_reasoning</code>。</p>
+      <div class="flow">
+        <div class="flow-card">
+          <strong>professional_conclusions</strong>
+          专科问题、可评价性、专业结论、跨专科问题、证据缺口、判断边界。
+        </div>
+        <div class="arrow">＋</div>
+        <div class="flow-card">
+          <strong>clinical_reasoning</strong>
+          问题表征、候选解释、证据比较、一致性检查、边界复核、综合推理。
+        </div>
+        <div class="arrow">→</div>
+        <div class="flow-card">
+          <strong>主持人投影</strong>
+          只取前一个板块，并明确拆成 <code>native_conclusions</code>、<code>native_questions</code>、<code>evidence_needs</code>。
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>字段</th><th>设计语义</th><th>当前输入类型</th><th>你的预期用途</th></tr></thead>
+        <tbody>
+          <tr><td>conclusions</td><td>专科正式判断</td><td><code>native_conclusion</code></td><td>与其他专科结论整合、比较并识别冲突</td></tr>
+          <tr><td>interspecialty_questions</td><td>请指定专科解释、澄清或限定观点</td><td><code>native_question</code></td><td>进入 MDT，交给目标专科显式回答</td></tr>
+          <tr><td>evidence_gaps</td><td>缺少的影像、报告、标本、检查或病史</td><td><code>evidence_gap</code></td><td>单独追踪资料缺口，不伪装成专科问题</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="specialties">
+      <h2>二、四个专科当前的真实初次输出</h2>
+      <p class="meta">以下为 76-IPF 最近一次完整主持人运行实际读取的 <code>professional_conclusions</code>。为聚焦逻辑，只展示结论、问题和资料缺口，不展开证据引文与指南全文。</p>
+
+      <div class="grid-2">
+        <section class="specialty">
+          <h3>呼吸科</h3>
+          <p><span class="pill">部分可评价</span><span class="pill conclusion">5 条结论</span><span class="pill question">2 个问题</span><span class="pill gap">6 个缺口</span></p>
+          <h4>初次专业结论</h4>
+          <ol>
+            <li><strong>首选工作诊断：</strong>病因未明、暂不可特异分类的 ILD，伴中度弥散功能障碍；近期可能合并右肺中下叶感染性病灶。</li>
+            <li>只能确认双肺间质性异常，不能确认 UIP、NSIP、IPF 或特定形态。</li>
+            <li>近期症状加重，但 PPF 不可评估。</li>
+            <li>存在通气、弥散和呼吸储备异常，整体严重度不能完整量化。</li>
+            <li>感染可能叠加于基础 ILD，但持续性、病原体和主要归因未定。</li>
+          </ol>
+          <h4>需要其他专科回答</h4>
+          <ul>
+            <li><strong>→ 胸部影像科：</strong>判断是否有明确纤维化基础、分布和主要征象，区分局部异常，并评价过去 1 年进展。</li>
+            <li><strong>→ 风湿免疫科：</strong>结合系统表现、抗体和肌酶，解释是否存在 CTD/自身免疫相关 ILD 线索。</li>
+          </ul>
+          <details><summary>证据缺口（6）</summary><ul>
+            <li>生命体征、血氧、血气、氧疗及抗感染方案和疗效。</li>
+            <li>原始 HRCT、参数与过去 1 年可比影像。</li>
+            <li>完整肺功能原始值与纵向结果。</li>
+            <li>系统性自身免疫症状、抗体谱与肌酶。</li>
+            <li>药物、保健品、抗肿瘤治疗和放疗史。</li>
+            <li>病原学、结核核酸、流行病学及复查影像。</li>
+          </ul></details>
+        </section>
+
+        <section class="specialty radiology">
+          <h3>胸部影像科</h3>
+          <p><span class="pill">部分可评价</span><span class="pill conclusion">4 条结论</span><span class="pill question">0 个问题</span><span class="pill gap">2 个缺口</span></p>
+          <h4>初次专业结论</h4>
+          <ol>
+            <li>有限影像解释支持双肺间质性异常与局部实性异常可能并存。</li>
+            <li>不能可靠判定特定 ILD 形态模式或 IPF HRCT 分类。</li>
+            <li>局部条片状实性影性质未定，保留感染、不张、机化或其他改变。</li>
+            <li>不具备可靠纵向比较基础。</li>
+          </ol>
+          <h4>需要其他专科回答</h4>
+          <p>无。</p>
+          <details><summary>证据缺口（2）</summary><ul>
+            <li>原始图像、完整报告、检查日期、薄层重建和必要 HRCT 序列。</li>
+            <li>局部病灶容积、支气管通畅性、增强/随访变化及感染指标。</li>
+          </ul></details>
+        </section>
+
+        <section class="specialty rheumatology">
+          <h3>风湿免疫科</h3>
+          <p><span class="pill">部分可评价</span><span class="pill conclusion">3 条结论</span><span class="pill question">3 个问题</span><span class="pill gap">6 个缺口</span></p>
+          <h4>初次专业结论</h4>
+          <ol>
+            <li>不能确诊明确 CTD、重叠风湿病或未分化自身免疫状态。</li>
+            <li>ILD 是否存在及是否由风湿病导致不可评估；现有资料不支持 CTD-ILD 归因。</li>
+            <li>不能进行 IPAF 分类。</li>
+          </ol>
+          <h4>需要其他专科回答</h4>
+          <ul>
+            <li><strong>→ 胸部影像科：</strong>确认 ILD、分布、纤维化程度，并区分局灶性异常。</li>
+            <li><strong>→ 呼吸科：</strong>解释感染或感染后改变的贡献，并限定其他已知病因。</li>
+            <li><strong>→ 呼吸科：</strong>解释肺功能纵向变化、氧合、运动试验和进展风险。</li>
+          </ul>
+          <details><summary>证据缺口（6）</summary><ul>
+            <li>完整自身免疫病史与查体。</li>
+            <li>自身抗体、肌炎抗体、ANCA 等原始结果。</li>
+            <li>完整薄层 HRCT 和既往影像。</li>
+            <li>复查影像、病原学和结核评估。</li>
+            <li>肺功能原始值、氧合和六分钟步行。</li>
+            <li>用药、吸烟、暴露及心脏/容量负荷资料。</li>
+          </ul></details>
+        </section>
+
+        <section class="specialty pathology">
+          <h3>病理科</h3>
+          <p><span class="pill">不可评价</span><span class="pill conclusion">3 条结论</span><span class="pill question">2 个问题</span><span class="pill gap">4 个缺口</span></p>
+          <h4>初次专业结论</h4>
+          <ol>
+            <li>病理材料不可评估，不能形成组织学模式或病因提示。</li>
+            <li>组织学模式不可评估。</li>
+            <li>病因归属不可由病理科评估。</li>
+          </ol>
+          <h4>需要其他专科回答</h4>
+          <ul>
+            <li><strong>→ 呼吸科：</strong>确认是否有既往取材，并取得取材信息和正式病理报告。</li>
+            <li><strong>→ 胸部影像科：</strong>确认病变分布、纤维化特征及既往取材代表性。</li>
+          </ul>
+          <details><summary>证据缺口（4）</summary><ul>
+            <li>既往取材信息、正式病理报告和接收记录。</li>
+            <li>HE、特殊染色、免疫组化、切片/蜡块及微生物资料。</li>
+            <li>完整 HRCT 与正式报告。</li>
+            <li>吸烟、暴露、用药、感染和 CTD 背景。</li>
+          </ul></details>
+        </section>
+      </div>
+    </section>
+
+    <section id="chair">
+      <h2>三、主持人当前如何处理这些输出</h2>
+      <div class="result-strip">
+        <div class="metric"><b>4</b>整合结论</div>
+        <div class="metric"><b>6</b>判断边界</div>
+        <div class="metric"><b>0</b>正式冲突</div>
+        <div class="metric"><b>7</b>专科间问题</div>
+      </div>
+      <p>第一步是正确分流：专业结论进入 <code>claim_groups</code>；跨专科问题进入 <code>question_routes</code>；资料缺口进入 <code>evidence_need_groups</code>。</p>
+      <p>问题出在第二步：主持人的提示词明确要求“仅用四科现有 <code>native_conclusions</code> 判断是否已有回应”，并建立 <code>answer_links</code>。综合阶段又把这些结论概括成问题的已有答案，生成 <code>answer_status</code>。</p>
+      <table>
+        <thead><tr><th>问题</th><th>原始来源</th><th>主持人从哪些首轮结论找“答案”</th><th>主持人状态</th><th>MDT 后果</th></tr></thead>
+        <tbody>
+          <tr><td>Q001 影像纤维化、分布、局部异常和进展</td><td>呼吸科问题 S006</td><td>呼吸科 S002；影像科 S014/S015/S017</td><td><span class="pill">partially_answered</span></td><td><span class="pill route">仍派发</span></td></tr>
+          <tr><td>Q002 CTD/自身免疫线索</td><td>呼吸科问题 S007</td><td>风湿科 S020/S021/S022</td><td><span class="pill skip">boundary_answered</span></td><td><span class="pill skip">跳过</span></td></tr>
+          <tr><td>Q003 是否有既往组织取材</td><td>病理科问题 S035</td><td><strong>病理科自己的</strong>不可评价结论 S032</td><td><span class="pill skip">boundary_answered</span></td><td><span class="pill skip">跳过</span></td></tr>
+          <tr><td>Q004 影像分布、纤维化及取材代表性</td><td>病理科问题 S036</td><td>无</td><td><span class="pill">unanswered</span></td><td><span class="pill route">派发</span></td></tr>
+          <tr><td>Q005 感染贡献及其他病因</td><td>风湿科问题 S024</td><td>呼吸科 S001/S005；影像科 S014/S016；风湿科 S021</td><td><span class="pill">partially_answered</span></td><td><span class="pill route">仍派发</span></td></tr>
+          <tr><td>Q006 肺功能、氧合与进展风险</td><td>风湿科问题 S025</td><td>呼吸科 S003/S004</td><td><span class="pill">partially_answered</span></td><td><span class="pill route">仍派发</span></td></tr>
+          <tr><td>Q007 确证 ILD 及影像限定</td><td>风湿科问题 S023</td><td>台账曾链接影像科边界 S014–S017，但最终仍判未回答</td><td><span class="pill">unanswered</span></td><td><span class="pill route">派发</span></td></tr>
+        </tbody>
+      </table>
+      <div class="callout danger">
+        Q003 是最明显的语义错位：病理科问的是“请呼吸科确认是否做过取材”，主持人却用病理科自己“当前病理材料不可评估”的结论，把它判成已经得到边界性回答，导致问题不再交给呼吸科。
+      </div>
+    </section>
+
+    <section id="discussion">
+      <h2>四、MDT 团队当前会如何讨论</h2>
+      <div class="callout warn">
+        本次运行目录尚无 MDT discussion 结果，因此这里不是虚构的讨论内容，而是用当前主持人结果调用现有路由函数后得到的第一轮实际任务清单。
+      </div>
+      <h3>第一轮实际会派发的 5 个任务</h3>
+      <table>
+        <thead><tr><th>任务</th><th>接收专科</th><th>要回答的原始问题</th></tr></thead>
+        <tbody>
+          <tr><td>R01-Q001</td><td>胸部影像科</td><td>纤维化基础、分布、局部异常关系及过去 1 年进展。</td></tr>
+          <tr><td>R01-Q004</td><td>胸部影像科</td><td>病变空间分布、纤维化特征及既往取材代表性。</td></tr>
+          <tr><td>R01-Q005</td><td>呼吸科</td><td>感染/感染后改变的贡献及其他已知病因。</td></tr>
+          <tr><td>R01-Q006</td><td>呼吸科</td><td>肺功能纵向变化、氧合、运动试验和进展风险。</td></tr>
+          <tr><td>R01-Q007</td><td>胸部影像科</td><td>确认 ILD、分布、纤维化程度和局灶性异常性质。</td></tr>
+        </tbody>
+      </table>
+      <h3>第一轮被跳过的 2 个问题</h3>
+      <ul>
+        <li><strong>Q002 → 风湿免疫科：</strong>因首轮风湿科结论被视为完整边界性回答而跳过。</li>
+        <li><strong>Q003 → 呼吸科：</strong>因首轮病理科不可评价结论被视为完整边界性回答而跳过。</li>
+      </ul>
+      <h3>进入讨论后的机制</h3>
+      <ol>
+        <li>目标专科收到问题或冲突任务，并基于初次输出、病例证据和主持人任务上下文回答。</li>
+        <li>对于“问题”任务，原提问专科复核目标专科答案，可接受、要求澄清、要求佐证、标记不兼容或转为证据缺口。</li>
+        <li>主持人把会中回答投影为新的正式结论，再次整合结论、边界、冲突、问题和证据需求。</li>
+        <li>最多三轮；仍停滞的问题/冲突转入判断边界，之后生成最终 MDT 报告。</li>
+      </ol>
+      <p class="source">注意：冲突任务始终来自主持人 <code>conflicts</code>，问题任务来自主持人 <code>questions</code>。真正的混用发生在 questions 的状态被首轮 conclusions 预先改变。</p>
+    </section>
+
+    <section id="root-cause">
+      <h2>五、错误链路与根因</h2>
+      <div class="flow">
+        <div class="flow-card"><strong>专科 A 提出问题</strong><code>native_question</code><br>应等待目标专科显式回答</div>
+        <div class="arrow">→</div>
+        <div class="flow-card"><strong class="bad-path">主持人预查首轮结论</strong>从所有 <code>native_conclusion</code> 建立 <code>answer_links</code></div>
+        <div class="arrow">→</div>
+        <div class="flow-card"><strong class="bad-path">MDT 路由跳过</strong><code>answered</code> / <code>boundary_answered</code> 不再生成任务</div>
+      </div>
+      <table>
+        <thead><tr><th>证据位置</th><th>当前规则</th><th>为什么违背你的设想</th></tr></thead>
+        <tbody>
+          <tr><td><code>semantic_ledger.md:22</code></td><td>只用四科现有结论判断问题是否已有回应</td><td>把“首轮观点”变成了“针对问题的回答”</td></tr>
+          <tr><td><code>initial_synthesis.md:31–34</code></td><td>把已有结论写进问题答案并判定 answer_status</td><td>允许问题在正式会中回答之前提前关闭</td></tr>
+          <tr><td><code>routing.py:58–59</code></td><td>answered / boundary_answered 直接跳过</td><td>目标专科不会收到原本明确指向它的问题</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="expected">
+      <h2>六、按你的设想应当采用的语义分工</h2>
+      <div class="callout good">
+        初次阶段只负责“发表各自立场”和“提出需要别人回答的问题”；是否构成问题答案，应当从 MDT 会中的显式回答产生，而不是从并行生成的首轮结论倒推。
+      </div>
+      <div class="flow">
+        <div class="flow-card"><strong>专业结论</strong>只进入结论整合、边界整理与跨专科冲突比较</div>
+        <div class="arrow">＋</div>
+        <div class="flow-card"><strong>跨专科问题</strong>去重后全部交给声明的目标专科，在 MDT 中显式回答</div>
+        <div class="arrow">＋</div>
+        <div class="flow-card"><strong>证据缺口</strong>单独追踪资料，不用于冒充回答或自动关闭问题</div>
+      </div>
+      <p><strong>最小修正方向：</strong>初次主持人整合时不要用首轮 <code>native_conclusion</code> 设置问题的完成状态；所有初次 <code>native_question</code> 默认保持待回答。只有会中生成、带明确问题关联的专科回答，才能改变该问题的 <code>answer_status</code>。结论仍可作为回答时的上下文，但不能作为“已经回答”的判定依据。</p>
+    </section>
+
+    <footer>核查日期：2026-07-27 · 只读诊断，未修改 MDT 业务逻辑</footer>
+  </main>
+</body>
+</html>

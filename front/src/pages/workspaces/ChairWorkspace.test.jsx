@@ -17,7 +17,7 @@ const answerEvidence = { evidence_ref: 'answer-disc', graph_unit_id: 'gu-answer'
 const questionEvidence = { evidence_ref: 'question-bg', graph_unit_id: 'gu-question', quote: '提问背景证据' }
 
 const result = {
-  schema_version: 'mdt_chair.v6',
+  schema_version: 'mdt_chair.v7',
   integrated_conclusions: [{
     conclusion_id: 'integrated-1',
     statement: '综合各专科意见，当前更支持慢性纤维化性间质性肺病的工作诊断。',
@@ -47,9 +47,10 @@ const result = {
   conflicts: [{
     conflict_id: 'conflict-1',
     topic: '现有影像文字能否支持具体形态模式',
+    conflict_nature: 'direct_contradiction',
     conflict_domain: 'morphologic_interpretation',
     status: 'pending_clarification',
-    shared_claim: '现有影像文字已经足以确认具体形态模式。',
+    comparison_target: '现有影像文字已经足以确认具体形态模式。',
     comparison_conditions: '基于当前同一批影像文字资料。',
     specialties: ['pulmonology', 'thoracic_radiology'],
     positions: [
@@ -68,7 +69,8 @@ const result = {
     raised_by: ['pulmonology'],
     target_specialties: ['thoracic_radiology'],
     response_status: 'all_responded',
-    resolution_status: 'blocked_by_evidence',
+    answer_status: 'blocked_by_evidence',
+    review_status: 'converted_to_evidence_need',
     discussion_status: 'waiting_for_new_evidence',
     closure_type: 'converted_to_evidence_need',
     responded_by: ['thoracic_radiology'],
@@ -122,15 +124,15 @@ describe('ChairWorkspace', () => {
     expect(await screen.findByText('跨专科整合结论')).toBeInTheDocument()
     expect(screen.getByText('本轮判断边界（不可评价）')).toBeInTheDocument()
     expect(screen.getByText('跨专科冲突')).toBeInTheDocument()
-    expect(screen.getByText('待回答问题')).toBeInTheDocument()
+    expect(screen.getByText('仍需其他专科回答的问题')).toBeInTheDocument()
     expect(screen.getByText('证据需求及满足状态')).toBeInTheDocument()
     expect(screen.getByText('支持专科')).toBeInTheDocument()
     expect(screen.getByText('涉及专科')).toBeInTheDocument()
     ;['结论状态：可能', '结论定位：重要替代解释', '结论类型：ILD 归因'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['判断状态：不可评价', '判断范围：影像', '当前不能判断：', '原因：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
-    ;['专科回应情况：目标专科均已回应', '讨论处置：等待新资料后重启', '闭环方式：转为证据需求', '问题提出专科', '目标专科', '已回应专科', '满足状态：部分满足', '需求提出专科', '已提供专科'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
+    ;['专科回应情况：目标专科均已回应', '回答状态：等待新资料后重启', '复核状态：已转证据需求', '讨论处置：等待新资料后重启', '闭环方式：转为证据需求', '问题提出专科', '目标专科', '已回应专科', '满足状态：部分满足', '需求提出专科', '已提供专科'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('仍待回答专科')).not.toBeInTheDocument()
-    ;['冲突状态：等待澄清', '冲突类别：形态/影像解释', '共同命题：', '比较前提：', '立场：肯定该命题', '立场：否定该命题', '不可兼容原因：', '解决条件：', '已有解决路径：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
+    ;['冲突状态：等待澄清', '冲突性质：硬冲突', '冲突类别：形态/影像解释', '比较目标：', '比较前提：', '立场：肯定该命题', '立场：否定该命题', '不可兼容原因：', '解决条件：', '已有解决路径：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
     expect(screen.getByText('已有专科回答')).toBeInTheDocument()
     expect(screen.getByText('回答来源：')).toBeInTheDocument()

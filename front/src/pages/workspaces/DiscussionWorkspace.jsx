@@ -39,7 +39,8 @@ const REVIEW_OUTCOME = {
   accept_boundary: ['接受证据边界', 'success'],
   request_clarification: ['请求原专科澄清', 'processing'],
   request_corroboration: ['请求其他专科佐证', 'processing'],
-  identify_conflict: ['识别出专科冲突', 'error'],
+  flag_incompatibility: ['提出方发现不兼容', 'error'],
+  identify_conflict: ['提出方发现不兼容', 'error'],
   convert_to_evidence_need: ['转为证据需求', 'warning'],
 }
 
@@ -156,7 +157,7 @@ function TaskAssignment({ round, selectedTaskId, onSelect }) {
       render: (value) => <Text strong>{specialtyLabel(value)}</Text>,
     },
     {
-      title: '待回答问题', dataIndex: 'prompt',
+      title: '需其他专科回答的问题', dataIndex: 'prompt',
       render: (_, task) => (
         <Button type="link" className="discussion-question-link" onClick={() => onSelect(task.task_id)}>
           {task.prompt}

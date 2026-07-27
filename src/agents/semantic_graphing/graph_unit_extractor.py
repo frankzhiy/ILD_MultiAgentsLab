@@ -31,6 +31,9 @@ _NON_THORACIC_TEST_RE = re.compile(
     r"双下肢|腹部彩超|甲状腺超声|关节超声)",
     re.IGNORECASE,
 )
+_SAFE_BOUNDARY_CHARS = frozenset(
+    ",，。.;；:：、!?！？\"'“”‘’()（）[]【】{}《》〈〉"
+)
 
 
 class ExtractedGraphUnit(BaseModel):
@@ -165,8 +168,34 @@ def normalize_and_validate_graph_units(
             text = text.strip()
             start = segment.text.find(text, cursor)
         if start == -1:
-            unmatched.append(unit.graph_unit_id)
+            text = _drop_duplicated_boundary_prefix(text, segment.text, cursor)
+            start = segment.text.find(text, cursor)
+        if start == -1:
+            expected = segment.text[cursor : cursor + max(20, len(text))]
+            unmatched.append(
+                f"{unit.graph_unit_id} text={text!r}, cursor={cursor}, "
+                f"source_context={expected!r}"
+            )
             continue
+
+        gap = segment.text[cursor:start]
+        if gap and _is_safe_boundary_text(gap):
+            if normalized_units:
+                previous = normalized_units[-1]
+                normalized_units[-1] = previous.model_copy(
+                    update={
+                        "text": previous.text + gap,
+                        "segment_end_char": start,
+                        "end_char": (
+                            None
+                            if segment.start_char is None
+                            else segment.start_char + start
+                        ),
+                    }
+                )
+            else:
+                text = gap + text
+                start = cursor
 
         end = start + len(text)
         normalized_units.append(
@@ -188,7 +217,22 @@ def normalize_and_validate_graph_units(
     if unmatched:
         raise ValueError(
             "The following graph units are not exact continuous substrings of "
-            f"{segment.segment_id}: " + ", ".join(unmatched)
+            f"{segment.segment_id}: " + "; ".join(unmatched)
+        )
+
+    tail = segment.text[cursor:]
+    if tail and normalized_units and _is_safe_boundary_text(tail):
+        previous = normalized_units[-1]
+        normalized_units[-1] = previous.model_copy(
+            update={
+                "text": previous.text + tail,
+                "segment_end_char": len(segment.text),
+                "end_char": (
+                    None
+                    if segment.start_char is None
+                    else segment.start_char + len(segment.text)
+                ),
+            }
         )
 
     for previous, current in zip(normalized_units, normalized_units[1:]):
@@ -213,6 +257,24 @@ def normalize_and_validate_graph_units(
     normalized = result.model_copy(update={"graph_units": normalized_units})
     require_complete_graph_unit_offsets(normalized)
     return normalized
+
+
+def _is_safe_boundary_text(text: str) -> bool:
+    return bool(text) and all(
+        char.isspace() or char in _SAFE_BOUNDARY_CHARS for char in text
+    )
+
+
+def _drop_duplicated_boundary_prefix(text: str, source: str, cursor: int) -> str:
+    max_length = min(len(text) - 1, cursor)
+    for length in range(max_length, 0, -1):
+        prefix = text[:length]
+        if not _is_safe_boundary_text(prefix):
+            continue
+        candidate = text[length:]
+        if source[cursor - length : cursor] == prefix and source.startswith(candidate, cursor):
+            return candidate
+    return text
 
 
 def _validate_thoracic_radiology_routing(unit) -> None:
