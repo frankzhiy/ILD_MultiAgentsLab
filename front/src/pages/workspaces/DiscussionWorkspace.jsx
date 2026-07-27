@@ -36,7 +36,7 @@ const ANSWERABILITY = {
 
 const REVIEW_OUTCOME = {
   accept_answer: ['接受回答', 'success'],
-  accept_boundary: ['接受证据边界', 'success'],
+  accept_boundary: ['接受本轮判断边界', 'success'],
   request_clarification: ['请求原专科澄清', 'processing'],
   request_corroboration: ['请求其他专科佐证', 'processing'],
   flag_incompatibility: ['提出方发现不兼容', 'error'],
@@ -265,7 +265,7 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
     { title: '支持的结论', dataIndex: 'interpretation', render: (value) => value || '—' },
   ]
   return (
-    <Card title="问题与回答" className="discussion-panel discussion-detail-panel" extra={<Tag color={answerColor}>{answerLabel}</Tag>}>
+    <Card title="问题与回答" className="discussion-panel discussion-detail-panel" extra={<Tag color={answerColor}>回答方自评：{answerLabel}</Tag>}>
       <div className="discussion-detail-section">
         <Text className="discussion-detail-label">问题</Text>
         <Title level={5}>{task.prompt}</Title>
@@ -457,6 +457,7 @@ export function DiscussionWorkspace({ runId }) {
         <div className="discussion-live-summary">
           <Tag icon={connection === 'connected' ? <ApiOutlined /> : <DisconnectOutlined />} color={connectionColor}>{connectionLabel}</Tag>
           <Text>第 <strong>{value.current_round || 0}</strong> / {value.max_rounds || 3} 轮</Text>
+          <Text type="secondary">讨论前主持人基线不计入轮次</Text>
           {elapsed && <Text type="secondary">已用时 {elapsed}</Text>}
           <div className="discussion-overall-progress"><Text type="secondary">总体进度</Text><Progress percent={progressPercent} size="small" /></div>
           <Button type="primary" aria-label={hasResult ? '重新运行团队讨论' : '运行团队讨论'} icon={hasResult ? <ReloadOutlined /> : <PlayCircleOutlined />} loading={running} disabled={!value.runnable || running} onClick={() => mutation.mutate()}>{hasResult ? '重新运行团队讨论' : '运行团队讨论'}</Button>
@@ -485,6 +486,9 @@ export function DiscussionWorkspace({ runId }) {
             <Card className="discussion-chair-tabs" title={<Space><TeamOutlined /><span>主持人第 {round.round_number} 轮更新</span></Space>} extra={<Text type="secondary">专科回应回填后，由主持人更新同一套五板块</Text>}>
               {round.chair_result ? <ChairResultTabs result={round.chair_result} /> : <div className="discussion-chair-pending">{chairProgress === 'failed' ? <ExclamationCircleFilled className="discussion-icon-error" /> : <Spin />}<Text type="secondary">{chairProgress === 'running' ? '主持人正在整合本轮结果…' : chairProgress === 'failed' ? '主持人整合失败；已保留本轮已生成内容' : '等待全部专科回答后开始整合'}</Text></div>}
             </Card>
+          )}
+          {round?.round_decision?.stop_reason && (
+            <Alert className="section-gap" type="info" showIcon title="本轮决策" description={round.round_decision.stop_reason} />
           )}
         </>
       ) : (

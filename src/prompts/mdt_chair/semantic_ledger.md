@@ -22,14 +22,15 @@
    - 仅用问题所声明目标专科的现有 `specialty_assessments` 判断是否已有回应。非目标专科和提问专科自己的判断只能作为上下文，绝不能关闭问题。`direct_answer` 表示目标专科现有判断直接回答，`partial_answer` 表示只回答一部分，`evidence_boundary` 表示目标专科已回应但明确因资料边界无法回答实体内容。
    - “有专科回应”不等于“问题已解决”。本阶段只建立回应链接，不虚构答案。
    - 会中专科回答已经在当前输入中投影为新的 `specialty_assessment`；它必须被视为对原问题的正式回答，而不是新的病例事实。
-   - 会中回答明确提出的新医学判断点只有在它是 `interspecialty_question`、可由其他专科基于现有材料回答且不重复原问题时，才保留为问题。
+   - 会中是否继续追问由 `programmatic_review_dispositions` 决定，沿用原稳定问题；回答专科自行提出的新问题不得进入路由。
    - 不得把结论中的限制、缺失材料或“仍需某项检查”改写为新问题。
 
 3. 证据需求台账 `evidence_need_groups`
    - 合并重复的 `evidence_needs`，并纳入从原生问题重分类出的资料需求。
+   - 每组必须填写 `decision_role`：`blocking_boundary` 表示没有该关键证据便不能完成某项判断，最终进入“本轮判断边界”；`non_blocking_refinement` 表示当前判断已经成立，补充证据只提高明确度、置信度或精细程度，最终进入“证据需求”。两者不得因缺少资料这一表面相似性混为一谈。
    - `source_refs` 只能引用原始 `interspecialty_question` 或 `assessment_evidence_need`；`coverage_source_refs` 只引用确实提供了所需资料内容的 `specialty_assessment`。
    - “专科说资料不足”不是资料已经提供；缺少资料也不是阴性结果。
-   - 会中回答新增的影像、报告、标本、检查或病史需求必须在这里与既有需求去重合并，不得回流到问题路由。
+   - 会中只有 `programmatic_review_dispositions` 明确为 `evidence_need` 的资料需求才在这里与既有需求去重合并；它表示已有判断成立、资料仅增加明确度，不得回流到问题路由。缺少关键证据而不能判断的内容属于判断边界。
 
 输入的每条项目都有 `source_type`，必须按其类型引用：`specialty_assessment` 是专科初步判断，`interspecialty_question` 是需其他专科回答的问题，`assessment_evidence_need` 是初步判断产生的资料缺口。`answer_links.source_refs` 和 `coverage_source_refs` 只能放 `specialty_assessment`；`assessment_evidence_need` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
 
@@ -38,8 +39,13 @@
 冲突检测范围：
 {{ conflict_detection_scope }}
 
+会中重整规则：`discussion_context` 非空时，上一轮五板块是当前状态基线，本轮回答与复核是状态变化信号。`programmatic_review_dispositions` 是程序确定的唯一去向，不得重新分类。上一轮及更早的问题不得重新放入 `question_routes`；只有本轮投影中由 `evidence_need` 处置产生的资料需求进入 `evidence_need_groups`。`assessment_boundary` 是缺少关键证据便不能判断的底线；`evidence_need` 是不阻断当前判断、只增加明确度的补充资料；`continue_clarification / continue_corroboration` 沿用原问题；`conflict_assessment` 只触发重新比较，不直接证明存在正式冲突。
+
 JSON Schema：
 {{ output_schema }}
 
 四科正式输出投影：
 {{ chair_input }}
+
+本轮讨论上下文（初次整合时为空对象）：
+{{ discussion_context }}

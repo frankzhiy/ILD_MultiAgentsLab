@@ -80,6 +80,10 @@ const completed = {
       }],
     }],
     chair_result: chairResult,
+    round_decision: {
+      continue_discussion: false,
+      stop_reason: '当前已无仍需专科处理的问题或真实冲突。',
+    },
   }],
   final_report: {
     consensus_status: 'consensus_with_boundaries',
@@ -177,7 +181,13 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getAllByText('gu-1::prop-1').length).toBeGreaterThan(0)
     expect(screen.queryByText('E006')).not.toBeInTheDocument()
     expect(screen.getByText('主持人第 1 轮更新')).toBeInTheDocument()
-    expect(screen.getByText('跨专科整合结论')).toBeInTheDocument()
+    expect(screen.getAllByText('跨专科整合结论').length).toBeGreaterThan(1)
+    expect(screen.getByText('本轮判断边界（不可评价）')).toBeInTheDocument()
+    expect(screen.getByText('跨专科真实冲突')).toBeInTheDocument()
+    expect(screen.getByText('仍需其他专科回答的问题')).toBeInTheDocument()
+    expect(screen.getByText('证据需求及满足状态')).toBeInTheDocument()
+    expect(screen.getByText('讨论前主持人基线不计入轮次')).toBeInTheDocument()
+    expect(screen.getByText('本轮决策')).toBeInTheDocument()
   })
 
   it('refreshes visible task progress when a discussion event arrives', async () => {

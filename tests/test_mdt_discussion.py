@@ -7,6 +7,8 @@ from src.agents.mdt_discussion.final_report import FinalReportAgent
 from src.agents.mdt_discussion.integration import (
     append_round_responses,
     apply_review_outcomes,
+    build_review_dispositions,
+    decide_discussion_continuation,
 )
 from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaimDraft,
@@ -92,6 +94,17 @@ def chair_question(*, resolution_status="unresolved"):
         }],
         "conflicts": [],
     }
+
+
+def chair_question_model():
+    payload = chair_question()
+    payload["questions"][0].update({
+        "source_refs": ["S001"],
+        "answer_summary": "当前尚未形成完整回答。",
+        "why_it_matters": "影响低氧归因。",
+        "decision_unlocked": "明确主要机制。",
+    })
+    return MDTChairIntegration.model_validate(payload)
 
 
 def expanded_chair_result():
@@ -351,7 +364,7 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
     assert "gu-1::prop-1" in trace["prompt"]
     assert "不应进入会中提示的内部推理" not in trace["prompt"]
     assert "不应进入共享提示的完整专科原文" not in trace["prompt"]
-    assert "始终先回答 `prompt` 中的原始临床问题" in trace["prompt"]
+    assert "`remaining_clarification` 是本轮真正需要解决的部分" in trace["prompt"]
     assert "不能确认”也可以是对问题的完整回答" in trace["prompt"]
 
 
@@ -429,6 +442,54 @@ def test_review_outcome_closes_a_boundary_without_calling_it_resolved():
     assert question.answer_status == "boundary_answered"
     assert question.review_status == "accepted_boundary"
     assert question.reviewed_by == ["rheumatology"]
+    assert result.questions == []
+
+
+def test_requester_review_deterministically_routes_boundary_before_chair():
+    result = chair_question_model()
+    result.questions[0].raised_by = ["rheumatology"]
+    review = SpecialtyAnswerReview(
+        review_id="review-1",
+        issue_id="Q001",
+        answer_id="answer-1",
+        reviewer_specialty="rheumatology",
+        outcome="accept_boundary",
+        rationale="没有关键证据便不能完成判断。",
+    )
+
+    dispositions = build_review_dispositions(result, [review])
+
+    assert dispositions["Q001"]["destination"] == "assessment_boundary"
+    assert dispositions["Q001"]["question_source_refs"] == result.questions[0].source_refs
+
+
+def test_evidence_need_conversion_is_closed_and_non_blocking():
+    result = chair_question_model()
+    result.questions[0].raised_by = ["rheumatology"]
+    review = SpecialtyAnswerReview(
+        review_id="review-1",
+        issue_id="Q001",
+        answer_id="answer-1",
+        reviewer_specialty="rheumatology",
+        outcome="convert_to_evidence_need",
+        rationale="当前判断成立，补充资料只提高明确度。",
+        evidence_gap={
+            "available_information": "已有初步资料。",
+            "missing_information": "缺少原始报告。",
+            "why_it_matters": "可提高判断明确度。",
+            "decision_unlocked": "进一步明确当前判断。",
+            "related_evidence": [],
+        },
+    )
+
+    dispositions = build_review_dispositions(result, [review])
+    question = result.questions[0]
+    apply_review_outcomes(result, [review])
+
+    assert dispositions["Q001"]["destination"] == "evidence_need"
+    assert question.answer_status == "answered"
+    assert question.discussion_status == "closed_this_round"
+    assert result.questions == []
 
 
 def test_review_incompatibility_is_a_flag_not_a_formal_conflict_object():
@@ -454,8 +515,8 @@ def test_review_incompatibility_is_a_flag_not_a_formal_conflict_object():
     apply_review_outcomes(result, [review])
 
     assert question.review_status == "incompatibility_flagged"
-    assert question.discussion_status == "awaiting_conflict_assessment"
-    assert question.answer_status == "unanswered"
+    assert question.discussion_status == "clarification_in_progress"
+    assert question.answer_status == "partially_answered"
     assert result.conflicts == []
 
 
@@ -493,6 +554,110 @@ def test_final_requester_review_closes_an_in_round_clarification():
 
     assert question.discussion_status == "closed_this_round"
     assert question.closure_type == "clarified_answer"
+    assert result.questions == []
+
+
+def test_round_continues_when_an_open_issue_has_material_change():
+    previous = chair_question_model()
+    current = previous.model_copy(deep=True)
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-pulmonology-A",
+        task_id="R01-Q001-pulmonology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="partially_answered",
+        answer="本轮形成了新的部分判断。",
+        confidence="moderate",
+        medical_basis="存在新的专业解释。",
+        changed_from_previous=True,
+    )
+
+    decision = decide_discussion_continuation(
+        previous=previous,
+        current=current,
+        round_number=1,
+        max_rounds=3,
+        responses=[SpecialtyRoundResponse(
+            case_id="case-1",
+            round_number=1,
+            specialty="pulmonology",
+            answers=[answer],
+        )],
+        reviews=[],
+    )
+
+    assert decision["continue_discussion"] is True
+    assert decision["changed_answers"] == 1
+
+
+def test_unchanged_open_issue_stops_early_without_reclassification():
+    previous = chair_question_model()
+    current = previous.model_copy(deep=True)
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-pulmonology-A",
+        task_id="R01-Q001-pulmonology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="partially_answered",
+        answer="本轮没有形成新的判断。",
+        confidence="moderate",
+        medical_basis="现有信息不变。",
+        changed_from_previous=False,
+    )
+
+    decision = decide_discussion_continuation(
+        previous=previous,
+        current=current,
+        round_number=1,
+        max_rounds=3,
+        responses=[SpecialtyRoundResponse(
+            case_id="case-1",
+            round_number=1,
+            specialty="pulmonology",
+            answers=[answer],
+        )],
+        reviews=[],
+    )
+
+    assert decision["continue_discussion"] is False
+    assert "未形成新的专科判断" in decision["stop_reason"]
+    assert current.questions[0].answer_status == "unanswered"
+
+
+def test_third_round_stops_and_preserves_open_issue():
+    previous = chair_question_model()
+    current = previous.model_copy(deep=True)
+
+    decision = decide_discussion_continuation(
+        previous=previous,
+        current=current,
+        round_number=3,
+        max_rounds=3,
+        responses=[],
+        reviews=[],
+    )
+
+    assert decision["continue_discussion"] is False
+    assert decision["stop_reason"] == "已达到最多3轮团队讨论。"
+    assert len(current.questions) == 1
+
+
+def test_third_round_reports_resolution_before_the_round_limit():
+    previous = chair_question_model()
+    current = previous.model_copy(deep=True)
+    current.questions = []
+
+    decision = decide_discussion_continuation(
+        previous=previous,
+        current=current,
+        round_number=3,
+        max_rounds=3,
+        responses=[],
+        reviews=[],
+    )
+
+    assert decision["continue_discussion"] is False
+    assert decision["stop_reason"] == "当前已无仍需专科处理的问题或真实冲突。"
 
 
 def test_discussion_schema_closes_evidence_uses_to_task_candidates():
@@ -598,7 +763,7 @@ def test_final_report_uses_the_compact_chair_view():
         FakeLLM(),
         config={"guideline_retrieval": {"enabled": False}},
     )
-    _, trace = agent.generate(
+    report, trace = agent.generate(
         case_id="case-1",
         chair_result=expanded_chair_result(),
         rounds=[],
@@ -609,10 +774,43 @@ def test_final_report_uses_the_compact_chair_view():
     assert "保留医学依据" in trace["prompt"]
     assert "不应进入共享提示的完整专科原文" not in trace["prompt"]
     assert "不应在主席共享视图中重复的病例原文" not in trace["prompt"]
+    assert report.consensus_status == "consensus_reached"
+
+
+def test_final_report_cannot_claim_consensus_while_an_issue_remains_open():
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            content = '''{
+                "consensus_status":"consensus_reached",
+                "primary_conclusion":"工作诊断",
+                "diagnostic_confidence":"中等",
+                "integrated_summary":"综合总结",
+                "evidence_basis":[],
+                "assessment_boundaries":[],
+                "unresolved_conflicts":[],
+                "evidence_needs":[],
+                "discussion_summary":"讨论总结"
+            }'''
+            return LLMResponse(content=content, raw={"choices": [{}]})
+
+    agent = FinalReportAgent(
+        FakeLLM(),
+        config={"guideline_retrieval": {"enabled": False}},
+    )
+    report, _ = agent.generate(
+        case_id="case-1",
+        chair_result=chair_question_model().model_dump(mode="json"),
+        rounds=[],
+        stop_reason="本轮未形成新的专科判断或可继续处理的路径。",
+    )
+
+    assert report.consensus_status == "unresolved_without_further_progress"
 
 
 @pytest.mark.parametrize("resolution_status", ["unresolved", "partially_resolved"])
-def test_does_not_repeat_a_question_after_one_discussion_attempt(resolution_status):
+def test_open_question_can_continue_into_the_next_round(resolution_status):
     propositions, graphs = documents()
     first_task = build_discussion_tasks(
         chair_result=chair_question(resolution_status=resolution_status),
@@ -653,10 +851,12 @@ def test_does_not_repeat_a_question_after_one_discussion_attempt(resolution_stat
         previous_rounds=[previous],
     )
 
-    assert tasks == []
+    assert len(tasks) == 1
+    assert tasks[0].round_number == 2
+    assert tasks[0].prior_answers[0]["answer"] == "无法进一步归因。"
 
 
-def test_round_response_projects_new_questions_and_evidence_gaps():
+def test_round_response_does_not_route_answerer_derivatives():
     answer = SpecialtyTaskAnswer(
         answer_id="R01-Q001-pulmonology-A",
         task_id="R01-Q001-pulmonology",
@@ -715,9 +915,5 @@ def test_round_response_projects_new_questions_and_evidence_gaps():
 
     assert assessments["assessments"][0]["statement"].startswith("对议题 Q001")
     assert assessments["assessments"][0]["answered_question_id"] == "Q001"
-    assert questions[0]["question"] == (
-        "现有影像表现能否解释低氧程度？"
-    )
-    assert assessments["evidence_gaps"][0]["missing_information"] == (
-        "缺少右心结构和肺动脉压力数据。"
-    )
+    assert questions == []
+    assert assessments["evidence_gaps"] == []

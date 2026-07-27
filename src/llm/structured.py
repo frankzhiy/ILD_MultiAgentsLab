@@ -259,8 +259,7 @@ class StructuredLLMGenerator:
                             "上一次输出没有通过程序校验。请只返回修正后的 JSON，"
                             "不要解释，不要使用 Markdown。\n\n"
                             f"校验错误：\n{exc}\n\n"
-                            f"上一次输出：\n{response.content}\n\n"
-                            f"{_retry_correction_instruction(str(exc))}"
+                            f"上一次输出：\n{response.content}"
                         ),
                     ),
                 ]
@@ -308,16 +307,6 @@ def _summarize_attempt(attempt: dict[str, Any]) -> str:
     return (
         f"#{attempt['attempt']} content_length={content_length}, "
         f"finish_reason={finish_reason!r}, error={attempt.get('validation_error')}"
-    )
-
-
-def _retry_correction_instruction(error: str) -> str:
-    if "Formal initial output must not express probability or confidence" not in error:
-        return "逐项修正校验错误后再输出。"
-    return (
-        "重新检查所有面向人的字符串字段，并删除概率或把握度表述。"
-        "不得出现“概率”“可能性”“置信度”“可信度”或 confidence，也不得用百分比表达诊断可能性。"
-        "不要提及本次校验或上述禁用词。"
     )
 
 

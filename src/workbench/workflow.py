@@ -274,7 +274,8 @@ class WorkbenchWorkflow:
         from src.agents.mdt_discussion.integration import (
             apply_review_outcomes,
             append_round_responses,
-            move_stalled_issues_to_boundaries,
+            build_review_dispositions,
+            decide_discussion_continuation,
             stabilize_integration_ids,
         )
         from src.agents.mdt_discussion.models import (
@@ -311,6 +312,11 @@ class WorkbenchWorkflow:
             )
         }
         cumulative_outputs = initial_outputs
+        source_seed = build_chair_prompt_bundle(
+            case_id,
+            initial_outputs,
+            semantic_evidence=semantic_evidence,
+        )
         state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
         trace_path = run_dir / f"{case_id}_mdt_discussion_trace.json"
         state = MDTDiscussionState(
@@ -339,7 +345,11 @@ class WorkbenchWorkflow:
                     previous_rounds=state.rounds,
                 )
                 if not tasks:
-                    state.stop_reason = "没有仍需专科处理的问题或冲突。"
+                    state.stop_reason = (
+                        "讨论前主持人基线没有仍需专科处理的问题或真实冲突。"
+                        if round_number == 1
+                        else "当前已无仍需专科处理的问题或真实冲突。"
+                    )
                     break
                 grouped = group_tasks_by_specialty(tasks)
                 task_payloads = [task.model_dump(mode="json") for task in tasks]
@@ -359,6 +369,7 @@ class WorkbenchWorkflow:
                         for task in tasks
                     },
                     "review_progress": {},
+                    "review_dispositions": {},
                     "chair_status": "waiting",
                     "chair_result": None,
                 }
@@ -418,7 +429,7 @@ class WorkbenchWorkflow:
                         )
                         answer, task_trace = agent.respond_to_task(
                             task=task,
-                            specialty_initial_output=initial_outputs[task.specialty],
+                            specialty_initial_output=cumulative_outputs[task.specialty],
                             chair_result=latest.model_dump(mode="json"),
                         )
                     except Exception as error:
@@ -582,136 +593,6 @@ class WorkbenchWorkflow:
                                 review.review_id
                             ] = review_trace
 
-                follow_up_jobs = []
-                seen_follow_ups = set()
-                answer_by_id = {
-                    answer.answer_id: answer
-                    for response in responses
-                    for answer in response.answers
-                }
-                for index, review in enumerate(
-                    sorted(reviews, key=lambda item: item.review_id),
-                    start=1,
-                ):
-                    follow_up = review.follow_up_question
-                    if follow_up is None:
-                        continue
-                    source_answer = answer_by_id[review.answer_id]
-                    source_task = task_by_id[source_answer.task_id]
-                    target_specialty = follow_up.target_specialty.value
-                    identity = (
-                        review.issue_id,
-                        review.reviewer_specialty,
-                        target_specialty,
-                        " ".join(follow_up.question.split()),
-                    )
-                    if identity in seen_follow_ups:
-                        continue
-                    seen_follow_ups.add(identity)
-                    follow_task = source_task.model_copy(
-                        update={
-                            "task_id": f"{source_task.task_id}-F{index:02d}",
-                            "specialty": target_specialty,
-                            "prompt": follow_up.question,
-                            "current_result": source_answer.answer,
-                            "remaining_clarification": review.rationale,
-                            "why_it_matters": follow_up.why_it_matters,
-                            "prior_answers": [
-                                *source_task.prior_answers,
-                                {
-                                    "answering_specialty": source_task.specialty,
-                                    "answer": source_answer.answer,
-                                    "remaining_limitation": (
-                                        source_answer.remaining_limitation
-                                    ),
-                                    "reviewer_specialty": review.reviewer_specialty,
-                                    "review_outcome": review.outcome,
-                                    "review_rationale": review.rationale,
-                                },
-                            ],
-                        }
-                    )
-                    tasks.append(follow_task)
-                    task_by_id[follow_task.task_id] = follow_task
-                    state.active_round["tasks"].append(
-                        follow_task.model_dump(mode="json")
-                    )
-                    state.active_round["task_progress"][follow_task.task_id] = {
-                        "status": "waiting",
-                        "started_at": "",
-                        "completed_at": "",
-                        "answer": None,
-                        "error": "",
-                    }
-                    follow_up_jobs.append(
-                        (review.reviewer_specialty, follow_task)
-                    )
-                self._write(state_path, state)
-
-                final_review_jobs = []
-                if follow_up_jobs:
-                    with ThreadPoolExecutor(
-                        max_workers=min(len(follow_up_jobs), 6)
-                    ) as executor:
-                        futures = {
-                            executor.submit(run_task, task): reviewer
-                            for reviewer, task in follow_up_jobs
-                        }
-                        for future in as_completed(futures):
-                            reviewer = futures[future]
-                            task, answer, task_trace = future.result()
-                            answers_by_specialty.setdefault(task.specialty, []).append(
-                                answer
-                            )
-                            round_trace["tasks"][task.task_id] = task_trace
-                            response = next(
-                                (
-                                    item
-                                    for item in responses
-                                    if item.specialty == task.specialty
-                                ),
-                                None,
-                            )
-                            if response is None:
-                                response = SpecialtyRoundResponse(
-                                    case_id=case_id,
-                                    round_number=round_number,
-                                    specialty=task.specialty,
-                                )
-                                responses.append(response)
-                            response.answers.append(answer)
-                            answer_by_id[answer.answer_id] = answer
-                            review_id = f"{answer.answer_id}-RV-{reviewer}"
-                            state.active_round["review_progress"][review_id] = {
-                                "status": "waiting",
-                                "answer_id": answer.answer_id,
-                                "issue_id": answer.issue_id,
-                                "reviewer_specialty": reviewer,
-                                "started_at": "",
-                                "completed_at": "",
-                                "review": None,
-                                "error": "",
-                            }
-                            final_review_jobs.append(
-                                (review_id, reviewer, task, answer)
-                            )
-                    self._write(state_path, state)
-
-                if final_review_jobs:
-                    with ThreadPoolExecutor(
-                        max_workers=min(len(final_review_jobs), 6)
-                    ) as executor:
-                        futures = [
-                            executor.submit(run_review, job)
-                            for job in final_review_jobs
-                        ]
-                        for future in as_completed(futures):
-                            review, review_trace = future.result()
-                            reviews.append(review)
-                            round_trace.setdefault("reviews", {})[
-                                review.review_id
-                            ] = review_trace
-
                 task_order = {
                     task.task_id: index for index, task in enumerate(tasks)
                 }
@@ -735,6 +616,10 @@ class WorkbenchWorkflow:
                     run_dir / f"{case_id}_mdt_round_{round_number:02d}_reviews.json",
                     reviews,
                 )
+                state.active_round["review_dispositions"] = build_review_dispositions(
+                    latest,
+                    reviews,
+                )
                 cumulative_outputs = append_round_responses(
                     cumulative_outputs,
                     responses,
@@ -753,7 +638,10 @@ class WorkbenchWorkflow:
                     case_id,
                     cumulative_outputs,
                     semantic_evidence=semantic_evidence,
+                    discussion_round=round_number,
+                    source_seed=source_seed,
                 )
+                source_seed = bundle
                 chair_config = load_yaml(config_paths["mdt_chair"])
                 chair_llm = build_llm_client(chair_config)
                 chair = MDTChairAgent.from_config(
@@ -769,12 +657,15 @@ class WorkbenchWorkflow:
                 )
                 updated = stabilize_integration_ids(updated, latest)
                 updated = apply_review_outcomes(updated, reviews)
-                updated = move_stalled_issues_to_boundaries(
-                    updated,
-                    state.rounds,
-                    responses,
-                )
                 updated = stabilize_integration_ids(updated, latest)
+                round_decision = decide_discussion_continuation(
+                    previous=latest,
+                    current=updated,
+                    round_number=round_number,
+                    max_rounds=max_rounds,
+                    responses=responses,
+                    reviews=reviews,
+                )
                 latest = updated
                 discussion_round = DiscussionRound(
                     round_number=round_number,
@@ -782,6 +673,7 @@ class WorkbenchWorkflow:
                     specialty_responses=responses,
                     answer_reviews=reviews,
                     chair_result=latest.model_dump(mode="json"),
+                    round_decision=round_decision,
                 )
                 state.rounds.append(discussion_round)
                 state.latest_chair_result = latest.model_dump(mode="json")
@@ -800,8 +692,12 @@ class WorkbenchWorkflow:
                     {"round_number": round_number},
                     stage="mdt_discussion",
                 )
+                if not round_decision["continue_discussion"]:
+                    state.stop_reason = round_decision["stop_reason"]
+                    self._write(state_path, state)
+                    break
             else:
-                state.stop_reason = "已达到最多三轮讨论。"
+                state.stop_reason = f"已达到最多{max_rounds}轮团队讨论。"
 
             if not state.stop_reason:
                 state.stop_reason = "讨论已结束。"

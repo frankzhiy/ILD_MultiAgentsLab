@@ -185,6 +185,7 @@ class DiscussionRound(BaseModel):
     specialty_responses: list[SpecialtyRoundResponse] = Field(default_factory=list)
     answer_reviews: list[SpecialtyAnswerReview] = Field(default_factory=list)
     chair_result: dict[str, Any]
+    round_decision: dict[str, Any] = Field(default_factory=dict)
 
 
 class MDTFinalReport(BaseModel):
@@ -195,6 +196,7 @@ class MDTFinalReport(BaseModel):
         "consensus_reached",
         "consensus_with_boundaries",
         "unresolved_after_max_rounds",
+        "unresolved_without_further_progress",
     ]
     discussion_rounds: SkipJsonSchema[int] = 0
     primary_conclusion: str = Field(min_length=1)
@@ -214,7 +216,7 @@ class MDTDiscussionState(BaseModel):
     case_id: str
     baseline_sha256: str
     status: Literal["running", "completed", "failed"]
-    max_rounds: int = 3
+    max_rounds: int = Field(default=3, ge=1, le=3)
     rounds: list[DiscussionRound] = Field(default_factory=list)
     active_round: dict[str, Any] | None = None
     report_status: Literal["waiting", "running", "completed", "failed"] = "waiting"

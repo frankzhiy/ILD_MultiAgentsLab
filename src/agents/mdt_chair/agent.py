@@ -14,6 +14,7 @@ from src.agents.mdt_chair.models import (
     ChairEvidenceBundle,
     CitedChairStatement,
     CrossSpecialtyConflict,
+    EvidenceNeed,
     MDTChairIntegration,
     SpecialtySourceCitation,
 )
@@ -25,7 +26,7 @@ from src.utils.config import load_text, load_yaml, render_template
 
 
 SYSTEM_PROMPT = (
-    "你是以呼吸科为主要背景的 ILD MDT 主持人。你只整合四个专科已经形成的正式结论、"
+    "你是以呼吸科为主要背景的 ILD MDT 主持人。你只整合四个专科已经形成的正式初步判断、"
     "合并专科已经提出的原生问题，并汇总已有证据需求；不创造问题，不联系或重新运行专科 Agent，"
     "识别并如实描述未解决的跨专科冲突，但不裁决冲突，不输出最终 MDT 诊断或治疗方案。"
     "所有面向人的文本使用简体中文，只返回符合 schema 的 JSON。"
@@ -50,12 +51,16 @@ class ChairPromptBundle:
     source_guidelines: dict[str, list[GuidelineEvidencePointer]]
     source_metadata: dict[str, dict[str, Any]]
     normalization_events: list[dict[str, Any]] = field(default_factory=list)
+    question_refs_to_classify: set[str] = field(default_factory=set)
+    evidence_need_refs_to_classify: set[str] = field(default_factory=set)
+    already_classified_question_refs: set[str] = field(default_factory=set)
 
 
 def _source_ref_schema_constraints(
     bundle: ChairPromptBundle,
     *,
     semantic_ledger: ChairSemanticLedger | None = None,
+    preserved: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict[str, dict[str, set[str]]]:
     refs = {
         source_type: {
@@ -70,8 +75,8 @@ def _source_ref_schema_constraints(
         )
     }
     assessments = refs["specialty_assessment"]
-    questions = refs["interspecialty_question"]
-    needs = questions | refs["assessment_evidence_need"]
+    questions = bundle.question_refs_to_classify
+    needs = questions | bundle.evidence_need_refs_to_classify
     if semantic_ledger is None:
         return {
             "LedgerAtomicClaim": {"source_ref": assessments},
@@ -107,9 +112,16 @@ def _source_ref_schema_constraints(
         for answer in route.answer_links
         for ref in answer.source_refs
     }
-    needs = {
+    blocking_needs = {
         ref
         for group in semantic_ledger.evidence_need_groups
+        if group.decision_role == "blocking_boundary"
+        for ref in group.source_refs
+    }
+    refinement_needs = {
+        ref
+        for group in semantic_ledger.evidence_need_groups
+        if group.decision_role == "non_blocking_refinement"
         for ref in group.source_refs
     }
     coverage = {
@@ -117,34 +129,183 @@ def _source_ref_schema_constraints(
         for group in semantic_ledger.evidence_need_groups
         for ref in group.coverage_source_refs
     }
-    return {
+    constraints = {
         "IntegratedConclusion": {"source_refs": claims["integrated"]},
         "AssessmentBoundary": {
-            "source_refs": claims["boundary"] | questions,
-            "related_evidence_need_source_refs": needs,
+            "source_refs": claims["boundary"] | questions | {
+                ref
+                for ref in blocking_needs
+                if bundle.source_registry[ref].source_type
+                == "interspecialty_question"
+            },
+            "related_evidence_need_source_refs": blocking_needs,
         },
         "ConflictPosition": {"source_refs": claims["conflict"]},
         "CrossSpecialtyConflict": {
             "related_question_source_refs": questions,
-            "related_evidence_need_source_refs": needs,
+            "related_evidence_need_source_refs": blocking_needs | refinement_needs,
         },
         "IntegratedQuestion": {
             "source_refs": questions,
-            "related_evidence_need_source_refs": needs,
+            "related_evidence_need_source_refs": refinement_needs,
         },
         "QuestionAnswer": {"source_refs": answers},
-        "EvidenceNeed": {"source_refs": needs | coverage},
+        "EvidenceNeed": {"source_refs": refinement_needs | coverage},
     }
+    for model_name, fields in (preserved or {}).items():
+        for field_name, values in fields.items():
+            constraints.setdefault(model_name, {}).setdefault(field_name, set()).update(
+                values
+            )
+    return constraints
+
+
+def _discussion_previous_view(
+    previous: MDTChairIntegration,
+    bundle: ChairPromptBundle,
+) -> tuple[dict[str, Any], dict[str, dict[str, set[str]]]]:
+    """Keep the prior five-section state on its append-only source registry."""
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            if {
+                "source_ref",
+                "specialty",
+                "source_type",
+                "source_path",
+                "quote",
+            } <= value.keys():
+                ref = value["source_ref"]
+                current = bundle.source_registry.get(ref)
+                identity = (
+                    value["specialty"],
+                    value["source_type"],
+                    value["source_path"],
+                    value["quote"],
+                )
+                if current is None:
+                    raise ValueError(f"Prior specialty source ref is absent: {ref}")
+                if (
+                    current.specialty,
+                    current.source_type,
+                    current.source_path,
+                    current.quote,
+                ) != identity:
+                    raise ValueError(f"Prior specialty source ref changed identity: {ref}")
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    previous_data = previous.model_dump(mode="json")
+    collect(previous_data)
+
+    def refs(values: list[str]) -> set[str]:
+        missing = set(values) - set(bundle.source_registry)
+        if missing:
+            raise ValueError(f"Prior specialty source refs are absent: {sorted(missing)}")
+        return set(values)
+
+    preserved = {
+        "IntegratedConclusion": {
+            "source_refs": set().union(*(
+                refs(item.source_refs) for item in previous.integrated_conclusions
+            )),
+        },
+        "AssessmentBoundary": {
+            "source_refs": set().union(*(
+                refs(item.source_refs) for item in previous.assessment_boundaries
+            )),
+            "related_evidence_need_source_refs": set().union(*(
+                refs(item.related_evidence_need_source_refs)
+                for item in previous.assessment_boundaries
+            )),
+        },
+        "ConflictPosition": {
+            "source_refs": set().union(*(
+                refs(position.source_refs)
+                for conflict in previous.conflicts
+                for position in conflict.positions
+            )),
+        },
+        "CrossSpecialtyConflict": {
+            "related_question_source_refs": set().union(*(
+                refs(item.related_question_source_refs) for item in previous.conflicts
+            )),
+            "related_evidence_need_source_refs": set().union(*(
+                refs(item.related_evidence_need_source_refs)
+                for item in previous.conflicts
+            )),
+        },
+        "IntegratedQuestion": {
+            "source_refs": set().union(*(
+                refs(item.source_refs) for item in previous.questions
+            )),
+            "related_evidence_need_source_refs": set().union(*(
+                refs(item.related_evidence_need_source_refs)
+                for item in previous.questions
+            )),
+        },
+        "QuestionAnswer": {
+            "source_refs": set().union(*(
+                refs(answer.source_refs)
+                for question in previous.questions
+                for answer in question.answers
+            )),
+        },
+        "EvidenceNeed": {
+            "source_refs": set().union(*(
+                refs(item.source_refs) for item in previous.evidence_needs
+            )),
+        },
+    }
+
+    from src.agents.mdt_discussion.prompt_projection import build_chair_prompt_view
+
+    return build_chair_prompt_view(previous_data), preserved
 
 
 class _Registry:
-    def __init__(self, semantic_evidence: dict[str, dict[str, Any]] | None = None) -> None:
-        self.sources: dict[str, SpecialtySourceCitation] = {}
+    def __init__(
+        self,
+        semantic_evidence: dict[str, dict[str, Any]] | None = None,
+        seed: ChairPromptBundle | None = None,
+    ) -> None:
+        self.sources: dict[str, SpecialtySourceCitation] = dict(
+            seed.source_registry if seed is not None else {}
+        )
         self.evidence: dict[str, CaseEvidenceCitation] = {}
-        self.source_evidence: dict[str, dict[str, list[str]]] = {}
-        self.source_guidelines: dict[str, list[GuidelineEvidencePointer]] = {}
-        self.source_metadata: dict[str, dict[str, Any]] = {}
-        self._source_keys: dict[tuple[str, str, str, str], str] = {}
+        self.source_evidence: dict[str, dict[str, list[str]]] = {
+            ref: {role: list(values) for role, values in evidence.items()}
+            for ref, evidence in (
+                seed.source_evidence.items() if seed is not None else []
+            )
+        }
+        self.source_guidelines: dict[str, list[GuidelineEvidencePointer]] = {
+            ref: list(values)
+            for ref, values in (
+                seed.source_guidelines.items() if seed is not None else []
+            )
+        }
+        self.source_metadata: dict[str, dict[str, Any]] = {
+            ref: dict(values)
+            for ref, values in (
+                seed.source_metadata.items() if seed is not None else []
+            )
+        }
+        self._source_keys: dict[tuple[str, str, str, str], str] = {
+            (item.specialty, item.source_type, item.source_path, item.quote): ref
+            for ref, item in self.sources.items()
+        }
+        self._next_source_number = max(
+            (
+                int(ref[1:])
+                for ref in self.sources
+                if ref.startswith("S") and ref[1:].isdigit()
+            ),
+            default=0,
+        ) + 1
         self._evidence_keys: dict[str, str] = {}
         self.semantic_evidence = semantic_evidence or {}
         self.evidence_to_unit = {
@@ -166,7 +327,8 @@ class _Registry:
     ) -> str:
         key = (specialty, source_type, source_path, quote)
         if key not in self._source_keys:
-            ref = f"S{len(self.sources) + 1:03d}"
+            ref = f"S{self._next_source_number:03d}"
+            self._next_source_number += 1
             self._source_keys[key] = ref
             self.sources[ref] = SpecialtySourceCitation(
                 source_ref=ref,
@@ -340,15 +502,22 @@ def build_chair_prompt_bundle(
     specialty_outputs: dict[str, dict[str, Any]],
     input_summaries: dict[str, dict[str, Any]] | None = None,
     semantic_evidence: dict[str, dict[str, Any]] | None = None,
+    discussion_round: int | None = None,
+    source_seed: ChairPromptBundle | None = None,
 ) -> ChairPromptBundle:
-    """Project only each specialty's two formal initial-output sections."""
+    """Project assessments plus only the questions and gaps new to this round."""
     del input_summaries  # retained only for compatibility with the former caller API
     missing = sorted(set(SPECIALTIES) - set(specialty_outputs))
     if missing:
         raise ValueError(f"Missing specialty outputs: {missing}")
-    registry = _Registry(semantic_evidence)
+    registry = _Registry(semantic_evidence, source_seed)
     compact = [
-        _compact_specialty(specialty, specialty_outputs[specialty], registry)
+        _compact_specialty(
+            specialty,
+            specialty_outputs[specialty],
+            registry,
+            discussion_round=discussion_round,
+        )
         for specialty in SPECIALTIES
     ]
     prompt_input = {
@@ -366,6 +535,26 @@ def build_chair_prompt_bundle(
             for item in registry.evidence.values()
         ],
     }
+    question_refs = {
+        ref
+        for ref, source in registry.sources.items()
+        if source.source_type == "interspecialty_question"
+        and (
+            discussion_round is None
+            or registry.source_metadata[ref].get("discussion_round")
+            == discussion_round
+        )
+    }
+    evidence_need_refs = {
+        ref
+        for ref, source in registry.sources.items()
+        if source.source_type == "assessment_evidence_need"
+        and (
+            discussion_round is None
+            or registry.source_metadata[ref].get("discussion_round")
+            == discussion_round
+        )
+    }
     return ChairPromptBundle(
         case_id,
         prompt_input,
@@ -374,6 +563,8 @@ def build_chair_prompt_bundle(
         registry.source_evidence,
         registry.source_guidelines,
         registry.source_metadata,
+        question_refs_to_classify=question_refs,
+        evidence_need_refs_to_classify=evidence_need_refs,
     )
 
 
@@ -381,6 +572,8 @@ def _compact_specialty(
     specialty: str,
     output: dict[str, Any],
     registry: _Registry,
+    *,
+    discussion_round: int | None = None,
 ) -> dict[str, Any]:
     assessments_block = output.get("specialty_assessments")
     questions_block = output.get("interspecialty_questions")
@@ -464,11 +657,19 @@ def _compact_specialty(
                 "target_specialty": item.get("target_specialty"),
                 "why_it_matters": item.get("why_it_matters"),
                 "decision_unlocked": item.get("decision_unlocked"),
+                "discussion_round": item.get("_discussion_round"),
+                "discussion_issue_id": item.get("_discussion_issue_id"),
+                "discussion_disposition": item.get("_discussion_disposition"),
             },
         )
+        if (
+            discussion_round is not None
+            and item.get("_discussion_round") != discussion_round
+        ):
+            continue
         projected_questions.append(
             {
-                **item,
+                **{key: value for key, value in item.items() if not key.startswith("_")},
                 "source_ref": source_ref,
                 "source_type": "interspecialty_question",
                 "related_evidence": evidence["background"],
@@ -490,11 +691,19 @@ def _compact_specialty(
                 "available_information": item.get("available_information"),
                 "why_it_matters": item.get("why_it_matters"),
                 "decision_unlocked": item.get("decision_unlocked"),
+                "discussion_round": item.get("_discussion_round"),
+                "discussion_issue_id": item.get("_discussion_issue_id"),
+                "discussion_disposition": item.get("_discussion_disposition"),
             },
         )
+        if (
+            discussion_round is not None
+            and item.get("_discussion_round") != discussion_round
+        ):
+            continue
         evidence_needs.append(
             {
-                **item,
+                **{key: value for key, value in item.items() if not key.startswith("_")},
                 "source_ref": source_ref,
                 "source_type": "assessment_evidence_need",
                 "related_evidence": evidence["background"],
@@ -599,7 +808,122 @@ class MDTChairAgent:
         discussion_responses: list[Any] | None = None,
         discussion_reviews: list[Any] | None = None,
     ) -> tuple[MDTChairIntegration, dict]:
+        discussion_context: dict[str, Any] = {}
+        preserved_constraints: dict[str, dict[str, set[str]]] = {}
+        if discussion_previous is not None:
+            from src.agents.mdt_discussion.integration import build_review_dispositions
+
+            previous_data = discussion_previous.model_dump(mode="json")
+
+            def collect_source_refs(value: Any) -> set[str]:
+                if isinstance(value, dict):
+                    return set(value.get("source_refs") or []).union(*(
+                        collect_source_refs(item) for item in value.values()
+                    ))
+                if isinstance(value, list):
+                    return set().union(*(collect_source_refs(item) for item in value))
+                return set()
+
+            bundle.already_classified_question_refs = {
+                ref
+                for ref in collect_source_refs(previous_data)
+                if ref in bundle.source_registry
+                and bundle.source_registry[ref].source_type
+                == "interspecialty_question"
+            }
+            previous_view, preserved_constraints = _discussion_previous_view(
+                discussion_previous,
+                bundle,
+            )
+            answer_ids = {
+                answer.answer_id
+                for response in discussion_responses or []
+                for answer in response.answers
+            }
+            preserved_constraints["QuestionAnswer"]["source_refs"].update(
+                ref
+                for ref, metadata in bundle.source_metadata.items()
+                if metadata.get("assessment_id") in answer_ids
+            )
+            review_dispositions = build_review_dispositions(
+                discussion_previous,
+                discussion_reviews or [],
+            )
+            answer_refs_by_issue: dict[str, set[str]] = {}
+            for response in discussion_responses or []:
+                for answer in response.answers:
+                    answer_refs_by_issue.setdefault(answer.issue_id, set()).update(
+                        ref
+                        for ref, metadata in bundle.source_metadata.items()
+                        if metadata.get("assessment_id") == answer.answer_id
+                    )
+            for issue_id, disposition in review_dispositions.items():
+                question_refs = set(disposition["question_source_refs"])
+                if disposition["destination"] == "assessment_boundary":
+                    preserved_constraints["AssessmentBoundary"]["source_refs"].update(
+                        question_refs | answer_refs_by_issue.get(issue_id, set())
+                    )
+                elif disposition["destination"] == "evidence_need":
+                    need_refs = {
+                        ref
+                        for ref, metadata in bundle.source_metadata.items()
+                        if metadata.get("discussion_issue_id") == issue_id
+                        and metadata.get("discussion_disposition")
+                        == "convert_to_evidence_need"
+                    }
+                    preserved_constraints["EvidenceNeed"]["source_refs"].update(
+                        question_refs | need_refs
+                    )
+
+            discussion_context = {
+                "previous_five_sections": previous_view,
+                "programmatic_review_dispositions": review_dispositions,
+                "round_responses": [
+                    {
+                        "specialty": response.specialty,
+                        "answers": [
+                            {
+                                "answer_id": answer.answer_id,
+                                "issue_id": answer.issue_id,
+                                "issue_type": answer.issue_type,
+                                "answerability": answer.answerability,
+                                "answer": answer.answer,
+                                "medical_basis": answer.medical_basis,
+                                "changed_from_previous": answer.changed_from_previous,
+                                "remaining_limitation": answer.remaining_limitation,
+                                "evidence_gaps": [
+                                    item.model_dump(mode="json")
+                                    for item in answer.evidence_gaps
+                                ],
+                            }
+                            for answer in response.answers
+                        ],
+                    }
+                    for response in discussion_responses or []
+                ],
+                "answer_reviews": [
+                    {
+                        "issue_id": review.issue_id,
+                        "answer_id": review.answer_id,
+                        "reviewer_specialty": review.reviewer_specialty,
+                        "outcome": review.outcome,
+                        "rationale": review.rationale,
+                        "follow_up_question": (
+                            review.follow_up_question.model_dump(mode="json")
+                            if review.follow_up_question is not None
+                            else None
+                        ),
+                        "evidence_gap": (
+                            review.evidence_gap.model_dump(mode="json")
+                            if review.evidence_gap is not None
+                            else None
+                        ),
+                    }
+                    for review in discussion_reviews or []
+                ],
+            }
         compact_json = prompt_json(bundle.prompt_input)
+        discussion_context_json = prompt_json(discussion_context)
         ledger_schema = (
             "由 API 的严格 JSON Schema response_format 提供。"
             if self.generator.response_format_mode == "json_schema"
@@ -609,14 +933,16 @@ class MDTChairAgent:
             self.ledger_prompt,
             {
                 "chair_input": compact_json,
+                "discussion_context": discussion_context_json,
                 "output_schema": ledger_schema,
                 "conflict_detection_scope": (
                     "当前是四科初次正式意见整合：对初次 specialty_assessments 启用"
                     "硬冲突和决策相关分歧检测。"
                     if discussion_previous is None
-                    else "当前是会中重整：保留初次正式意见能够形成的两类冲突，"
-                    "但暂不把新增的‘对议题的会中回应’识别为新的决策相关分歧；"
-                    "会中新增意见只沿用既有硬冲突检测。"
+                    else "当前是会中重整：对累计 specialty_assessments 继续启用"
+                    "硬冲突和决策相关分歧检测。复核中的 flag_incompatibility "
+                    "只是冲突检测候选，必须按相同对象、时点、证据条件和专业层级"
+                    "重新判断，不能直接转成正式冲突。"
                 ),
             },
         )
@@ -640,6 +966,7 @@ class MDTChairAgent:
             {
                 "chair_input": compact_json,
                 "topic_ledger": ledger_json,
+                "discussion_context": discussion_context_json,
                 "output_schema": output_schema,
             },
         )
@@ -656,11 +983,32 @@ class MDTChairAgent:
                     bundle,
                     discussion_reviews or [],
                 )
-            return resolve_chair_references(
+                _materialize_accepted_boundary_question_refs(
+                    value,
+                    discussion_previous,
+                    discussion_responses or [],
+                    discussion_reviews or [],
+                    bundle,
+                )
+                _materialize_evidence_need_conversion_refs(
+                    value,
+                    discussion_previous,
+                    discussion_reviews or [],
+                    bundle,
+                )
+            resolved = resolve_chair_references(
                 value,
                 bundle,
                 None if discussion_previous is not None else ledger,
             )
+            if discussion_previous is not None:
+                _validate_review_destinations(
+                    resolved,
+                    discussion_previous,
+                    discussion_reviews or [],
+                    bundle,
+                )
+            return resolved
 
         result, synthesis_trace = self.generator.generate(
             schema_model=MDTChairIntegration,
@@ -669,7 +1017,9 @@ class MDTChairAgent:
             user_prompt=synthesis_prompt,
             extra_validation=resolve,
             string_field_constraints=_source_ref_schema_constraints(
-                bundle, semantic_ledger=ledger
+                bundle,
+                semantic_ledger=ledger,
+                preserved=preserved_constraints,
             ),
         )
         trace = {
@@ -684,6 +1034,7 @@ class MDTChairAgent:
             "integration_prompt_chars": len(synthesis_prompt),
             "chair_input_chars": len(compact_json),
             "topic_ledger_chars": len(ledger_json),
+            "discussion_context_chars": len(discussion_context_json),
             "output_schema_chars": len(output_schema),
             "source_reference_count": len(bundle.source_registry),
             "evidence_reference_count": len(bundle.evidence_registry),
@@ -958,6 +1309,131 @@ def resolve_chair_references(
     return result
 
 
+def _validate_review_destinations(
+    result: MDTChairIntegration,
+    previous: MDTChairIntegration,
+    reviews: list[Any],
+    bundle: ChairPromptBundle,
+) -> None:
+    from src.agents.mdt_discussion.integration import build_review_dispositions
+
+    dispositions = build_review_dispositions(previous, reviews)
+    for issue_id, disposition in dispositions.items():
+        question_refs = set(disposition["question_source_refs"])
+        destination = disposition["destination"]
+        if destination == "assessment_boundary" and not any(
+            question_refs.intersection(boundary.source_refs)
+            for boundary in result.assessment_boundaries
+        ):
+            raise ValueError(
+                f"Accepted boundary for {issue_id} must appear in assessment_boundaries"
+            )
+        if destination == "evidence_need":
+            need_refs = {
+                ref
+                for ref, metadata in bundle.source_metadata.items()
+                if metadata.get("discussion_issue_id") == issue_id
+                and metadata.get("discussion_disposition")
+                == "convert_to_evidence_need"
+            }
+            if not need_refs or not any(
+                need_refs.intersection(need.source_refs)
+                for need in result.evidence_needs
+            ):
+                raise ValueError(
+                    f"Evidence-need conversion for {issue_id} must appear in evidence_needs"
+                )
+
+
+def _materialize_accepted_boundary_question_refs(
+    result: MDTChairIntegration,
+    previous: MDTChairIntegration,
+    responses: list[Any],
+    reviews: list[Any],
+    bundle: ChairPromptBundle,
+) -> None:
+    """Attach accepted question provenance to its uniquely matching boundary."""
+
+    from src.agents.mdt_discussion.integration import build_review_dispositions
+
+    response_specialties = {
+        answer.issue_id: response.specialty
+        for response in responses
+        for answer in response.answers
+    }
+    questions = {question.question_id: question for question in previous.questions}
+    for issue_id, disposition in build_review_dispositions(previous, reviews).items():
+        if disposition["destination"] != "assessment_boundary":
+            continue
+        question = questions[issue_id]
+        question_refs = set(question.source_refs)
+        if any(
+            question_refs.intersection(boundary.source_refs)
+            for boundary in result.assessment_boundaries
+        ):
+            continue
+        specialty = response_specialties.get(issue_id)
+        candidates = [
+            boundary
+            for boundary in result.assessment_boundaries
+            if specialty and any(
+                bundle.source_registry[ref].specialty == specialty
+                for ref in boundary.source_refs
+            )
+        ]
+        if len(candidates) == 1:
+            candidates[0].source_refs = _ordered_unique(
+                [*candidates[0].source_refs, *question.source_refs]
+            )
+
+
+def _materialize_evidence_need_conversion_refs(
+    result: MDTChairIntegration,
+    previous: MDTChairIntegration,
+    reviews: list[Any],
+    bundle: ChairPromptBundle,
+) -> None:
+    """Create the requester-approved evidence need when the LLM omits it."""
+
+    from src.agents.mdt_discussion.integration import build_review_dispositions
+
+    for issue_id, disposition in build_review_dispositions(previous, reviews).items():
+        if disposition["destination"] != "evidence_need":
+            continue
+        need_refs = {
+            ref
+            for ref, metadata in bundle.source_metadata.items()
+            if metadata.get("discussion_issue_id") == issue_id
+            and metadata.get("discussion_disposition") == "convert_to_evidence_need"
+        }
+        if not need_refs or any(
+            need_refs.intersection(need.source_refs) for need in result.evidence_needs
+        ):
+            continue
+        review = next(
+            (
+                review
+                for review in reviews
+                if review.issue_id == issue_id
+                and review.outcome == "convert_to_evidence_need"
+                and review.evidence_gap is not None
+            ),
+            None,
+        )
+        if review is None:
+            continue
+        gap = review.evidence_gap
+        result.evidence_needs.append(EvidenceNeed(
+            status="missing",
+            required_information=gap.missing_information,
+            available_information=gap.available_information,
+            remaining_information=gap.missing_information,
+            why_it_matters=gap.why_it_matters,
+            decision_unlocked=gap.decision_unlocked,
+            source_refs=sorted(need_refs),
+        ))
+
+
 def resolve_semantic_ledger(
     ledger: ChairSemanticLedger,
     bundle: ChairPromptBundle,
@@ -975,6 +1451,24 @@ def resolve_semantic_ledger(
                 context=f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}].source_ref",
             )
         _validate_conflict_group(group, bundle, topic_index - 1)
+    normalized_routes = []
+    for route in ledger.question_routes:
+        ignored = [
+            ref
+            for ref in route.source_refs
+            if ref in bundle.already_classified_question_refs
+        ]
+        if ignored:
+            route.source_refs = [ref for ref in route.source_refs if ref not in ignored]
+            bundle.normalization_events.append({
+                "context": "question_routes",
+                "action": "ignored_already_classified_questions",
+                "dropped": ignored,
+            })
+        if route.source_refs:
+            normalized_routes.append(route)
+    ledger.question_routes = normalized_routes
+
     for index, route in enumerate(ledger.question_routes, 1):
         route.route_id = f"R{index:03d}"
         _require_refs(
@@ -1062,11 +1556,7 @@ def resolve_semantic_ledger(
             {"specialty_assessment"},
             context=f"evidence_need_groups[{index - 1}].coverage_source_refs",
         )
-    expected_questions = {
-        ref
-        for ref, source in bundle.source_registry.items()
-        if source.source_type == "interspecialty_question"
-    }
+    expected_questions = bundle.question_refs_to_classify
     routed_question_refs = [
         ref for route in ledger.question_routes for ref in route.source_refs
     ]
@@ -1078,7 +1568,7 @@ def resolve_semantic_ledger(
         missing = sorted(expected_questions - routed_questions)
         unknown = sorted(routed_questions - expected_questions)
         raise ValueError(
-            "Every native question must be classified exactly once; "
+            "Every in-scope question must be classified exactly once; "
             f"missing={missing}, unknown={unknown}, duplicates={duplicates}"
         )
     return ledger

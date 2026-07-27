@@ -31,12 +31,6 @@ def build_discussion_tasks(
 
     proposition_index = _proposition_index(clinical_propositions)
     graph_index = _graph_index(local_graphs)
-    attempted = {
-        answer.issue_id
-        for discussion_round in previous_rounds
-        for response in discussion_round.specialty_responses
-        for answer in response.answers
-    }
     prior_answers = _prior_answers(previous_rounds)
     tasks: list[DiscussionTask] = []
 
@@ -46,6 +40,7 @@ def build_discussion_tasks(
             "closed_this_round",
             "waiting_for_new_evidence",
             "awaiting_requester_review",
+            "awaiting_conflict_assessment",
         }:
             continue
         answer_status = question.get("answer_status")
@@ -59,9 +54,15 @@ def build_discussion_tasks(
             }.get(question.get("resolution_status"))
         if answer_status in {"answered", "boundary_answered", "blocked_by_evidence"}:
             continue
-        if issue_id in attempted:
-            continue
-        targets = _valid_specialties(question.get("target_specialties") or [])
+        awaiting = _valid_specialties(question.get("awaiting_specialties") or [])
+        partial = _valid_specialties(
+            answer.get("specialty")
+            for answer in question.get("answers") or []
+            if answer.get("relation") == "partial_answer"
+        )
+        targets = _valid_specialties([*awaiting, *partial])
+        if not targets:
+            targets = _valid_specialties(question.get("target_specialties") or [])
         for specialty in targets:
             tasks.append(
                 _task(

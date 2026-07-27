@@ -36,7 +36,7 @@ const ANSWER_STATUS = {
   boundary_answered: ['已形成边界性回答', 'success'],
   partially_answered: ['内容部分回答', 'warning'],
   unanswered: ['内容待回答', 'default'],
-  blocked_by_evidence: ['等待新资料后重启', 'warning'],
+  blocked_by_evidence: ['受关键资料限制，本轮终止', 'warning'],
   resolved: ['内容已回答', 'success'],
   partially_resolved: ['内容部分回答', 'warning'],
   unresolved: ['内容待回答', 'default'],
@@ -62,7 +62,7 @@ const DISCUSSION_STATUS = {
   awaiting_conflict_assessment: ['等待主持人判定正式冲突', 'error'],
   closed_this_round: ['本轮已闭环', 'success'],
   disputed: ['提出方发现不兼容', 'error'],
-  waiting_for_new_evidence: ['等待新资料后重启', 'warning'],
+  waiting_for_new_evidence: ['受关键资料限制，本轮终止', 'warning'],
 }
 
 const CLOSURE_TYPE = {
@@ -262,7 +262,7 @@ function RelatedItems({ item, questions, evidenceNeeds }) {
 
 function Conflicts({ items = [], questions = [], evidenceNeeds = [] }) {
   return (
-    <Card title="跨专科冲突" className="section-card chair-board chair-conflicts">
+    <Card title="跨专科真实冲突" className="section-card chair-board chair-conflicts">
       {items.length ? <div className="formal-list">
         {items.map((item, index) => (
           <article className="formal-item conflict-item" key={item.conflict_id || index}>
@@ -292,7 +292,7 @@ function Conflicts({ items = [], questions = [], evidenceNeeds = [] }) {
             <RelatedItems item={item} questions={questions} evidenceNeeds={evidenceNeeds} />
           </article>
         ))}
-      </div> : <EmptyList description="当前未识别到未解决的跨专科冲突" />}
+      </div> : <EmptyList description="当前未识别到未解决的跨专科真实冲突" />}
     </Card>
   )
 }
@@ -409,11 +409,11 @@ export function ChairResultBoards({ result }) {
 
 export function ChairResultTabs({ result }) {
   const items = [
-    ['consensus', '共识结论', <IntegratedConclusions items={result?.integrated_conclusions} />],
-    ['boundaries', '判断边界', <AssessmentBoundaries items={result?.assessment_boundaries} />],
-    ['conflicts', '跨专科冲突', <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />],
-    ['questions', '仍需回答的问题', <Questions items={result?.questions} />],
-    ['evidence', '证据缺口', <EvidenceNeeds items={result?.evidence_needs} />],
+    ['consensus', '跨专科整合结论', <IntegratedConclusions items={result?.integrated_conclusions} />],
+    ['boundaries', '本轮判断边界（不可评价）', <AssessmentBoundaries items={result?.assessment_boundaries} />],
+    ['conflicts', '跨专科真实冲突', <Conflicts items={result?.conflicts} questions={result?.questions} evidenceNeeds={result?.evidence_needs} />],
+    ['questions', '仍需其他专科回答的问题', <Questions items={result?.questions} />],
+    ['evidence', '证据需求及满足状态', <EvidenceNeeds items={result?.evidence_needs} />],
   ]
   return <Tabs className="chair-result-tabs" items={items.map(([key, label, children]) => ({ key, label, children }))} />
 }

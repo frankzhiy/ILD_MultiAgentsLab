@@ -87,6 +87,8 @@ class FinalReportAgent:
                     }
                     for review in item.answer_reviews
                 ],
+                "round_decision": item.round_decision,
+                "chair_five_sections": build_chair_prompt_view(item.chair_result),
             }
             for item in rounds
         ]
@@ -103,6 +105,21 @@ class FinalReportAgent:
         def resolve(result: MDTFinalReport) -> MDTFinalReport:
             result.case_id = case_id
             result.discussion_rounds = len(rounds)
+            has_open_issues = bool(
+                chair_result.get("conflicts") or chair_result.get("questions")
+            )
+            if has_open_issues:
+                result.consensus_status = (
+                    "unresolved_after_max_rounds"
+                    if stop_reason.startswith("已达到最多")
+                    else "unresolved_without_further_progress"
+                )
+            elif chair_result.get("assessment_boundaries") or chair_result.get(
+                "evidence_needs"
+            ):
+                result.consensus_status = "consensus_with_boundaries"
+            else:
+                result.consensus_status = "consensus_reached"
             return result
 
         return self.generator.generate(

@@ -4,6 +4,9 @@ import pytest
 
 from src.agents.mdt_chair.agent import (
     MDTChairAgent,
+    _discussion_previous_view,
+    _materialize_evidence_need_conversion_refs,
+    _validate_review_destinations,
     build_chair_prompt_bundle,
     build_semantic_evidence_catalog,
     resolve_chair_references,
@@ -14,9 +17,9 @@ from src.agents.mdt_chair.models import (
     MDTChairIntegration,
 )
 from src.agents.mdt_discussion.integration import (
+    apply_review_outcomes,
     append_round_responses,
     reconcile_discussion_references,
-    stabilize_integration_ids,
 )
 from src.agents.mdt_discussion.models import (
     SpecialtyAnswerReview,
@@ -245,11 +248,13 @@ def ledger_payload(bundle):
             {
                 "source_refs": [pulmonary_gap],
                 "required_information": "完整肺功能原始数值和时间序列。",
+                "decision_role": "non_blocking_refinement",
                 "coverage_source_refs": [],
             },
             {
                 "source_refs": [pathology_data_request],
                 "required_information": "完整 HRCT 影像和病变分布。",
+                "decision_role": "non_blocking_refinement",
                 "coverage_source_refs": [],
             },
         ],
@@ -435,7 +440,17 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
         rationale="回答已覆盖原问题。",
     )]
     current_outputs = append_round_responses(initial_outputs, responses, reviews)
-    current_bundle = build_chair_prompt_bundle("case-1", current_outputs)
+    current_bundle = build_chair_prompt_bundle(
+        "case-1", current_outputs, source_seed=initial_bundle
+    )
+    previous_view, preserved = _discussion_previous_view(previous, current_bundle)
+    stable_question_ref = previous_view["questions"][0]["source_refs"][0]
+    assert stable_question_ref == previous.questions[0].source_refs[0]
+    assert stable_question_ref in current_bundle.source_registry
+    assert current_bundle.source_registry[stable_question_ref].source_type == (
+        "interspecialty_question"
+    )
+    assert stable_question_ref in preserved["IntegratedQuestion"]["source_refs"]
     payload = integration_payload(current_bundle)
     payload["questions"][0]["source_refs"] = [
         source_ref(current_bundle, "pulmonology", "evidence_gap"),
@@ -484,7 +499,180 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
     )
 
 
-def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
+def test_discussion_bundle_does_not_reclassify_initial_questions():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    discussion_bundle = build_chair_prompt_bundle(
+        "case-1",
+        initial_outputs,
+        discussion_round=1,
+        source_seed=initial_bundle,
+    )
+
+    initial_question_refs = {
+        ref
+        for ref, source in initial_bundle.source_registry.items()
+        if source.source_type == "interspecialty_question"
+    }
+    registered_discussion_refs = {
+        ref
+        for ref, source in discussion_bundle.source_registry.items()
+        if source.source_type == "interspecialty_question"
+    }
+
+    assert registered_discussion_refs == initial_question_refs
+    assert discussion_bundle.question_refs_to_classify == set()
+    assert all(
+        specialty["interspecialty_questions"] == []
+        for specialty in discussion_bundle.prompt_input["specialties"]
+    )
+    resolve_semantic_ledger(ChairSemanticLedger(), discussion_bundle)
+
+
+def test_discussion_source_refs_are_append_only_across_rounds():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    old_questions = {
+        item.quote: ref
+        for ref, item in initial_bundle.source_registry.items()
+        if item.source_type == "interspecialty_question"
+    }
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-pulmonology-A",
+        task_id="R01-Q001-pulmonology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="answered",
+        answer="基于现有资料完成回答。",
+        confidence="moderate",
+        medical_basis="现有资料足以形成有限判断。",
+        changed_from_previous=True,
+    )
+    cumulative = append_round_responses(
+        initial_outputs,
+        [SpecialtyRoundResponse(
+            case_id="case-1",
+            round_number=1,
+            specialty="pulmonology",
+            answers=[answer],
+        )],
+        [],
+    )
+
+    current = build_chair_prompt_bundle(
+        "case-1",
+        cumulative,
+        discussion_round=1,
+        source_seed=initial_bundle,
+    )
+
+    assert {
+        item.quote: ref
+        for ref, item in current.source_registry.items()
+        if item.source_type == "interspecialty_question"
+    } == old_questions
+    answer_ref = next(
+        ref
+        for ref, metadata in current.source_metadata.items()
+        if metadata.get("assessment_id") == answer.answer_id
+    )
+    assert int(answer_ref[1:]) > max(int(ref[1:]) for ref in old_questions.values())
+
+
+def test_discussion_ignores_llm_reclassification_of_stable_questions():
+    bundle = build_chair_prompt_bundle("case-1", outputs(), discussion_round=1)
+    prior_refs = {
+        ref
+        for ref, item in bundle.source_registry.items()
+        if item.source_type == "interspecialty_question"
+    }
+    bundle.already_classified_question_refs = prior_refs
+    payload = ledger_payload(build_chair_prompt_bundle("case-1", outputs()))
+
+    result = resolve_semantic_ledger(
+        ChairSemanticLedger.model_validate(payload),
+        bundle,
+    )
+
+    assert result.question_routes == []
+    assert any(
+        event["action"] == "ignored_already_classified_questions"
+        for event in bundle.normalization_events
+    )
+
+
+def test_discussion_bundle_classifies_new_candidates_only_in_their_round():
+    initial_outputs = outputs()
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-thoracic_radiology-A",
+        task_id="R01-Q001-thoracic_radiology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="answered",
+        answer="形成新的有限影像判断。",
+        confidence="moderate",
+        medical_basis="基于现有材料。",
+        changed_from_previous=True,
+        new_questions=[{
+            "target_specialty": "pulmonology",
+            "question": "现有低氧是否能由肺实质异常充分解释？",
+            "why_it_matters": "限定低氧归因。",
+            "decision_unlocked": "决定是否并行评估其他机制。",
+            "related_evidence": [],
+        }],
+        evidence_gaps=[{
+            "available_information": "已有文字摘要。",
+            "missing_information": "缺少原始HRCT。",
+            "why_it_matters": "影响影像判断。",
+            "decision_unlocked": "可完成形态评价。",
+            "related_evidence": [],
+        }],
+    )
+    responses = [SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty="thoracic_radiology",
+        answers=[answer],
+    )]
+    reviews = [SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-pulmonology",
+        issue_id=answer.issue_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="pulmonology",
+        outcome="convert_to_evidence_need",
+        rationale="当前判断已成立，原始影像只用于进一步明确。",
+        evidence_gap={
+            "available_information": "已有文字摘要。",
+            "missing_information": "缺少原始HRCT。",
+            "why_it_matters": "可进一步提高影像判断的明确度。",
+            "decision_unlocked": "进一步明确形态评价。",
+            "related_evidence": [],
+        },
+    )]
+    cumulative = append_round_responses(initial_outputs, responses, reviews)
+
+    first_round = build_chair_prompt_bundle(
+        "case-1",
+        cumulative,
+        discussion_round=1,
+    )
+    second_round = build_chair_prompt_bundle(
+        "case-1",
+        cumulative,
+        discussion_round=2,
+    )
+
+    assert len(first_round.question_refs_to_classify) == 0
+    assert len(first_round.evidence_need_refs_to_classify) == 1
+    assert all(
+        not specialty["interspecialty_questions"]
+        for specialty in first_round.prompt_input["specialties"]
+    )
+    assert second_round.question_refs_to_classify == set()
+    assert second_round.evidence_need_refs_to_classify == set()
+
+
+def test_discussion_agent_updates_previous_issues_without_reclassifying_them():
     initial_outputs = outputs()
     initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
     previous = resolve_chair_references(
@@ -497,19 +685,162 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
         task_id="R01-Q001-thoracic_radiology",
         issue_type="question",
         issue_id="Q001",
+        answerability="partially_answered",
+        answer="现有文字只能支持有限影像表型。",
+        confidence="moderate",
+        medical_basis="缺少原始影像。",
+        changed_from_previous=True,
+    )
+    responses = [SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty="thoracic_radiology",
+        answers=[answer],
+    )]
+    reviews = [SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-pulmonology",
+        issue_id=answer.issue_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="pulmonology",
+        outcome="request_clarification",
+        rationale="仍需限定可支持到什么层级。",
+    )]
+    current_outputs = append_round_responses(initial_outputs, responses, reviews)
+    bundle = build_chair_prompt_bundle(
+        "case-1",
+        current_outputs,
+        discussion_round=1,
+        source_seed=initial_bundle,
+    )
+    ledger_value = ledger_payload(bundle)
+    ledger_value["question_routes"] = []
+    ledger_value["evidence_need_groups"] = []
+
+    class FakeLLM:
+        supports_json_schema = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, **kwargs):
+            self.calls += 1
+            payload = ledger_value if self.calls == 1 else integration_payload(bundle)
+            return LLMResponse(
+                content=json.dumps(payload, ensure_ascii=False),
+                raw={"usage": {}},
+            )
+
+    agent = MDTChairAgent(
+        FakeLLM(),
+        ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
+        prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
+        max_attempts=1,
+    )
+    result, trace = agent.integrate(
+        bundle,
+        discussion_previous=previous,
+        discussion_responses=responses,
+        discussion_reviews=reviews,
+    )
+
+    assert trace["semantic_ledger"]["question_routes"] == []
+    assert result.questions[0].question_id == "Q001"
+    assert result.questions[0].answers[-1].answer == answer.answer
+
+
+def test_discussion_accept_boundary_moves_stable_question_to_boundary():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    previous = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(initial_bundle)),
+        initial_bundle,
+        resolved_ledger(initial_bundle),
+    )
+    question = previous.questions[0]
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-thoracic_radiology-A",
+        task_id="R01-Q001-thoracic_radiology",
+        issue_type="question",
+        issue_id=question.question_id,
+        answerability="partially_answered",
+        answer="现有资料能够形成判断边界，但不能完成实体判断。",
+        confidence="moderate",
+        medical_basis="缺少关键原始影像。",
+        changed_from_previous=True,
+        remaining_limitation="没有原始影像便不能完成模式判断。",
+    )
+    responses = [SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty="thoracic_radiology",
+        answers=[answer],
+    )]
+    reviews = [SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-pulmonology",
+        issue_id=question.question_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="pulmonology",
+        outcome="accept_boundary",
+        rationale="没有关键影像便不能完成该判断。",
+    )]
+    current_outputs = append_round_responses(initial_outputs, responses, reviews)
+    bundle = build_chair_prompt_bundle(
+        "case-1",
+        current_outputs,
+        discussion_round=1,
+        source_seed=initial_bundle,
+    )
+    ledger_value = ledger_payload(bundle)
+    ledger_value["question_routes"] = []
+    ledger_value["evidence_need_groups"] = []
+    integration_value = integration_payload(bundle)
+
+    class FakeLLM:
+        supports_json_schema = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, **kwargs):
+            self.calls += 1
+            value = ledger_value if self.calls == 1 else integration_value
+            return LLMResponse(content=json.dumps(value, ensure_ascii=False), raw={})
+
+    result, _ = MDTChairAgent(
+        FakeLLM(),
+        ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
+        prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
+        max_attempts=1,
+    ).integrate(
+        bundle,
+        discussion_previous=previous,
+        discussion_responses=responses,
+        discussion_reviews=reviews,
+    )
+    apply_review_outcomes(result, reviews)
+
+    assert question.source_refs == previous.questions[0].source_refs
+    assert any(
+        set(question.source_refs).intersection(boundary.source_refs)
+        for boundary in result.assessment_boundaries
+    )
+    assert result.questions == []
+
+
+def test_discussion_projects_only_requester_approved_evidence_need():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-thoracic_radiology-A",
+        task_id="R01-Q001-thoracic_radiology",
+        issue_type="question",
+        issue_id="Q001",
         answerability="answered",
         answer="现有材料不能确认具体模式，但可确认有限纤维化表型。",
         confidence="moderate",
         medical_basis="现有资料只有影像文字摘要。",
         changed_from_previous=True,
         remaining_limitation="缺少可比原始影像。",
-        new_questions=[{
-            "target_specialty": "pulmonology",
-            "question": "现有低氧程度能否由肺实质异常充分解释？",
-            "why_it_matters": "限定肺实质异常的临床贡献。",
-            "decision_unlocked": "决定是否需要并行考虑心肺血管因素。",
-            "related_evidence": [],
-        }],
         evidence_gaps=[{
             "available_information": "已有影像文字摘要。",
             "missing_information": "缺少可比原始HRCT。",
@@ -529,17 +860,22 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
         issue_id=answer.issue_id,
         answer_id=answer.answer_id,
         reviewer_specialty="pulmonology",
-        outcome="accept_answer",
-        rationale="接受回答及其派生问题。",
+        outcome="convert_to_evidence_need",
+        rationale="当前有限判断成立，原始影像只用于进一步明确。",
+        evidence_gap={
+            "available_information": "已有影像文字摘要。",
+            "missing_information": "缺少可比原始HRCT。",
+            "why_it_matters": "可进一步提高影像判断确定性。",
+            "decision_unlocked": "进一步明确影像判断。",
+            "related_evidence": [],
+        },
     )]
     current_outputs = append_round_responses(initial_outputs, responses, reviews)
-    current_bundle = build_chair_prompt_bundle("case-1", current_outputs)
-    payload = integration_payload(current_bundle)
-    new_question_ref = next(
-        ref
-        for ref, item in current_bundle.source_registry.items()
-        if item.source_type == "interspecialty_question"
-        and item.quote == "现有低氧程度能否由肺实质异常充分解释？"
+    current_bundle = build_chair_prompt_bundle(
+        "case-1",
+        current_outputs,
+        discussion_round=1,
+        source_seed=initial_bundle,
     )
     new_gap_ref = next(
         ref
@@ -547,41 +883,57 @@ def test_discussion_keeps_new_questions_and_evidence_needs_with_stable_ids():
         if item.source_type == "assessment_evidence_need"
         and item.quote == "缺少可比原始HRCT。"
     )
-    payload["questions"].append({
-        "question": "现有低氧程度能否由肺实质异常充分解释？",
-        "answers": [],
-        "resolution_status": "unresolved",
-        "answer_summary": "尚无呼吸科会中回答。",
-        "remaining_clarification": "请基于现有材料判断。",
-        "why_it_matters": "限定肺实质异常的临床贡献。",
-        "decision_unlocked": "决定是否需要并行考虑心肺血管因素。",
-        "related_evidence_need_source_refs": [],
-        "source_refs": [new_question_ref],
-    })
-    payload["evidence_needs"].append({
-        "status": "missing",
-        "required_information": "缺少可比原始HRCT。",
-        "available_information": "已有影像文字摘要。",
-        "remaining_information": "仍缺可比原始HRCT。",
-        "why_it_matters": "影响影像模式和进展判断。",
-        "decision_unlocked": "提高影像判断确定性。",
-        "source_refs": [new_gap_ref],
-    })
-    result = MDTChairIntegration.model_validate(payload)
-
-    reconcile_discussion_references(result, previous, responses, current_bundle, reviews)
-    result = resolve_chair_references(result, current_bundle)
-    result = stabilize_integration_ids(result, previous)
-
-    assert result.questions[0].question_id == "Q001"
-    assert result.questions[0].question == previous.questions[0].question
-    assert result.questions[-1].question_id == "Q002"
-    assert result.questions[-1].question == "现有低氧程度能否由肺实质异常充分解释？"
-    assert result.evidence_needs[0].need_id == "EN001"
-    assert any(
-        need.required_information == "缺少可比原始HRCT。"
-        for need in result.evidence_needs
+    assert current_bundle.question_refs_to_classify == set()
+    assert current_bundle.evidence_need_refs_to_classify == {new_gap_ref}
+    assert current_bundle.source_metadata[new_gap_ref]["discussion_issue_id"] == "Q001"
+    assert current_bundle.source_metadata[new_gap_ref]["discussion_disposition"] == (
+        "convert_to_evidence_need"
     )
+    previous = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(initial_bundle)),
+        initial_bundle,
+        resolved_ledger(initial_bundle),
+    )
+    result = MDTChairIntegration.model_validate(integration_payload(current_bundle))
+
+    _materialize_evidence_need_conversion_refs(
+        result, previous, reviews, current_bundle
+    )
+
+    assert any(new_gap_ref in need.source_refs for need in result.evidence_needs)
+
+    ledger_value = ledger_payload(current_bundle)
+    ledger_value["question_routes"] = []
+    ledger_value["evidence_need_groups"] = []
+
+    class FakeLLM:
+        supports_json_schema = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, **kwargs):
+            self.calls += 1
+            value = (
+                ledger_value
+                if self.calls == 1
+                else integration_payload(current_bundle)
+            )
+            return LLMResponse(content=json.dumps(value, ensure_ascii=False), raw={})
+
+    resolved, _ = MDTChairAgent(
+        FakeLLM(),
+        ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
+        prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
+        max_attempts=1,
+    ).integrate(
+        current_bundle,
+        discussion_previous=previous,
+        discussion_responses=responses,
+        discussion_reviews=reviews,
+    )
+
+    assert any(new_gap_ref in need.source_refs for need in resolved.evidence_needs)
 
 
 def test_partially_answered_question_remains_on_public_board():
@@ -855,6 +1207,32 @@ def test_complete_boundary_answer_is_removed_from_public_question_board():
         MDTChairIntegration.model_validate(payload), bundle, resolved_ledger(bundle)
     )
     assert result.questions == []
+
+
+def test_accepted_boundary_must_be_materialized_with_original_question_source():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    previous = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(bundle)),
+        bundle,
+        resolved_ledger(bundle),
+    )
+    question = previous.questions[0]
+    question.raised_by = ["pulmonology"]
+    review = SpecialtyAnswerReview(
+        review_id="review-1",
+        issue_id=question.question_id,
+        answer_id="answer-1",
+        reviewer_specialty="pulmonology",
+        outcome="accept_boundary",
+        rationale="缺少关键证据，当前只能形成判断边界。",
+    )
+    result = previous.model_copy(deep=True)
+
+    with pytest.raises(ValueError, match="must appear in assessment_boundaries"):
+        _validate_review_destinations(result, previous, [review], bundle)
+
+    result.assessment_boundaries[0].source_refs.extend(question.source_refs)
+    _validate_review_destinations(result, previous, [review], bundle)
 
 
 def test_unknown_source_id_is_rejected_without_medical_semantic_validator():

@@ -211,15 +211,38 @@ def test_pathology_without_material_requires_boundary_plan(monkeypatch, material
     assert validated.interspecialty_questions.questions
 
 
-def test_formal_output_rejects_probability_and_cross_specialty_conflict(monkeypatch):
+def test_formal_output_allows_probability_terms_in_clinical_text(monkeypatch):
     stub_evidence(monkeypatch)
     payload = output_payload()
     payload["specialty_assessments"]["assessments"][0]["medical_basis"] = (
-        "诊断概率为 80%，并且与影像科意见存在冲突。"
+        "当前资料不足以量化诊断概率或给出置信度。"
     )
     output = SpecialtyInitialOutput.model_validate(payload)
 
-    with pytest.raises(ValueError, match="probability or confidence"):
+    validated = validate_specialty_initial_output(
+        output, SimpleNamespace(), SpecialistTarget.PULMONOLOGY
+    )
+
+    assert validated is output
+
+
+def test_formal_output_rejects_cross_specialty_conflict(monkeypatch):
+    stub_evidence(monkeypatch)
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["medical_basis"] = (
+        "与影像科意见存在冲突。"
+    )
+    output = SpecialtyInitialOutput.model_validate(payload)
+
+    with pytest.raises(ValueError, match="cross-specialty conflict"):
         validate_specialty_initial_output(
             output, SimpleNamespace(), SpecialistTarget.PULMONOLOGY
         )
+
+
+def test_formal_output_schema_forbids_confidence_result_fields():
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["confidence"] = "high"
+
+    with pytest.raises(ValidationError, match="confidence"):
+        SpecialtyInitialOutput.model_validate(payload)

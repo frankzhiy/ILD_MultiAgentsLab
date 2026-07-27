@@ -151,7 +151,16 @@ class LedgerEvidenceNeedGroup(BaseModel):
     group_id: SkipJsonSchema[str] = ""
     source_refs: list[str] = Field(min_length=1)
     required_information: str = Field(min_length=1)
+    decision_role: Literal["blocking_boundary", "non_blocking_refinement"]
     coverage_source_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_decision_role(cls, value):
+        if isinstance(value, dict) and "decision_role" not in value:
+            value = dict(value)
+            value["decision_role"] = "non_blocking_refinement"
+        return value
 
 
 class ChairSemanticLedger(BaseModel):
@@ -312,7 +321,12 @@ class EvidenceNeed(CitedChairStatement):
     remaining_information: str = Field(min_length=1)
     provided_by: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
     why_it_matters: str = Field(min_length=1)
-    decision_unlocked: str = Field(min_length=1)
+    decision_unlocked: str = Field(
+        min_length=1,
+        description=(
+            "当前判断已经成立；说明补充该资料后可提高的明确度、置信度或精细程度。"
+        ),
+    )
     assessment_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
     question_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
 

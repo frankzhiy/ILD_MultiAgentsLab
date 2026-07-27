@@ -21,16 +21,6 @@ from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
-_PROBABILITY_OR_CONFIDENCE = re.compile(
-    r"(?:诊断)?概率|置信度|diagnostic\s+probability|confidence(?:\s+(?:score|level))?",
-    re.I,
-)
-_PERCENTED_POSSIBILITY = re.compile(
-    r"(?:可能性.{0,12}(?:\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百千万两\d]+)"
-    r"|(?:\d+(?:\.\d+)?\s*%|百分之[零一二三四五六七八九十百千万两\d]+)"
-    r".{0,12}可能性)",
-    re.I,
-)
 _CROSS_SPECIALTY_CONFLICT = re.compile(
     r"(?:跨专科冲突|与(?:呼吸|影像|风湿|病理)科(?:的)?(?:结论|意见)(?:存在|构成)?冲突)"
 )
@@ -165,8 +155,6 @@ def validate_specialty_initial_output(
                 )
 
     for text in _iter_text(result):
-        if _PROBABILITY_OR_CONFIDENCE.search(text) or _PERCENTED_POSSIBILITY.search(text):
-            raise ValueError("Formal initial output must not express probability or confidence")
         if _CROSS_SPECIALTY_CONFLICT.search(text):
             raise ValueError("Formal initial output must not detect cross-specialty conflict")
     return result

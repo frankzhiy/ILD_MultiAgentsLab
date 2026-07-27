@@ -5,13 +5,11 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from src.agents.mdt_chair.models import (
-    AssessmentBoundary,
     ChairEvidenceBundle,
     MDTChairIntegration,
     QuestionAnswer,
 )
 from src.agents.mdt_discussion.models import (
-    DiscussionRound,
     SpecialtyAnswerReview,
     SpecialtyRoundResponse,
 )
@@ -29,14 +27,15 @@ def append_round_responses(
         for specialty, output in deepcopy(specialty_outputs).items()
     }
     reviews = reviews or []
-    reviews_by_answer: dict[str, list[SpecialtyAnswerReview]] = {}
-    for review in reviews:
-        reviews_by_answer.setdefault(review.answer_id, []).append(review)
+    answer_round = {
+        answer.answer_id: response.round_number
+        for response in responses
+        for answer in response.answers
+    }
     for response in responses:
         specialty_output = updated[response.specialty]
         assessments = specialty_output["specialty_assessments"]
         assessment_items = assessments["assessments"]
-        questions = specialty_output["interspecialty_questions"]["questions"]
         for answer in response.answers:
             evidence = {
                 "supporting": [],
@@ -99,16 +98,8 @@ def append_round_responses(
                     "answered_question_id": answer.issue_id,
                 }
             )
-            answer_reviews = reviews_by_answer.get(answer.answer_id, [])
-            accepted = answer_reviews and all(
-                review.outcome in {"accept_answer", "accept_boundary"}
-                for review in answer_reviews
-            )
-            if accepted:
-                questions.extend(item.model_dump(mode="json") for item in answer.new_questions)
-            assessments["evidence_gaps"].extend(
-                item.model_dump(mode="json") for item in answer.evidence_gaps
-            )
+    # Only the original requester may convert an issue into a non-blocking
+    # evidence need. Follow-ups continue the same stable question instead.
     latest_reviews = {
         (review.issue_id, review.reviewer_specialty): review for review in reviews
     }
@@ -117,15 +108,12 @@ def append_round_responses(
         if reviewer_output is None:
             continue
         assessments = reviewer_output["specialty_assessments"]
-        questions = reviewer_output["interspecialty_questions"]["questions"]
-        if review.follow_up_question is not None:
-            questions.append(
-                review.follow_up_question.model_dump(mode="json")
-            )
         if review.evidence_gap is not None:
-            assessments["evidence_gaps"].append(
-                review.evidence_gap.model_dump(mode="json")
-            )
+            gap = review.evidence_gap.model_dump(mode="json")
+            gap["_discussion_round"] = answer_round[review.answer_id]
+            gap["_discussion_issue_id"] = review.issue_id
+            gap["_discussion_disposition"] = review.outcome
+            assessments["evidence_gaps"].append(gap)
     return updated
 
 
@@ -187,23 +175,50 @@ def apply_review_outcomes(
             question.closure_type = None
         elif "flag_incompatibility" in outcomes:
             question.review_status = "incompatibility_flagged"
-            question.discussion_status = "awaiting_conflict_assessment"
+            has_formal_conflict = any(
+                question.question_id in conflict.related_question_ids
+                for conflict in result.conflicts
+            )
+            question.discussion_status = (
+                "awaiting_conflict_assessment"
+                if has_formal_conflict
+                else "clarification_in_progress"
+            )
             question.closure_type = None
+            if not has_formal_conflict:
+                question.answer_status = "partially_answered"
         elif "request_corroboration" in outcomes:
             question.review_status = "corroboration_requested"
             question.discussion_status = "awaiting_corroboration"
             question.closure_type = None
             question.answer_status = "partially_answered"
+            follow_up = next(
+                review.follow_up_question
+                for review in issue_reviews
+                if review.outcome == "request_corroboration"
+                and review.follow_up_question is not None
+            )
+            question.remaining_clarification = follow_up.question
+            target = follow_up.target_specialty.value
+            if target not in question.target_specialties:
+                question.target_specialties.append(target)
         elif "request_clarification" in outcomes:
             question.review_status = "clarification_requested"
             question.discussion_status = "clarification_in_progress"
             question.closure_type = None
             question.answer_status = "partially_answered"
+            follow_up = next(
+                review.follow_up_question
+                for review in issue_reviews
+                if review.outcome == "request_clarification"
+                and review.follow_up_question is not None
+            )
+            question.remaining_clarification = follow_up.question
         elif "convert_to_evidence_need" in outcomes:
             question.review_status = "converted_to_evidence_need"
-            question.discussion_status = "waiting_for_new_evidence"
+            question.discussion_status = "closed_this_round"
             question.closure_type = "converted_to_evidence_need"
-            question.answer_status = "blocked_by_evidence"
+            question.answer_status = "answered"
         else:
             question.discussion_status = "closed_this_round"
             question.review_status = (
@@ -225,7 +240,148 @@ def apply_review_outcomes(
                 question.closure_type = "boundary_answer"
             else:
                 question.closure_type = "explicit_answer"
+    result.questions = [
+        question
+        for question in result.questions
+        if question.answer_status in {"unanswered", "partially_answered"}
+    ]
     return result
+
+
+def build_review_dispositions(
+    result: MDTChairIntegration,
+    reviews: list[SpecialtyAnswerReview],
+) -> dict[str, dict[str, Any]]:
+    """Turn requester reviews into deterministic issue destinations."""
+
+    latest = {
+        (review.issue_id, review.reviewer_specialty): review for review in reviews
+    }
+    dispositions = {}
+    for question in result.questions:
+        issue_reviews = [
+            review
+            for (issue_id, _), review in latest.items()
+            if issue_id == question.question_id
+        ]
+        if not issue_reviews:
+            continue
+        reviewed_by = {review.reviewer_specialty for review in issue_reviews}
+        outcomes = {review.outcome for review in issue_reviews}
+        if any(specialty not in reviewed_by for specialty in question.raised_by):
+            destination = "awaiting_requester_review"
+        elif "flag_incompatibility" in outcomes:
+            destination = "conflict_assessment"
+        elif "request_corroboration" in outcomes:
+            destination = "continue_corroboration"
+        elif "request_clarification" in outcomes:
+            destination = "continue_clarification"
+        elif "convert_to_evidence_need" in outcomes:
+            destination = "evidence_need"
+        elif "accept_boundary" in outcomes:
+            destination = "assessment_boundary"
+        else:
+            destination = "answered"
+        dispositions[question.question_id] = {
+            "destination": destination,
+            "question_source_refs": list(question.source_refs),
+            "outcomes": sorted(outcomes),
+            "reviews": [review.model_dump(mode="json") for review in issue_reviews],
+        }
+    return dispositions
+
+
+def decide_discussion_continuation(
+    *,
+    previous: MDTChairIntegration,
+    current: MDTChairIntegration,
+    round_number: int,
+    max_rounds: int,
+    responses: list[SpecialtyRoundResponse],
+    reviews: list[SpecialtyAnswerReview],
+) -> dict[str, Any]:
+    """Decide round continuation from structured state; never reclassify medicine."""
+
+    actionable_questions = [
+        question
+        for question in current.questions
+        if question.answer_status in {"unanswered", "partially_answered"}
+        and question.discussion_status
+        not in {"awaiting_requester_review", "awaiting_conflict_assessment"}
+    ]
+    actionable_count = len(actionable_questions) + len(current.conflicts)
+    summary = {
+        "actionable_questions": len(actionable_questions),
+        "actionable_conflicts": len(current.conflicts),
+        "changed_answers": sum(
+            answer.changed_from_previous
+            for response in responses
+            for answer in response.answers
+        ),
+        "forward_reviews": sum(
+            review.outcome
+            in {
+                "request_clarification",
+                "request_corroboration",
+                "flag_incompatibility",
+            }
+            for review in reviews
+        ),
+    }
+    if actionable_count == 0:
+        reason = (
+            "当前仅剩判断边界或证据需求，继续专科讨论不会增加信息。"
+            if current.assessment_boundaries or current.evidence_needs
+            else "当前已无仍需专科处理的问题或真实冲突。"
+        )
+        return {**summary, "continue_discussion": False, "stop_reason": reason}
+    if round_number >= max_rounds:
+        return {
+            **summary,
+            "continue_discussion": False,
+            "stop_reason": f"已达到最多{max_rounds}轮团队讨论。",
+        }
+    if (
+        summary["changed_answers"] == 0
+        and summary["forward_reviews"] == 0
+        and _open_issue_signature(previous) == _open_issue_signature(current)
+    ):
+        return {
+            **summary,
+            "continue_discussion": False,
+            "stop_reason": "本轮未形成新的专科判断或可继续处理的路径。",
+        }
+    return {**summary, "continue_discussion": True, "stop_reason": ""}
+
+
+def _open_issue_signature(result: MDTChairIntegration) -> tuple:
+    questions = tuple(sorted(
+        (
+            question.question_id,
+            question.answer_status,
+            question.discussion_status,
+            tuple(question.target_specialties),
+            tuple(question.responded_by),
+            tuple(question.source_refs),
+        )
+        for question in result.questions
+    ))
+    conflicts = tuple(sorted(
+        (
+            conflict.conflict_id,
+            conflict.conflict_nature,
+            conflict.status,
+            tuple(
+                sorted(
+                    ref
+                    for position in conflict.positions
+                    for ref in position.source_refs
+                )
+            ),
+        )
+        for conflict in result.conflicts
+    ))
+    return questions, conflicts
 
 
 def reconcile_discussion_references(
@@ -237,10 +393,8 @@ def reconcile_discussion_references(
 ) -> MDTChairIntegration:
     """Rebuild discussion question, answer, and evidence-need refs in program code."""
 
-    current_by_identity = {
-        (item.specialty, item.source_type, item.source_path, item.quote): ref
-        for ref, item in bundle.source_registry.items()
-    }
+    del reviews  # retained for caller compatibility; requester routing is programmatic
+
     previous_citations = {
         citation.source_ref: citation
         for item in (
@@ -259,19 +413,24 @@ def reconcile_discussion_references(
         for ref in refs:
             citation = previous_citations.get(ref)
             if citation is None:
-                raise ValueError(f"Cannot rebase prior specialty source ref: {ref}")
-            current = current_by_identity.get(
-                (
-                    citation.specialty,
-                    citation.source_type,
-                    citation.source_path,
-                    citation.quote,
-                )
-            )
+                raise ValueError(f"Cannot verify prior specialty source ref: {ref}")
+            current = bundle.source_registry.get(ref)
             if current is None:
                 raise ValueError(f"Prior specialty source is absent from current round: {ref}")
-            if current not in rebased:
-                rebased.append(current)
+            if (
+                current.specialty,
+                current.source_type,
+                current.source_path,
+                current.quote,
+            ) != (
+                citation.specialty,
+                citation.source_type,
+                citation.source_path,
+                citation.quote,
+            ):
+                raise ValueError(f"Prior specialty source changed identity: {ref}")
+            if ref not in rebased:
+                rebased.append(ref)
         return rebased
 
     answer_ref_by_id = {
@@ -288,30 +447,6 @@ def reconcile_discussion_references(
                     f"Discussion answer source was not registered: {answer.answer_id}"
                 )
             answers_by_issue.setdefault(answer.issue_id, []).append((answer, source_ref))
-    reviews = reviews or []
-    reviews_by_answer: dict[str, list[SpecialtyAnswerReview]] = {}
-    for review in reviews:
-        reviews_by_answer.setdefault(review.answer_id, []).append(review)
-    allowed_new_questions = {
-        question.question
-        for response in responses
-        for answer in response.answers
-        if reviews_by_answer.get(answer.answer_id)
-        and all(
-            review.outcome in {"accept_answer", "accept_boundary"}
-            for review in reviews_by_answer[answer.answer_id]
-        )
-        for question in answer.new_questions
-    }
-    latest_reviews = {
-        (review.issue_id, review.reviewer_specialty): review for review in reviews
-    }
-    allowed_new_questions.update(
-        review.follow_up_question.question
-        for review in latest_reviews.values()
-        if review.follow_up_question is not None
-    )
-
     active_previous = [
         question
         for question in previous.questions
@@ -390,15 +525,6 @@ def reconcile_discussion_references(
         ]
         question.answers = prior_answers + round_answers
         questions.append(question)
-    questions.extend(
-        deepcopy(candidate)
-        for index, candidate in enumerate(candidates)
-        if index not in used_candidates
-        and any(
-            bundle.source_registry[ref].quote in allowed_new_questions
-            for ref in candidate.source_refs
-        )
-    )
     result.questions = questions
 
     candidates = list(result.evidence_needs)
@@ -508,125 +634,21 @@ def _citation_key(item) -> frozenset[tuple[str, str, str, str]]:
     )
 
 
-def move_stalled_issues_to_boundaries(
-    result: MDTChairIntegration,
-    previous_rounds: list[DiscussionRound],
-    current_responses: list[SpecialtyRoundResponse],
-) -> MDTChairIntegration:
-    """Stop loops: evidence-blocked once, or still unresolved after two attempts."""
-
-    attempts: dict[str, set[int]] = {}
-    for discussion_round in previous_rounds:
-        for response in discussion_round.specialty_responses:
-            for answer in response.answers:
-                attempts.setdefault(answer.issue_id, set()).add(discussion_round.round_number)
-    for response in current_responses:
-        for answer in response.answers:
-            attempts.setdefault(answer.issue_id, set()).add(response.round_number)
-
-    kept_questions = []
-    for question in result.questions:
-        if question.discussion_status == "waiting_for_new_evidence":
-            kept_questions.append(question)
-            continue
-        count = len(attempts.get(question.question_id, set()))
-        stalled = (
-            question.answer_status == "blocked_by_evidence" and count >= 1
-        ) or (
-            question.discussion_status != "closed_this_round" and count >= 2
-        )
-        if not stalled:
-            kept_questions.append(question)
-            continue
-        result.assessment_boundaries.append(
-            AssessmentBoundary(
-                source_refs=question.source_refs,
-                source_citations=question.source_citations,
-                evidence=question.evidence,
-                guideline_evidence=question.guideline_evidence,
-                topic=question.question,
-                scope=_scope_for_specialties(question.target_specialties),
-                status="not_assessable",
-                statement=question.answer_summary,
-                reason=(
-                    "现有病例证据缺口已明确，继续重复讨论不会产生新的患者事实。"
-                    if question.answer_status == "blocked_by_evidence"
-                    else "相关专科已连续两轮处理该问题，仍未形成可解决结论。"
-                ),
-                decision_impact=question.why_it_matters,
-                related_evidence_need_source_refs=question.related_evidence_need_source_refs,
-                specialties=question.target_specialties,
-            )
-        )
-    result.questions = kept_questions
-
-    kept_conflicts = []
-    for conflict in result.conflicts:
-        count = len(attempts.get(conflict.conflict_id, set()))
-        if count < 2:
-            kept_conflicts.append(conflict)
-            continue
-        source_refs = list(
-            dict.fromkeys(
-                ref for position in conflict.positions for ref in position.source_refs
-            )
-        )
-        citations = []
-        guideline_evidence = []
-        evidence = {
-            role: []
-            for role in ("supporting", "weakening", "discriminating", "background")
-        }
-        for position in conflict.positions:
-            citations.extend(position.source_citations)
-            guideline_evidence.extend(position.guideline_evidence)
-            for role in evidence:
-                evidence[role].extend(getattr(position.evidence, role))
-        result.assessment_boundaries.append(
-            AssessmentBoundary(
-                source_refs=source_refs,
-                source_citations=citations,
-                evidence=ChairEvidenceBundle(**evidence),
-                guideline_evidence=guideline_evidence,
-                topic=conflict.topic,
-                scope=_scope_for_conflict(conflict.conflict_domain),
-                status="not_assessable",
-                statement=f"当前不能消解以下跨专科分歧：{conflict.comparison_target}",
-                reason="冲突相关专科已连续两轮处理，现有证据仍不足以判定哪一立场成立。",
-                decision_impact=conflict.decision_impact,
-                related_evidence_need_source_refs=conflict.related_evidence_need_source_refs,
-                specialties=conflict.specialties,
-            )
-        )
-    result.conflicts = kept_conflicts
-    return result
-
-
-def _scope_for_specialties(specialties: list[str]) -> str:
-    if len(specialties) != 1:
-        return "other"
-    return {
-        "pulmonology": "clinical",
-        "thoracic_radiology": "imaging",
-        "rheumatology": "rheumatology",
-        "pathology": "pathology",
-    }.get(specialties[0], "other")
-
-
-def _scope_for_conflict(domain: str) -> str:
-    return {
-        "morphologic_interpretation": "imaging",
-        "etiologic_attribution": "etiology",
-        "severity_or_trajectory": "progression",
-    }.get(domain, "other")
-
-
 def _stabilize(current, previous, id_field, prefix, key) -> None:
     previous_by_key = {key(item): getattr(item, id_field) for item in previous if key(item)}
     used = {value for value in previous_by_key.values() if value}
     next_number = max((_numeric_id(value, prefix) for value in used), default=0) + 1
     for item in current:
-        stable = previous_by_key.get(key(item))
+        current_key = key(item)
+        stable = previous_by_key.get(current_key)
+        if stable is None:
+            supersets = [
+                (len(previous_key), value)
+                for previous_key, value in previous_by_key.items()
+                if previous_key.issubset(current_key)
+            ]
+            if supersets:
+                stable = max(supersets)[1]
         if stable:
             setattr(item, id_field, stable)
             continue
