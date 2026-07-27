@@ -635,6 +635,34 @@ def test_integration_source_type_error_identifies_exact_field():
         resolve_chair_references(MDTChairIntegration.model_validate(payload), bundle)
 
 
+def test_mixed_specialty_answers_report_every_exact_source():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = integration_payload(bundle)
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    rheumatology = source_ref(bundle, "rheumatology", "native_conclusion")
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    pathology = source_ref(bundle, "pathology", "native_conclusion")
+    payload["questions"][0]["answers"][0]["source_refs"] = [
+        pulmonary,
+        rheumatology,
+    ]
+    payload["questions"].append({
+        **payload["questions"][0],
+        "answers": [{
+            **payload["questions"][0]["answers"][0],
+            "source_refs": [radiology, pathology],
+        }],
+    })
+
+    with pytest.raises(ValueError) as error:
+        resolve_chair_references(MDTChairIntegration.model_validate(payload), bundle)
+
+    message = str(error.value)
+    assert "split these answers by specialty" in message
+    assert f"questions[0].answers[0]: {pulmonary}=pulmonology, {rheumatology}=rheumatology" in message
+    assert f"questions[1].answers[0]: {radiology}=thoracic_radiology, {pathology}=pathology" in message
+
+
 def test_semantic_ledger_drops_known_gap_refs_from_answer_and_coverage_links():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     payload = ledger_payload(bundle)

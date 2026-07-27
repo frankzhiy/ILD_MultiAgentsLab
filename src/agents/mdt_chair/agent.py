@@ -726,6 +726,7 @@ def resolve_chair_references(
             if citation.source_type == "native_conclusion"
         )
 
+    invalid_answer_citations: list[str] = []
     for index, question in enumerate(result.questions, 1):
         question.question_id = f"Q{index:03d}"
         _resolve_cited(
@@ -762,10 +763,15 @@ def resolve_chair_references(
                     citation.specialty for citation in answer.source_citations
                 }
                 if len(specialties) != 1:
-                    raise ValueError(
-                        "Each question answer must cite conclusions from exactly one specialty"
+                    refs = ", ".join(
+                        f"{citation.source_ref}={citation.specialty}"
+                        for citation in answer.source_citations
                     )
-                answer.specialty = answer.source_citations[0].specialty
+                    invalid_answer_citations.append(
+                        f"questions[{index - 1}].answers[{answer_index}]: {refs}"
+                    )
+                else:
+                    answer.specialty = answer.source_citations[0].specialty
         question.responded_by = _ordered_unique(
             answer.specialty for answer in question.answers
         )
@@ -800,6 +806,13 @@ def resolve_chair_references(
         else:
             question.discussion_status = "awaiting_answer"
             question.closure_type = None
+
+    if invalid_answer_citations:
+        raise ValueError(
+            "Each question answer must cite conclusions from exactly one specialty; "
+            "split these answers by specialty: "
+            + "; ".join(invalid_answer_citations)
+        )
 
     _link_output_items(result)
     _resolve_conflicts(result.conflicts, result, bundle)
