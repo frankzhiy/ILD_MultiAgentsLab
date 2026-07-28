@@ -87,6 +87,8 @@ a { color: inherit; }
 .routing-check { color: #0f9f6e; font-size: 16px; }
 .citation-button { max-width: 210px; color: #285fca; border-color: #c5d5f4; background: #f7faff; }
 .citation-group { margin-top: 7px; }
+.citation-summary-button { color: #285fca; border-color: #c5d5f4; background: #f7faff; white-space: nowrap; }
+.citation-popover-content { display: grid; gap: 13px; width: min(520px, calc(100vw - 64px)); max-height: 380px; overflow: auto; }
 .evidence-quote { margin-top: 8px; padding: 13px 15px; border-left: 3px solid #2f6fed; background: #f6f8fb; white-space: pre-wrap; }
 .pdf-preview iframe { width: 100%; height: 620px; border: 1px solid #dfe6ef; }
 
@@ -217,6 +219,15 @@ a { color: inherit; }
 .discussion-empty-card > .ant-card-body { min-height: 420px; display: grid; place-items: center; }
 .discussion-final-report { margin-bottom: 14px; border-top: 3px solid #0f9f6e; }
 .discussion-final-report > .ant-card-body > .ant-typography { margin-top: 12px; line-height: 1.75; }
+.final-report-summary { padding: 16px 18px; border: 1px solid #bfe3d4; border-radius: 9px; background: #f3fbf7; }
+.final-report-summary h4 { margin: 12px 0 8px !important; color: #173d31; }
+.discussion-final-report .ant-table-cell { vertical-align: top; line-height: 1.6; overflow-wrap: anywhere; }
+.discussion-final-report .ant-table-cell .ant-typography { margin-bottom: 5px; }
+.final-report-table .ant-table-cell { padding-block: 12px !important; }
+.final-report-table .citation-summary-button { margin-top: 1px; }
+.discussion-final-report .ant-collapse-content-box { line-height: 1.7; }
+.discussion-audit-round { padding: 3px 0 10px; }
+.discussion-audit-round .ant-typography { margin: 8px 0 0; }
 .artifact-grid { display: grid; grid-template-columns: 360px 1fr; gap: 12px; height: calc(100vh - 156px); min-height: 660px; }
 .artifact-list-card > .ant-card-body { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
 .artifact-list { min-height: 0; overflow: auto; }

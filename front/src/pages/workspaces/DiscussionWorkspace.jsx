@@ -11,6 +11,7 @@ import { Citation } from '../../components/Citation'
 import { QueryError } from '../../components/QueryState'
 import { StatusTag } from '../../components/StatusTag'
 import { ChairResultTabs } from './ChairWorkspace'
+import { FinalReport } from './FinalReport'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -364,18 +365,6 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
         <Table size="small" rowKey={(item) => item.evidence_ref} columns={evidenceColumns} dataSource={evidenceRows} pagination={false} tableLayout="fixed" locale={{ emptyText: '没有可用证据' }} />
         {answer?.guideline_evidence?.length > 0 && <Space size={[5, 5]} wrap className="discussion-guidelines"><Text strong>指南依据：</Text>{answer.guideline_evidence.map((item, index) => <Citation value={item} key={`${item.guideline_id || item.chunk_id || 'guideline'}-${index}`} />)}</Space>}
       </div>
-    </Card>
-  )
-}
-
-function FinalReport({ report }) {
-  if (!report) return null
-  return (
-    <Card title="最终 MDT 统一报告" className="section-card discussion-final-report" extra={<Space><Tag color="blue">{report.consensus_status}</Tag><Tag>共 {report.discussion_rounds} 轮</Tag></Space>}>
-      <Title level={5}>{report.primary_conclusion}</Title>
-      <Paragraph><Text strong>诊断把握度：</Text>{report.diagnostic_confidence}</Paragraph>
-      <Paragraph><Text strong>整合摘要：</Text>{report.integrated_summary}</Paragraph>
-      <Paragraph><Text strong>讨论过程摘要：</Text>{report.discussion_summary}</Paragraph>
     </Card>
   )
 }

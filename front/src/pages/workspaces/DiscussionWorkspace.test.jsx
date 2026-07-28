@@ -122,6 +122,57 @@ const active = {
   },
 }
 
+const diagnosticDimensions = [
+  ['ild_presence', '存在纤维化性间质性肺病。', 'favored', 'moderate', 'primary'],
+  ['radiologic_pattern', '缺少原始薄层 HRCT，影像模式不可评价。', 'not_assessable', 'unknown', 'boundary'],
+  ['histopathologic_pattern', '无可复核病理材料，组织学模式不可评价。', 'not_assessable', 'unknown', 'boundary'],
+  ['mdt_diagnosis', '纤维化性间质性肺病工作诊断，具体类型待分类。', 'favored', 'moderate', 'primary'],
+  ['etiologic_attribution', '病因未分类。', 'unclassifiable', 'low', 'boundary'],
+  ['disease_behavior', '缺少纵向资料，PPF 不可评价。', 'not_assessable', 'unknown', 'boundary'],
+  ['acute_or_comorbid_factors', '近期低氧可能为多因素参与。', 'possible', 'low', 'cannot_safely_ignore'],
+]
+
+const completedV2 = {
+  ...completed,
+  final_report: {
+    schema_version: 'mdt_final_report.v2',
+    consensus_status: 'consensus_with_boundaries',
+    discussion_rounds: 1,
+    report_scope: 'diagnostic_only',
+    clinical_report: {
+      overall_conclusion: '纤维化性间质性肺病工作诊断，具体类型待分类。',
+      overall_confidence: 'moderate',
+      integrated_summary: '模式诊断与病因诊断分别保留边界。',
+      diagnostic_matrix: diagnosticDimensions.map(([dimension, statement, status, confidence, role]) => ({
+        dimension, statement, status, confidence, role, medical_basis: '基于现有 MDT 整合。', chair_item_ids: ['IC001'], limitations: [],
+      })),
+      differential_diagnoses: [{ rank: 1, diagnosis: '特发性肺纤维化', confidence: 'low', rationale: '缺少可评价 HRCT。', chair_item_ids: ['IC001'] }],
+    },
+    reasoning_trace: [{
+      claim_id: 'DX01',
+      claim_statement: '存在纤维化性间质性肺病。',
+      chair_item_ids: ['IC001'],
+      medical_basis: '主持人整合了呼吸科与影像科意见。',
+      source_citations: [{ source_ref: 'S001', specialty: 'pulmonology', source_path: 'specialty_assessments.assessments[0]', quote: '呼吸科工作诊断原话。' }],
+      evidence: { supporting: [{ evidence_ref: 'E001', graph_unit_id: 'gu-1', evidence_ids: ['ev-1'], quote: '静息低氧' }] },
+      guideline_evidence: [],
+      limitations: [],
+    }],
+    assessment_boundaries: [],
+    evidence_needs: [],
+    unresolved_conflicts: [],
+    discussion_audit: {
+      decisions: [{
+        issue_id: 'Q001', issue_type: 'question', question: '低氧的主要归因是什么？', why_it_matters: '影响急性问题归因。', baseline_result: '现有资料不足。', final_status: 'closed', final_result: '接受多因素边界。', decision_impact: '避免将低氧直接归因于 ILD 进展。',
+        rounds: [{ round_number: 1, task_id: 'R01-Q001-pulmonology', specialty: 'pulmonology', prompt: '低氧的主要归因是什么？', answer: '不能量化各因素贡献。', answerability: 'partially_answered', confidence: 'moderate', changed_from_previous: false, reviews: [{ reviewer_specialty: 'thoracic_radiology', outcome: 'accept_boundary', rationale: '接受边界。' }], chair_result_after_round: '转为带边界共识。', closure: 'accept_boundary' }],
+      }],
+      conflicts: [],
+      stop_reason: '当前仅剩判断边界。',
+    },
+    research_metrics: { diagnostic_claims: 7, claims_with_specialty_citations: 1, claims_with_patient_evidence: 1, claims_with_guideline_citations: 0, discussion_issues: 1, closed_issues: 1, formal_conflicts: 0, resolved_formal_conflicts: 0, unresolved_formal_conflicts: 0, assessment_boundaries: 0 },
+  },
+}
+
 class FakeEventSource {
   static instances = []
   constructor(url) {
@@ -188,6 +239,28 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getByText('证据需求及满足状态')).toBeInTheDocument()
     expect(screen.getByText('讨论前主持人基线不计入轮次')).toBeInTheDocument()
     expect(screen.getByText('本轮决策')).toBeInTheDocument()
+  })
+
+  it('shows the layered v2 diagnostic report, provenance, and discussion audit', async () => {
+    api.discussion.mockResolvedValue(completedV2)
+    renderWorkspace()
+
+    expect(await screen.findByText('分层诊断矩阵')).toBeInTheDocument()
+    expect(screen.getByText('影像学模式')).toBeInTheDocument()
+    expect(screen.getByText('缺少原始薄层 HRCT，影像模式不可评价。')).toBeInTheDocument()
+    expect(screen.getByText('特发性肺纤维化')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看依据（2）' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /S001/ })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: '证据与整合依据' }))
+    expect(await screen.findByText('主持人整合了呼吸科与影像科意见。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /S001/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: '讨论与研究审计' }))
+    expect(await screen.findByText('证据与讨论客观计数')).toBeInTheDocument()
+    expect(await screen.findByText('议题级决策记录')).toBeInTheDocument()
+    expect(screen.getByText('冲突历史')).toBeInTheDocument()
+    expect(screen.getByText('当前仅剩判断边界。')).toBeInTheDocument()
   })
 
   it('refreshes visible task progress when a discussion event arrives', async () => {

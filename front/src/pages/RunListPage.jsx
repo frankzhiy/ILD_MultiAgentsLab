@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowRightOutlined, ExperimentOutlined, PlusOutlined } from '@ant-design/icons'
 import { Button, Card, Col, Layout, Row, Space, Statistic, Table, Typography } from 'antd'
 import dayjs from 'dayjs'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Brand } from '../components/Brand'
 import { StatusTag } from '../components/StatusTag'
@@ -28,7 +28,7 @@ export function RunListPage() {
     <Layout className="root-layout">
       <Header className="global-header">
         <Brand />
-        <Button type="primary" icon={<PlusOutlined />}><Link to="/runs/new">新建运行</Link></Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/runs/new')}>新建运行</Button>
       </Header>
       <Content className="page-content">
         <div className="page-heading">

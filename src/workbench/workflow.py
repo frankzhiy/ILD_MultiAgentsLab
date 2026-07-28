@@ -722,6 +722,7 @@ class WorkbenchWorkflow:
                 chair_result=latest.model_dump(mode="json"),
                 rounds=state.rounds,
                 stop_reason=state.stop_reason,
+                baseline_chair_result=baseline.model_dump(mode="json"),
             )
             state.final_report = report
             state.status = "completed"

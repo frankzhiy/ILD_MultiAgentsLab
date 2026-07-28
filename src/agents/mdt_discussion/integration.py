@@ -637,26 +637,31 @@ def _citation_key(item) -> frozenset[tuple[str, str, str, str]]:
 def _stabilize(current, previous, id_field, prefix, key) -> None:
     previous_by_key = {key(item): getattr(item, id_field) for item in previous if key(item)}
     used = {value for value in previous_by_key.values() if value}
+    assigned = set()
     next_number = max((_numeric_id(value, prefix) for value in used), default=0) + 1
     for item in current:
         current_key = key(item)
         stable = previous_by_key.get(current_key)
+        if stable in assigned:
+            stable = None
         if stable is None:
             supersets = [
                 (len(previous_key), value)
                 for previous_key, value in previous_by_key.items()
-                if previous_key.issubset(current_key)
+                if previous_key.issubset(current_key) and value not in assigned
             ]
             if supersets:
                 stable = max(supersets)[1]
         if stable:
             setattr(item, id_field, stable)
+            assigned.add(stable)
             continue
         while f"{prefix}{next_number:03d}" in used:
             next_number += 1
         value = f"{prefix}{next_number:03d}"
         setattr(item, id_field, value)
         used.add(value)
+        assigned.add(value)
         next_number += 1
 
 
