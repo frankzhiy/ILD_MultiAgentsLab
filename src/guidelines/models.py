@@ -1,5 +1,7 @@
 """Schemas shared by guideline ingestion, retrieval, agents, and reports."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
@@ -28,6 +30,7 @@ class GuidelineChunk(BaseModel):
     source_file: str = Field(min_length=1)
     page: int = Field(ge=1)
     section_path: list[str] = Field(default_factory=list)
+    unit_type: Literal["recommendation", "definition", "threshold"]
     text: str = Field(min_length=1)
     document_sha256: str = Field(min_length=64, max_length=64)
 
@@ -38,6 +41,10 @@ class GuidelineEvidencePointer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     chunk_id: str = Field(min_length=1)
+    quote: str = Field(
+        min_length=12,
+        description="从对应指南片段逐字复制、直接支持当前判断的连续完整原文。",
+    )
     relevance: str = Field(min_length=1, description="该段指南与当前判断的关系。")
     application: str = Field(min_length=1, description="该段指南如何用于当前患者。")
     guideline_id: SkipJsonSchema[str] = ""
@@ -47,7 +54,8 @@ class GuidelineEvidencePointer(BaseModel):
     source_file: SkipJsonSchema[str] = ""
     page: SkipJsonSchema[int | None] = None
     section_path: SkipJsonSchema[list[str]] = Field(default_factory=list)
-    quote: SkipJsonSchema[str] = ""
+    quote_start: SkipJsonSchema[int | None] = None
+    quote_end: SkipJsonSchema[int | None] = None
 
 
 class GuidelineSearchHit(BaseModel):

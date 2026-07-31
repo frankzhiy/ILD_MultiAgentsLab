@@ -4,6 +4,15 @@ from pathlib import Path
 import pytest
 
 from src.guidelines.catalog import load_catalog
+from src.guidelines.index import (
+    MAX_UNIT_CHARS,
+    _atomic_units,
+    _embedding_text,
+    _looks_corrupted,
+    _normalize_text,
+    _ordered_blocks,
+    _repeated_margin_keys,
+)
 from src.guidelines.models import (
     GuidelineChunk,
     GuidelineEvidencePointer,
@@ -36,7 +45,8 @@ def chunk() -> GuidelineChunk:
         source_file="guide.pdf",
         page=1,
         section_path=["诊断"],
-        text="指南原文",
+        unit_type="recommendation",
+        text="指南建议对疑似患者进行完整的临床、影像和肺功能综合评估。",
         document_sha256="a" * 64,
     )
 
@@ -62,13 +72,15 @@ def test_agent_yaml_uses_only_canonical_guideline_ids():
 def test_citation_metadata_is_resolved_only_from_retrieved_chunk():
     pointer = GuidelineEvidencePointer(
         chunk_id="guide:p001:c001",
+        quote="对疑似患者进行完整的临床、影像和肺功能综合评估",
         relevance="规定诊断方法",
         application="用于解释患者资料",
     )
     used = resolve_guideline_evidence(pointer, {pointer.chunk_id: chunk()})
     assert used == [pointer.chunk_id]
     assert pointer.page == 1
-    assert pointer.quote == "指南原文"
+    assert pointer.quote == "对疑似患者进行完整的临床、影像和肺功能综合评估"
+    assert chunk().text[pointer.quote_start : pointer.quote_end] == pointer.quote
 
 
 def test_runtime_records_retrieved_candidates_for_stage():
@@ -84,6 +96,7 @@ def test_runtime_records_retrieved_candidates_for_stage():
     )
     prompt, allowed, trace = runtime.prepare("initial")
     assert "guide:p001:c001" in prompt
+    assert '"unit_type":"recommendation"' in prompt
     assert set(allowed) == {"guide:p001:c001"}
     assert trace["candidates"] == [{"chunk_id": "guide:p001:c001", "score": 0.91}]
 
@@ -108,7 +121,12 @@ def test_runtime_honors_stage_limit_and_skips_zero_limit_stage():
     skipped, allowed, _ = runtime.prepare("mapping")
 
     assert calls == [("诊断", 2)]
-    assert set(json.loads(prompt)[0]) == {"chunk_id", "section_path", "text"}
+    assert set(json.loads(prompt)[0]) == {
+        "chunk_id",
+        "section_path",
+        "unit_type",
+        "text",
+    }
     assert skipped == "[]"
     assert allowed == {}
 
@@ -135,6 +153,7 @@ def test_runtime_reuses_one_retriever_for_the_same_directory(monkeypatch, tmp_pa
 def test_unretrieved_citation_is_rejected():
     pointer = GuidelineEvidencePointer(
         chunk_id="invented",
+        quote="这是一段长度足够但并没有被检索到的指南原文。",
         relevance="无",
         application="无",
     )
@@ -156,6 +175,7 @@ def test_retrieved_chunk_ids_are_closed_in_structured_output_schema():
     assert guideline_items["properties"]["chunk_id"]["enum"] == [
         "guide:p001:c001"
     ]
+    assert "quote" in guideline_items["required"]
 
     empty_schema = json_schema_response_format(
         model,
@@ -171,6 +191,7 @@ def test_shared_report_renders_exact_guideline_location(tmp_path):
     )
     pointer = GuidelineEvidencePointer(
         chunk_id=source.chunk_id,
+        quote="对疑似患者进行完整的临床、影像和肺功能综合评估",
         relevance="规定诊断方法",
         application="用于解释患者资料",
     )
@@ -185,7 +206,126 @@ def test_shared_report_renders_exact_guideline_location(tmp_path):
     html = render_reasoning_audit(item, {}, report_path) + render_guideline_audit(
         item, report_path
     )
-    assert "指南原文" in html
+    assert pointer.quote in html
     assert "PDF 第 4 页" in html
     assert "#page=4" in html
     assert "相关上下文（不直接支持结论）" in html
+
+
+def test_atomic_units_split_recommendation_definition_and_threshold():
+    text = (
+        "【推荐意见1】建议疑似患者接受规范的高分辨率CT检查。"
+        "进展性肺纤维化定义为一年内满足规定的进展条件。"
+        "肺功能阈值为FVC绝对下降≥5%。"
+    )
+
+    units = _atomic_units(text)
+
+    assert units == [
+        ("recommendation", "【推荐意见1】建议疑似患者接受规范的高分辨率CT检查。"),
+        ("definition", "进展性肺纤维化定义为一年内满足规定的进展条件。"),
+        ("threshold", "肺功能阈值为FVC绝对下降≥5%。"),
+    ]
+    assert all(len(item[1]) <= MAX_UNIT_CHARS for item in units)
+
+
+def test_repeated_margins_are_removed_and_two_columns_keep_reading_order():
+    pages = [
+        {
+            "width": 600,
+            "height": 800,
+            "blocks": [
+                {"x0": 50, "y0": 20, "x1": 550, "y1": 35, "text": "期刊 2025 第1页"},
+                {"x0": 50, "y0": 100, "x1": 280, "y1": 120, "text": "左栏第一句。"},
+                {"x0": 320, "y0": 90, "x1": 550, "y1": 110, "text": "右栏第一句。"},
+                {"x0": 50, "y0": 130, "x1": 280, "y1": 150, "text": "左栏第二句。"},
+            ],
+        }
+        for _ in range(5)
+    ]
+    for page_number, page in enumerate(pages, start=1):
+        page["blocks"][0]["text"] = f"期刊 2025 第{page_number}页"
+
+    repeated = _repeated_margin_keys(pages)
+    ordered = _ordered_blocks(pages[0], repeated, "zh")
+
+    assert [item["text"] for item in ordered] == [
+        "左栏第一句。",
+        "左栏第二句。",
+        "右栏第一句。",
+    ]
+
+
+def test_corrupted_table_text_is_rejected():
+    assert _looks_corrupted("\x03\x03\x03\x03乱码表格ۘฮߵ", "zh")
+    assert not _looks_corrupted("建议患者接受高分辨率CT检查。", "zh")
+
+
+def test_normalization_removes_pdf_line_wrap_spaces_between_chinese_characters():
+    assert _normalize_text("风湿免 疫科\n应进行 评估") == "风湿免疫科应进行评估"
+
+
+def test_atomic_units_reject_noise_and_incomplete_fragments():
+    text = (
+        "Consensus required ≥70% agreement on each recommendation."
+        "Correspondence and requests for reprints should be addressed to the author."
+        "Absolute decline in DLCO >10% within one year 3 Radiological evidence of progression: a."
+        "残气量占预计值百分比<80%、第1秒钟用力呼气"
+        "We suggest performing pulmonary function tests every 3–6 months."
+    )
+
+    assert _atomic_units(text) == [
+        (
+            "recommendation",
+            "We suggest performing pulmonary function tests every 3–6 months.",
+        )
+    ]
+
+
+def test_recommendation_strength_is_attached_to_preceding_statement():
+    text = (
+        "【推荐意见1】建议将MDD纳入ILD患者诊治流程。"
+        "【强推荐】三、病例评估内容。"
+    )
+
+    assert _atomic_units(text) == [
+        (
+            "recommendation",
+            "【推荐意见1】建议将MDD纳入ILD患者诊治流程 【强推荐】。",
+        )
+    ]
+
+
+def test_embedding_uses_context_without_polluting_quote_text():
+    source = chunk()
+
+    embedded = _embedding_text(source)
+
+    assert source.title in embedded
+    assert source.section_path[0] in embedded
+    assert source.unit_type in embedded
+    assert embedded.endswith(source.text)
+
+
+def test_modified_or_ambiguous_guideline_quote_is_rejected():
+    source = chunk()
+    modified = GuidelineEvidencePointer(
+        chunk_id=source.chunk_id,
+        quote="对疑似患者进行完整的临床、影像和病理综合评估",
+        relevance="规定诊断方法",
+        application="用于解释患者资料",
+    )
+    with pytest.raises(ValueError, match="not an exact substring"):
+        resolve_guideline_evidence(modified, {source.chunk_id: source})
+
+    repeated_source = source.model_copy(
+        update={"text": "完整的临床、影像和肺功能综合评估；完整的临床、影像和肺功能综合评估。"}
+    )
+    ambiguous = GuidelineEvidencePointer(
+        chunk_id=source.chunk_id,
+        quote="完整的临床、影像和肺功能综合评估",
+        relevance="规定诊断方法",
+        application="用于解释患者资料",
+    )
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_guideline_evidence(ambiguous, {source.chunk_id: repeated_source})

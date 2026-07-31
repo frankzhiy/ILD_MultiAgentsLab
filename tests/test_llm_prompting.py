@@ -29,16 +29,16 @@ def test_prompt_json_removes_program_filled_fields_recursively():
     pulmonary.quote = "原文"
     guideline = GuidelineEvidencePointer(
         chunk_id="guide:p001:c001",
+        quote="这是由模型逐字选择并返回的指南原文片段。",
         relevance="相关",
         application="用于当前判断",
         title="程序标题",
-        quote="程序回填的长指南原文",
     )
 
     value = json.loads(prompt_json({"evidence": pulmonary, "guideline": guideline}))
 
     assert value["evidence"] == {"evidence_ids": ["unit_ev_001"]}
-    assert set(value["guideline"]) == {"chunk_id", "relevance", "application"}
+    assert set(value["guideline"]) == {"chunk_id", "quote", "relevance", "application"}
 
 
 def test_radiology_prompt_keeps_llm_owned_pointer_keys_only():

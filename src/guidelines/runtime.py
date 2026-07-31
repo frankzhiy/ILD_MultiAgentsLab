@@ -18,7 +18,9 @@ PROMPT_RULES = """
 - 下方指南片段是外部知识，不是患者病例证据；不得用它证明患者存在某项表现。
 - 只有本轮提供的 chunk_id 可以写入 guideline_evidence，禁止编造指南、原文、章节或页码。
 - 对诊断阈值、分类定义、检查要求或指南建议作出判断时，应引用直接相关的指南片段。
-- guideline_evidence 只填写 chunk_id、relevance 和 application；标题、页码和原文由程序补全。
+- guideline_evidence 必须填写 chunk_id、quote、relevance 和 application；标题、页码由程序补全。
+- quote 必须从对应片段的 text 中逐字复制连续完整原文；不得翻译、改写、补字或拼接不连续句子。
+- quote 应包含直接支持当前判断的完整推荐、定义或阈值，不得只引用疾病名称、数字或短语。
 - 没有适用片段时保持 guideline_evidence 为空，并在限制中说明，不得凭记忆引用。
 """.strip()
 
@@ -87,6 +89,7 @@ class GuidelineRuntime:
             {
                 "chunk_id": hit.chunk.chunk_id,
                 "section_path": hit.chunk.section_path,
+                "unit_type": hit.chunk.unit_type,
                 "text": hit.chunk.text,
             }
             for hit in hits
@@ -114,6 +117,19 @@ def resolve_guideline_evidence(value: object, allowed: dict[str, GuidelineChunk]
             raise ValueError(
                 f"Guideline citation {pointer.chunk_id!r} was not retrieved for this stage"
             )
+        quote = pointer.quote.strip()
+        if len(quote) < 12:
+            raise ValueError(f"Guideline quote for {pointer.chunk_id!r} is too short")
+        start = chunk.text.find(quote)
+        if start < 0:
+            raise ValueError(
+                f"Guideline quote is not an exact substring of {pointer.chunk_id!r}"
+            )
+        if chunk.text.find(quote, start + 1) >= 0:
+            raise ValueError(f"Guideline quote is ambiguous within {pointer.chunk_id!r}")
+        pointer.quote = quote
+        pointer.quote_start = start
+        pointer.quote_end = start + len(quote)
         pointer.guideline_id = chunk.guideline_id
         pointer.title = chunk.title
         pointer.organization = chunk.organization
@@ -121,7 +137,6 @@ def resolve_guideline_evidence(value: object, allowed: dict[str, GuidelineChunk]
         pointer.source_file = chunk.source_file
         pointer.page = chunk.page
         pointer.section_path = chunk.section_path
-        pointer.quote = chunk.text
         used.append(pointer.chunk_id)
     return list(dict.fromkeys(used))
 
