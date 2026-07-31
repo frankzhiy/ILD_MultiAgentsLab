@@ -129,8 +129,18 @@ class RunOrchestrator:
         key = f"{run_id}:chair"
         if run_id in self.tasks or key in self.tasks or run_id in self.active_discussions:
             raise ValueError("该运行仍在执行，不能重复启动主持人。")
+        config_path = self._chair_config(run_dir)
+        manifest_path = run_dir / ".workbench_run.json"
+        if manifest_path.exists():
+            self._update_manifest(
+                manifest_path,
+                status="running",
+                status_source="mdt_chair",
+                status_updated_at=self._now(),
+                error=None,
+            )
         task = asyncio.create_task(
-            self._execute_chair(run_id, run_dir, self._chair_config(run_dir)),
+            self._execute_chair(run_id, run_dir, config_path),
             name=f"chair:{run_id}",
         )
         self.active_chairs.add(run_id)
@@ -148,8 +158,18 @@ class RunOrchestrator:
         key = f"{run_id}:discussion"
         if run_id in self.tasks or key in self.tasks or run_id in self.active_chairs:
             raise ValueError("该运行仍在执行，不能重复启动团队讨论。")
+        config_paths = self._discussion_configs(run_dir)
+        manifest_path = run_dir / ".workbench_run.json"
+        if manifest_path.exists():
+            self._update_manifest(
+                manifest_path,
+                status="running",
+                status_source="mdt_discussion",
+                status_updated_at=self._now(),
+                error=None,
+            )
         task = asyncio.create_task(
-            self._execute_discussion(run_id, run_dir, self._discussion_configs(run_dir)),
+            self._execute_discussion(run_id, run_dir, config_paths),
             name=f"discussion:{run_id}",
         )
         self.active_discussions.add(run_id)
@@ -165,7 +185,13 @@ class RunOrchestrator:
         manifest = self._read_json(manifest_path)
         case_id = manifest["case_id"]
         configs = manifest["configs"]
-        self._update_manifest(manifest_path, status="running", started_at=self._now())
+        self._update_manifest(
+            manifest_path,
+            status="running",
+            status_source="run",
+            started_at=self._now(),
+            status_updated_at=self._now(),
+        )
         self.events.append(run_id, "run_started", {"case_id": case_id}, stage="run")
         try:
             await self._stage(
@@ -220,7 +246,13 @@ class RunOrchestrator:
                 self.active_chairs.discard(run_id)
 
         except asyncio.CancelledError:
-            self._update_manifest(manifest_path, status="cancelled", finished_at=self._now())
+            self._update_manifest(
+                manifest_path,
+                status="cancelled",
+                status_source="run",
+                finished_at=self._now(),
+                status_updated_at=self._now(),
+            )
             self.events.append(run_id, "run_cancelled", {}, stage="run")
             raise
         except Exception as error:
@@ -235,7 +267,12 @@ class RunOrchestrator:
                 },
             )
             self._update_manifest(
-                manifest_path, status="failed", finished_at=self._now(), error=str(error)
+                manifest_path,
+                status="failed",
+                status_source="run",
+                finished_at=self._now(),
+                status_updated_at=self._now(),
+                error=str(error),
             )
             self.events.append(
                 run_id,
@@ -244,7 +281,13 @@ class RunOrchestrator:
                 stage="run",
             )
             return
-        self._update_manifest(manifest_path, status="completed", finished_at=self._now())
+        self._update_manifest(
+            manifest_path,
+            status="completed",
+            status_source="run",
+            finished_at=self._now(),
+            status_updated_at=self._now(),
+        )
         self.events.append(run_id, "run_completed", {}, stage="run")
 
     async def _stage(
@@ -290,6 +333,7 @@ class RunOrchestrator:
     async def _execute_chair(
         self, run_id: str, run_dir: Path, config_path: Path
     ) -> None:
+        manifest_path = run_dir / ".workbench_run.json"
         self.events.append(
             run_id,
             "manual_stage_started",
@@ -309,8 +353,26 @@ class RunOrchestrator:
                 self.catalog.case_id(run_dir),
                 config_path,
             )
-        except Exception:
+        except Exception as error:
+            if manifest_path.exists():
+                self._update_manifest(
+                    manifest_path,
+                    status="failed",
+                    status_source="mdt_chair",
+                    finished_at=self._now(),
+                    status_updated_at=self._now(),
+                    error=str(error),
+                )
             return
+        if manifest_path.exists():
+            self._update_manifest(
+                manifest_path,
+                status="completed",
+                status_source="mdt_chair",
+                finished_at=self._now(),
+                status_updated_at=self._now(),
+                error=None,
+            )
         self.events.append(
             run_id,
             "manual_stage_completed",
@@ -322,6 +384,7 @@ class RunOrchestrator:
     async def _execute_discussion(
         self, run_id: str, run_dir: Path, config_paths: dict[str, Path]
     ) -> None:
+        manifest_path = run_dir / ".workbench_run.json"
         self.events.append(
             run_id,
             "manual_stage_started",
@@ -341,8 +404,26 @@ class RunOrchestrator:
                 self.catalog.case_id(run_dir),
                 config_paths,
             )
-        except Exception:
+        except Exception as error:
+            if manifest_path.exists():
+                self._update_manifest(
+                    manifest_path,
+                    status="failed",
+                    status_source="mdt_discussion",
+                    finished_at=self._now(),
+                    status_updated_at=self._now(),
+                    error=str(error),
+                )
             return
+        if manifest_path.exists():
+            self._update_manifest(
+                manifest_path,
+                status="completed",
+                status_source="mdt_discussion",
+                finished_at=self._now(),
+                status_updated_at=self._now(),
+                error=None,
+            )
         self.events.append(
             run_id,
             "manual_stage_completed",

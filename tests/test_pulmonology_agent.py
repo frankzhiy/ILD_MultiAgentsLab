@@ -256,8 +256,8 @@ def test_stage_schema_exposes_only_evidence_ids_for_pointer():
 
     assert set(schema["$defs"]["EvidencePointer"]["properties"]) == {"evidence_ids"}
     evidence_ids = schema["$defs"]["EvidencePointer"]["properties"]["evidence_ids"]
-    assert evidence_ids["maxItems"] == 1
-    assert "只填写一个" in evidence_ids["description"]
+    assert "maxItems" not in evidence_ids
+    assert "一个 Graph Unit" in evidence_ids["description"]
     review_schema = schema["$defs"]["InitialFoundationReview"]
     assert {"domain", "status", "rationale"}.issubset(review_schema["required"])
     assert set(review_schema["properties"]["status"]["enum"]) == {

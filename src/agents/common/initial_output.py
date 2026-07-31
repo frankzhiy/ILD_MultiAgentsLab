@@ -41,6 +41,32 @@ AssessmentType = Literal[
     "etiologic_association",
     "other",
 ]
+EvidenceDirection = Literal["supports", "weakens", "neutral"]
+EvidenceFunction = Literal[
+    "foundational",
+    "discriminating",
+    "qualifying",
+    "background",
+]
+
+LEGACY_EVIDENCE_ROLE_RELATIONS = {
+    "supporting": ("supports", "foundational"),
+    "weakening": ("weakens", "foundational"),
+    "discriminating": ("neutral", "discriminating"),
+    "qualifying": ("neutral", "qualifying"),
+    "background": ("neutral", "background"),
+}
+
+
+def legacy_role_for_evidence_relation(
+    direction: EvidenceDirection,
+    function: EvidenceFunction,
+) -> str:
+    if function != "foundational":
+        return function
+    return "weakening" if direction == "weakens" else "supporting"
+
+
 class CaseEvidencePointer(BaseModel):
     """LLM selects one evidence block; source location is resolved locally."""
 
@@ -48,8 +74,10 @@ class CaseEvidencePointer(BaseModel):
 
     evidence_ids: list[str] = Field(
         min_length=1,
-        max_length=1,
-        description="只填写一个病例 evidence block ID；多个证据使用多个指针。",
+        description=(
+            "填写同一 Graph Unit 内一个或多个病例 evidence block ID；"
+            "同一证据图不要按 Evidence ID 拆成多个指针。"
+        ),
     )
     segment_id: SkipJsonSchema[str] = ""
     graph_unit_id: SkipJsonSchema[str] = ""
@@ -57,17 +85,72 @@ class CaseEvidencePointer(BaseModel):
     quote: SkipJsonSchema[str] = ""
 
 
+class EvidenceRelation(CaseEvidencePointer):
+    """One case-evidence locator with separate directional and functional meaning."""
+
+    target_claim_id: SkipJsonSchema[str] = ""
+    direction: EvidenceDirection
+    function: EvidenceFunction
+
+    @model_validator(mode="after")
+    def validate_dimensions(self):
+        if self.function == "background" and self.direction != "neutral":
+            raise ValueError("background evidence must have direction='neutral'")
+        if self.function == "foundational" and self.direction == "neutral":
+            raise ValueError("foundational evidence must support or weaken the assessment")
+        return self
+
+
 class EvidenceBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    supporting: list[CaseEvidencePointer] = Field(default_factory=list)
-    weakening: list[CaseEvidencePointer] = Field(default_factory=list)
-    discriminating: list[CaseEvidencePointer] = Field(default_factory=list)
-    background: list[CaseEvidencePointer] = Field(default_factory=list)
+    evidence_relations: list[EvidenceRelation] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_role_lists(cls, value):
+        if not isinstance(value, dict) or "evidence_relations" in value:
+            return value
+        migrated = dict(value)
+        relations = []
+        for role, (direction, function) in LEGACY_EVIDENCE_ROLE_RELATIONS.items():
+            for pointer in migrated.pop(role, []) or []:
+                relations.append(
+                    {
+                        **pointer,
+                        "direction": direction,
+                        "function": function,
+                    }
+                )
+        migrated["evidence_relations"] = relations
+        return migrated
+
+
+class SpecialtyAtomicClaim(BaseModel):
+    """One program-addressable proposition within a specialty assessment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: SkipJsonSchema[str] = ""
+    statement: str = Field(min_length=1)
 
 
 class SpecialtyAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_missing_atomic_claims(cls, value):
+        if (
+            isinstance(value, dict)
+            and "claims" not in value
+            and isinstance(value.get("statement"), str)
+        ):
+            return {
+                **value,
+                "claims": [{"statement": value["statement"]}],
+            }
+        return value
 
     assessment_id: str = Field(
         min_length=1,
@@ -81,7 +164,8 @@ class SpecialtyAssessment(BaseModel):
     status: AssessmentStatus
     medical_basis: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
-    evidence: EvidenceBundle
+    claims: list[SpecialtyAtomicClaim] = Field(min_length=1)
+    evidence: SkipJsonSchema[EvidenceBundle] = Field(default_factory=EvidenceBundle)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 

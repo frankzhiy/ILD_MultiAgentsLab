@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
-import { DiscussionWorkspace } from './DiscussionWorkspace'
+import { chairChangeSummary, DiscussionWorkspace } from './DiscussionWorkspace'
 
 vi.mock('../../api', () => ({
   api: {
@@ -215,7 +215,28 @@ describe('DiscussionWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: '运行团队讨论' }))
 
     await waitFor(() => expect(api.runDiscussion).toHaveBeenCalledWith('run-1'))
-    expect(screen.getByText(/实时显示任务分配、专科处理、证据使用和主持人更新/)).toBeInTheDocument()
+    expect(screen.getByText('新一轮团队讨论已启动')).toBeInTheDocument()
+  })
+
+  it('immediately replaces a previous failure with a stable rerun status', async () => {
+    let finishStart
+    api.discussion.mockResolvedValue({
+      ...active,
+      status: 'failed',
+      error: '上一次运行失败',
+      active_round: { ...active.active_round, status: 'failed' },
+    })
+    api.runDiscussion.mockImplementation(() => new Promise((resolve) => { finishStart = resolve }))
+    renderWorkspace()
+
+    fireEvent.click(await screen.findByRole('button', { name: '重新运行团队讨论' }))
+
+    expect(await screen.findByText('新一轮团队讨论已启动')).toBeInTheDocument()
+    expect(screen.getByText(/下方暂时保留上一次运行结果/)).toBeInTheDocument()
+    expect(screen.queryByText('团队讨论失败；已保留完成的步骤')).not.toBeInTheDocument()
+
+    finishStart({ ...active, status: 'running', error: null })
+    await waitFor(() => expect(api.runDiscussion).toHaveBeenCalledWith('run-1'))
   })
 
   it('shows task routing, evidence interpretation, chair update, and final report', async () => {
@@ -229,9 +250,10 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getByText('区分肺实质与肺血管因素。')).toBeInTheDocument()
     expect(screen.getByText('现有证据支持低氧存在，但不能量化各因素贡献。')).toBeInTheDocument()
     expect(screen.getByText('证明低氧存在，但不能单独证明病因。')).toBeInTheDocument()
-    expect(screen.getAllByText('gu-1::prop-1').length).toBeGreaterThan(0)
+    expect(screen.queryByText('gu-1::prop-1')).not.toBeInTheDocument()
     expect(screen.queryByText('E006')).not.toBeInTheDocument()
     expect(screen.getByText('主持人第 1 轮更新')).toBeInTheDocument()
+    expect(screen.getByText('首轮主持人更新，作为后续轮次的比较基线')).toBeInTheDocument()
     expect(screen.getAllByText('跨专科整合结论').length).toBeGreaterThan(1)
     expect(screen.getByText('本轮判断边界（不可评价）')).toBeInTheDocument()
     expect(screen.getByText('跨专科真实冲突')).toBeInTheDocument()
@@ -249,18 +271,33 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getByText('影像学模式')).toBeInTheDocument()
     expect(screen.getByText('缺少原始薄层 HRCT，影像模式不可评价。')).toBeInTheDocument()
     expect(screen.getByText('特发性肺纤维化')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '查看依据（2）' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '2 项来源' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /S001/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: '证据与整合依据' }))
     expect(await screen.findByText('主持人整合了呼吸科与影像科意见。')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /S001/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /(患者证据图|专科)/ }).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /S001/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: '讨论与研究审计' }))
     expect(await screen.findByText('证据与讨论客观计数')).toBeInTheDocument()
     expect(await screen.findByText('议题级决策记录')).toBeInTheDocument()
     expect(screen.getByText('冲突历史')).toBeInTheDocument()
     expect(screen.getByText('当前仅剩判断边界。')).toBeInTheDocument()
+  })
+
+  it('summarizes structural changes between chair rounds', () => {
+    const current = {
+      ...chairResult,
+      integrated_conclusions: [{ conclusion_id: 'IC001', statement: '形成新结论' }],
+      questions: [{ question_id: 'Q001', question: '原问题', status: 'closed' }],
+    }
+    const previous = {
+      ...chairResult,
+      questions: [{ question_id: 'Q001', question: '原问题', status: 'open' }],
+    }
+
+    expect(chairChangeSummary(current, previous)).toEqual(['整合结论：新增 1', '待回答问题：更新 1'])
   })
 
   it('refreshes visible task progress when a discussion event arrives', async () => {
@@ -289,6 +326,17 @@ describe('DiscussionWorkspace', () => {
     FakeEventSource.instances[0].emit('discussion_task_completed')
 
     expect(await screen.findByText(answer.answer)).toBeInTheDocument()
+    await waitFor(() => expect(api.discussion).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes discussion state when the backend event stream reconnects', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
+    api.discussion.mockResolvedValue(active)
+    renderWorkspace()
+
+    expect(await screen.findByText('专科正在使用证据形成回答…')).toBeInTheDocument()
+    await act(async () => FakeEventSource.instances[0].onopen())
+
     await waitFor(() => expect(api.discussion).toHaveBeenCalledTimes(2))
   })
 

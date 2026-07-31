@@ -20,7 +20,7 @@
 
 证据规则：
 - 原始病例事实使用 evidence ID；reference_only 支撑判断时必须有精确授权的 specialist_opinion_ids。
-- 每个 EvidencePointer 只填写一个 evidence ID。
+- 一个 EvidencePointer 表示一个 Graph Unit，可填写该图内一个或多个 evidence ID；只有跨 Graph Unit 时才使用多个指针。
 - 缺失信息不等于阴性，专科未提及不等于未做。
 - 只输出更新状态、逐域变化和简短理由。
 

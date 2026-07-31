@@ -132,7 +132,33 @@ def _split_evidence_pointers_by_unit(
             item.model_copy(deep=True, update={"evidence_ids": evidence_ids})
             for evidence_ids in grouped.values()
         )
-    value[:] = normalized
+    merged = []
+    positions: dict[tuple[str, str, str, str], int] = {}
+    for item in normalized:
+        if not isinstance(item, pointer_type) or not item.evidence_ids:
+            merged.append(item)
+            continue
+        indexed = evidence_index.get(item.evidence_ids[0])
+        graph_key = (
+            indexed[0].graph_unit.graph_unit_id
+            if indexed is not None
+            else f"unknown:{item.evidence_ids[0]}"
+        )
+        key = (
+            graph_key,
+            str(getattr(item, "target_claim_id", "")),
+            str(getattr(item, "direction", "")),
+            str(getattr(item, "function", "")),
+        )
+        if key not in positions:
+            positions[key] = len(merged)
+            merged.append(item)
+            continue
+        current = merged[positions[key]]
+        current.evidence_ids = list(
+            dict.fromkeys([*current.evidence_ids, *item.evidence_ids])
+        )
+    value[:] = merged
 
 
 def iter_evidence_pointers(value: object, pointer_type: type[BaseModel]) -> Iterator[BaseModel]:

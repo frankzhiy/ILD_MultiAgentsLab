@@ -4,6 +4,7 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any
 
+from src.agents.common.initial_output import LEGACY_EVIDENCE_ROLE_RELATIONS
 from src.agents.mdt_chair.models import (
     ChairEvidenceBundle,
     MDTChairIntegration,
@@ -37,14 +38,10 @@ def append_round_responses(
         assessments = specialty_output["specialty_assessments"]
         assessment_items = assessments["assessments"]
         for answer in response.answers:
-            evidence = {
-                "supporting": [],
-                "weakening": [],
-                "discriminating": [],
-                "background": [],
-            }
+            evidence = {"evidence_relations": []}
             for use in answer.evidence_uses:
-                evidence[use.effect].append({
+                direction, function = LEGACY_EVIDENCE_ROLE_RELATIONS[use.effect]
+                evidence["evidence_relations"].append({
                     "segment_id": use.segment_id,
                     "graph_unit_id": use.graph_unit_id,
                     "evidence_ids": use.evidence_ids,
@@ -55,6 +52,8 @@ def append_round_responses(
                         if node.get("node_id")
                     ],
                     "quote": use.quote,
+                    "direction": direction,
+                    "function": function,
                 })
             status = (
                 "not_assessable"
@@ -407,17 +406,22 @@ def reconcile_discussion_references(
         )
         for citation in item.source_citations
     }
+    previous_relation_refs = {
+        ref
+        for question in previous.questions
+        for ref in question.related_evidence_need_source_refs
+    }
 
     def rebase(refs: list[str]) -> list[str]:
         rebased = []
         for ref in refs:
             citation = previous_citations.get(ref)
-            if citation is None:
+            if citation is None and ref not in previous_relation_refs:
                 raise ValueError(f"Cannot verify prior specialty source ref: {ref}")
             current = bundle.source_registry.get(ref)
             if current is None:
                 raise ValueError(f"Prior specialty source is absent from current round: {ref}")
-            if (
+            if citation is not None and (
                 current.specialty,
                 current.source_type,
                 current.source_path,

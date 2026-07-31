@@ -8,6 +8,7 @@ from typing import Any, Callable
 from src.agents.common.prompt_contract import specialty_output_contract
 from src.agents.common.initial_output import SpecialtyInitialConsultResult, SpecialtyInitialOutput
 from src.agents.common.initial_output_validation import (
+    assign_specialty_initial_evidence,
     formal_evidence_schema_constraints,
     validate_specialty_initial_output,
 )
@@ -235,6 +236,15 @@ class ThoracicRadiologyAgent:
                 case_input, diagnostic_evidence_ids
             ),
         )
+        formal_output, evidence_trace = assign_specialty_initial_evidence(
+            formal_output,
+            case_input,
+            SpecialistTarget.THORACIC_RADIOLOGY,
+            self.generator,
+            internal_state,
+            diagnostic_evidence_ids,
+        )
+        output_trace["evidence_assignment"] = evidence_trace
         return SpecialtyInitialConsultResult(
             internal_state=internal_state,
             formal_output=formal_output,
@@ -286,6 +296,7 @@ class ThoracicRadiologyAgent:
         contract = specialty_output_contract(
             pointer_style="radiology_proposition",
             initial_stage=stage.startswith("initial_"),
+            defer_case_evidence=stage == "initial_reasoning_output",
         )
         prompt = f"{prompt}\n\n{contract}"
 

@@ -4,6 +4,10 @@
 
 1. 专科初步判断台账 `claim_groups`
    - 把每条 `specialty_assessments` 拆成最小判断；每个原子判断只引用它来自的一个 `source_ref`。
+   - 每个原子判断必须在 `evidence_links` 中重新核定真正使用的患者证据。只可选择其来源 assessment 的 `evidence_options` 已列出的 `evidence_ref`，不得把来源 assessment 的全部选项机械复制给每个原子判断。即使 `medical_basis` 提到了其他病例事实，也不得从其他 assessment 补选未声明的证据；应改由拥有该证据的 assessment 形成独立原子判断。
+   - `relation` 严格区分：`supports` 直接支持当前原子判断；`contradicts` 与当前原子判断直接冲突；`discriminates` 用于区分明确候选解释并填写 `comparison_target`；`qualifies` 只限定判断强度、范围或分型能力；`background` 只提供语境。
+   - 同一 `evidence_ref` 对同一原子判断只能承担一个主要关系。证据不足以推出更具体结论不等于反证；缺失资料不是患者阴性证据，必须进入判断边界或证据需求。
+   - Evidence ID、命题和图节点只是同一患者证据图中的定位层级，不得作为多份独立证据重复列入。
    - 分别写清判断对象 `subject`、判断维度 `dimension`、时间范围 `timeframe`、证据条件 `evidence_scope`。
    - `professional_level` 必须区分：病例观察 `observation`、形态模式 `morphologic_pattern`、疾病诊断 `disease_diagnosis`、病因归属 `etiologic_attribution`、严重度或病程 `severity_or_trajectory`、可评价性 `assessability`。模式不能直接等同疾病诊断。
    - `position_role` 必须区分：当前首选 `preferred`、重要替代解释 `alternative`、暂定可能 `tentative`、判断边界 `boundary`。只有正式输出中作为当前主要判断且 `status=supported/favored` 的结论才能标为 `preferred`；`possible` 不能仅因措辞积极而升级为首选。
@@ -34,7 +38,7 @@
 
 输入的每条项目都有 `source_type`，必须按其类型引用：`specialty_assessment` 是专科初步判断，`interspecialty_question` 是需其他专科回答的问题，`assessment_evidence_need` 是初步判断产生的资料缺口。`answer_links.source_refs` 和 `coverage_source_refs` 只能放 `specialty_assessment`；`assessment_evidence_need` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
 
-不要生成任何 ID；程序会统一回填。不要查询或引用指南，不使用专科内部 `clinical_reasoning`。只使用输入中存在的 `source_ref`，只返回符合 schema 的 JSON。
+不要生成任何 ID；程序会统一回填。不要查询或引用指南，不使用专科内部 `clinical_reasoning`。只使用输入中存在的 `source_ref` 和 `evidence_ref`，只返回符合 schema 的 JSON。
 
 冲突检测范围：
 {{ conflict_detection_scope }}

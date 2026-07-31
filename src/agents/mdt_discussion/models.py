@@ -23,7 +23,13 @@ Specialty = Literal[
     "pathology",
 ]
 IssueType = Literal["question", "conflict"]
-EvidenceEffect = Literal["supporting", "weakening", "discriminating", "background"]
+EvidenceEffect = Literal[
+    "supporting",
+    "weakening",
+    "discriminating",
+    "qualifying",
+    "background",
+]
 ReviewOutcome = Literal[
     "accept_answer",
     "accept_boundary",
@@ -358,7 +364,9 @@ class ResearchAuditMetrics(BaseModel):
 class MDTFinalReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: SkipJsonSchema[Literal["mdt_final_report.v2"]] = "mdt_final_report.v2"
+    schema_version: SkipJsonSchema[
+        Literal["mdt_final_report.v2", "mdt_final_report.v3"]
+    ] = "mdt_final_report.v3"
     case_id: SkipJsonSchema[str] = ""
     consensus_status: SkipJsonSchema[Literal[
         "consensus_reached",

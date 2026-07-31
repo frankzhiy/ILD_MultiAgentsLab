@@ -7,9 +7,9 @@
 - 影像或病理模式不得直接等同于疾病；未获正式专科确认的资料只能作为背景或待回答问题。
 - 严重度、急慢性状态、继发病因、肺功能/支气管镜与进展判断应在确有资料时纳入。
 - 不输出概率、百分比、通用 confidence、证据更新、跨专科冲突或治疗方案。
-- EvidenceBundle 的 supporting/weakening/discriminating 只能引用 diagnostic_evidence_units；background 和 related_evidence 可引用全部输入证据。每个病例证据指针只填写一个 evidence_id。
+- 将每项 assessment 拆成 `claims` 中可独立核查的原子医学判断；不要在本阶段选择病例证据。程序将在下一阶段为每个 claim 生成唯一证据槽位并回填 evidence_relations。
 - 专科问题只用于请其他专科解释、澄清或限定其现有专业观点；索取影像、报告、标本、检查或病史必须写入数据缺口。没有必要时问题列表可以为空；两者都必须说明决策影响。
-- 每条专科初步判断必须把与该判断有关的候选比较、反证、时间一致性和边界压缩写入 medical_basis、evidence 与 limitations，不另设临床推理论证板块。
+- 每条专科初步判断必须把与该判断有关的候选比较、反证、时间一致性和边界压缩写入 claims、medical_basis 与 limitations，不另设临床推理论证板块。
 - 每个问题用 related_assessment_ids 指向促成提问的本专科初步判断；每个证据缺口也用 related_assessment_ids 标明它限制的初步判断。
 
 只返回符合 JSON Schema 的对象，顶层只能有 specialty_assessments 和 interspecialty_questions：

@@ -434,6 +434,7 @@ export function ChairWorkspace({ runId, run }) {
     onSuccess: (value) => {
       queryClient.setQueryData(['chair', runId], value)
       queryClient.invalidateQueries({ queryKey: ['chair', runId] })
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
     },
   })
 

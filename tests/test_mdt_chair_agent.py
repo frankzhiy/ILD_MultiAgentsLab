@@ -344,6 +344,37 @@ def test_prompt_projection_excludes_internal_reasoning_and_runtime_guidelines():
     assert "guideline_evidence" not in compact
     assert "supporting" in compact
     assert any(bundle.source_guidelines.values())
+    assert "evidence_registry" not in bundle.prompt_input
+    for specialty in bundle.prompt_input["specialties"]:
+        for assessment in specialty["specialty_assessments"]:
+            expected = {
+                evidence_ref
+                for values in bundle.source_evidence[assessment["source_ref"]].values()
+                for evidence_ref in values
+            }
+            assert {
+                option["evidence_ref"]
+                for option in assessment["evidence_options"]
+            } == expected
+
+
+def test_chair_projects_relation_dimensions_into_legacy_evidence_groups():
+    values = outputs()
+    values["pulmonology"]["professional_conclusions"]["conclusions"][0]["evidence"] = {
+        "evidence_relations": [{
+            **pointer(),
+            "direction": "supports",
+            "function": "qualifying",
+        }]
+    }
+
+    bundle = build_chair_prompt_bundle("case-1", values)
+    pulmonary = source_ref(bundle, "pulmonology", "specialty_assessment")
+
+    assert bundle.source_evidence[pulmonary]["supporting"] == []
+    assert bundle.source_evidence[pulmonary]["qualifying"] == [
+        "seg_001_gu_001_ev_001"
+    ]
 
 
 def test_prompt_projection_labels_each_specialty_source_type():
@@ -377,7 +408,7 @@ def test_program_backfills_v5_ids_provenance_and_separates_boundaries():
     result = resolve_chair_references(
         MDTChairIntegration.model_validate(integration_payload(bundle)), bundle, ledger
     )
-    assert result.schema_version == "mdt_chair.v8"
+    assert result.schema_version == "mdt_chair.v9"
     assert result.case_id == "case-1"
     assert result.integrated_conclusions[0].conclusion_id == "IC001"
     assert result.integrated_conclusions[0].supporting_specialties == ["pulmonology"]
@@ -388,6 +419,100 @@ def test_program_backfills_v5_ids_provenance_and_separates_boundaries():
     ]
     assert result.questions[0].question_id == "Q001"
     assert [item.need_id for item in result.evidence_needs] == ["EN001", "EN002"]
+
+
+def test_chair_conclusion_uses_only_atomic_claim_evidence_links():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    evidence_ref = bundle.source_evidence[pulmonary]["supporting"][0]
+    semantic_payload = ledger_payload(bundle)
+    semantic_payload["claim_groups"][0]["claims"][0]["evidence_links"] = [{
+        "evidence_ref": evidence_ref,
+        "relation": "supports",
+        "rationale": "该患者证据图直接支持纤维化性 ILD 框架这一原子判断。",
+    }]
+    ledger = resolve_semantic_ledger(
+        ChairSemanticLedger.model_validate(semantic_payload), bundle
+    )
+    synthesis_payload = integration_payload(bundle)
+    radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
+    synthesis_payload["integrated_conclusions"][0]["source_refs"] = [radiology]
+    synthesis_payload["integrated_conclusions"][0]["atomic_claim_ids"] = [
+        "T001-A001"
+    ]
+
+    result = resolve_chair_references(
+        MDTChairIntegration.model_validate(synthesis_payload), bundle, ledger
+    )
+
+    conclusion = result.integrated_conclusions[0]
+    assert conclusion.atomic_claim_ids == ["T001-A001"]
+    assert conclusion.source_refs == [pulmonary]
+    assert len(conclusion.evidence.links) == 1
+    assert conclusion.evidence.links[0].target_claim_id == "T001-A001"
+    assert conclusion.evidence.links[0].evidence_ref == evidence_ref
+    assert conclusion.evidence.links[0].relation == "supports"
+    assert [item.evidence_ref for item in conclusion.evidence.supporting] == [
+        evidence_ref
+    ]
+    assert conclusion.evidence.weakening == []
+
+
+def test_semantic_ledger_rejects_two_relations_for_same_claim_locator():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    evidence_ref = bundle.source_evidence[pulmonary]["supporting"][0]
+    payload = ledger_payload(bundle)
+    payload["claim_groups"][0]["claims"][0]["evidence_links"] = [
+        {
+            "evidence_ref": evidence_ref,
+            "relation": "supports",
+            "rationale": "直接支持当前原子判断。",
+        },
+        {
+            "evidence_ref": evidence_ref,
+            "relation": "qualifies",
+            "rationale": "又被错误地标作限定。",
+        },
+    ]
+
+    with pytest.raises(ValueError, match="multiple relations"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_semantic_ledger_rejects_evidence_from_another_assessment():
+    values = outputs()
+    foreign_pointer = pointer("另一条病例证据。")
+    foreign_pointer.update({
+        "segment_id": "seg_999",
+        "graph_unit_id": "seg_999_gu_001",
+        "evidence_ids": ["seg_999_gu_001_ev_001"],
+        "node_ids": [],
+    })
+    values["rheumatology"]["professional_conclusions"]["conclusions"][0][
+        "evidence"
+    ]["supporting"] = [foreign_pointer]
+    bundle = build_chair_prompt_bundle("case-1", values)
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    allowed = {
+        evidence_ref
+        for values in bundle.source_evidence[pulmonary].values()
+        for evidence_ref in values
+    }
+    foreign = next(
+        evidence_ref
+        for evidence_ref in bundle.evidence_registry
+        if evidence_ref not in allowed
+    )
+    payload = ledger_payload(bundle)
+    payload["claim_groups"][0]["claims"][0]["evidence_links"] = [{
+        "evidence_ref": foreign,
+        "relation": "supports",
+        "rationale": "该证据属于另一条专科判断。",
+    }]
+
+    with pytest.raises(ValueError, match="outside its specialty source"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
 
 
 def test_assessment_boundary_accepts_unresolved_native_question_source():
@@ -413,6 +538,13 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
         initial_bundle,
         resolved_ledger(initial_bundle),
     )
+    relation_only_ref = previous.evidence_needs.pop(0).source_refs[0]
+    previous.questions[0].related_evidence_need_source_refs.append(relation_only_ref)
+    assert relation_only_ref not in {
+        citation.source_ref
+        for item in previous.questions
+        for citation in item.source_citations
+    }
     answer = SpecialtyTaskAnswer(
         answer_id="R01-Q001-thoracic_radiology-A",
         task_id="R01-Q001-thoracic_radiology",
@@ -476,6 +608,7 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
         current_bundle.source_registry[ref].source_type
         for ref in question.related_evidence_need_source_refs
     } <= {"interspecialty_question", "assessment_evidence_need"}
+    assert relation_only_ref in question.related_evidence_need_source_refs
     assert all(
         len({citation.specialty for citation in item.source_citations}) == 1
         for item in question.answers
@@ -1396,6 +1529,10 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
 
 def test_agent_uses_ledger_then_integration_structured_calls():
     bundle = build_chair_prompt_bundle("case-1", outputs())
+    source_claim_id = "pulm_assess_001_c001"
+    bundle.prompt_input["specialties"][0]["specialty_assessments"][0]["claims"] = [
+        {"claim_id": source_claim_id, "statement": "专科内部原子判断。"}
+    ]
 
     class FakeLLM:
         supports_json_schema = True
@@ -1423,8 +1560,24 @@ def test_agent_uses_ledger_then_integration_structured_calls():
     assert result.integrated_conclusions[0].conclusion_id == "IC001"
     assert trace["semantic_ledger"]["claim_groups"][0]["topic_id"] == "T001"
     assert "topic_ledger_chars" in trace["prompt_components"]
+    assert source_claim_id in llm.calls[0][0][-1].content
+    assert source_claim_id not in llm.calls[1][0][-1].content
     ledger_schema = llm.calls[0][1]["response_format"]["json_schema"]["schema"]
     integration_schema = llm.calls[1][1]["response_format"]["json_schema"]["schema"]
+    pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
+    pulmonary_claim_schema = next(
+        choice
+        for choice in ledger_schema["$defs"]["LedgerAtomicClaim"]["anyOf"]
+        if choice["properties"]["source_ref"]["enum"] == [pulmonary]
+    )
+    allowed_pulmonary_evidence = sorted(
+        evidence_ref
+        for values in bundle.source_evidence[pulmonary].values()
+        for evidence_ref in values
+    )
+    assert pulmonary_claim_schema["properties"]["evidence_links"]["items"][
+        "properties"
+    ]["evidence_ref"]["enum"] == allowed_pulmonary_evidence
     assert ledger_schema["$defs"]["LedgerQuestionRoute"]["properties"][
         "source_refs"
     ]["items"]["enum"] == [

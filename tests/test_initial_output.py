@@ -4,7 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from src.agents.common.initial_output import SpecialtyInitialOutput
-from src.agents.common.initial_output_validation import validate_specialty_initial_output
+from src.agents.common.initial_output_validation import (
+    assign_specialty_initial_evidence,
+    validate_specialty_initial_output,
+)
+from src.llm.structured import json_schema_response_format
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 
 
@@ -13,12 +17,7 @@ def pointer(evidence_id: str = "ev_1") -> dict:
 
 
 def evidence_bundle() -> dict:
-    return {
-        "supporting": [],
-        "weakening": [],
-        "discriminating": [],
-        "background": [],
-    }
+    return {"evidence_relations": []}
 
 
 def assessment(
@@ -246,3 +245,248 @@ def test_formal_output_schema_forbids_confidence_result_fields():
 
     with pytest.raises(ValidationError, match="confidence"):
         SpecialtyInitialOutput.model_validate(payload)
+
+
+def test_same_graph_unit_relations_are_merged_with_all_locators(monkeypatch):
+    stub_evidence(monkeypatch)
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["evidence"]["evidence_relations"] = [
+        {
+            "segment_id": "seg_001",
+            "graph_unit_id": "gu_001",
+            "evidence_ids": ["ev_1"],
+            "node_ids": ["node_1"],
+            "quote": "双肺间质性增粗；",
+            "direction": "supports",
+            "function": "foundational",
+        },
+        {
+            "segment_id": "seg_001",
+            "graph_unit_id": "gu_001",
+            "evidence_ids": ["ev_2"],
+            "node_ids": ["node_2"],
+            "quote": "伴局灶性肺实质异常。",
+            "direction": "supports",
+            "function": "foundational",
+        },
+    ]
+    output = SpecialtyInitialOutput.model_validate(payload)
+
+    validated = validate_specialty_initial_output(
+        output,
+        SimpleNamespace(),
+        SpecialistTarget.PULMONOLOGY,
+        diagnostic_evidence_ids={"ev_1", "ev_2"},
+    )
+
+    relations = validated.specialty_assessments.assessments[0].evidence.evidence_relations
+    assert len(relations) == 1
+    assert relations[0].graph_unit_id == "gu_001"
+    assert relations[0].evidence_ids == ["ev_1", "ev_2"]
+    assert relations[0].node_ids == ["node_1", "node_2"]
+
+
+def test_one_relation_can_express_supporting_direction_and_qualifying_function(monkeypatch):
+    stub_evidence(monkeypatch)
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["evidence"] = {
+        "evidence_relations": [{
+            "segment_id": "seg_001",
+            "graph_unit_id": "gu_001",
+            "evidence_ids": ["ev_1"],
+            "quote": "胸部CT：双肺间质性增粗。",
+            "direction": "supports",
+            "function": "qualifying",
+        }]
+    }
+    output = SpecialtyInitialOutput.model_validate(payload)
+
+    validated = validate_specialty_initial_output(
+        output,
+        SimpleNamespace(),
+        SpecialistTarget.PULMONOLOGY,
+        diagnostic_evidence_ids={"ev_1"},
+    )
+
+    relation = validated.specialty_assessments.assessments[0].evidence.evidence_relations[0]
+    assert relation.direction == "supports"
+    assert relation.function == "qualifying"
+
+
+def test_same_evidence_locator_cannot_appear_in_two_relations(monkeypatch):
+    stub_evidence(monkeypatch)
+    payload = output_payload()
+    shared = {
+        "segment_id": "seg_001",
+        "graph_unit_id": "gu_001",
+        "evidence_ids": ["ev_1"],
+        "quote": "胸部CT：双肺间质性增粗。",
+    }
+    payload["specialty_assessments"]["assessments"][0]["evidence"] = {
+        "evidence_relations": [
+            {**shared, "direction": "supports", "function": "foundational"},
+            {**shared, "direction": "neutral", "function": "qualifying"},
+        ]
+    }
+    output = SpecialtyInitialOutput.model_validate(payload)
+
+    with pytest.raises(ValueError, match="must appear once"):
+        validate_specialty_initial_output(
+            output,
+            SimpleNamespace(),
+            SpecialistTarget.PULMONOLOGY,
+            diagnostic_evidence_ids={"ev_1"},
+        )
+
+
+def test_fixed_slots_allow_one_locator_once_per_atomic_claim(monkeypatch):
+    unit = SimpleNamespace(
+        may_support_diagnostic_claim=True,
+        clinical_propositions=SimpleNamespace(
+            evidence_blocks=[
+                SimpleNamespace(evidence_id="ev_1", text="血气分析未见二氧化碳潴留。")
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation.case_units",
+        lambda _: {"gu_001": unit},
+    )
+    def resolve(value, *_):
+        for item in value.specialty_assessments.assessments:
+            for relation in item.evidence.evidence_relations:
+                relation.graph_unit_id = "gu_001"
+
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation.resolve_evidence_pointers",
+        resolve,
+    )
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation.validate_pointers",
+        lambda *args: None,
+    )
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["claims"] = [
+        {"statement": "未见二氧化碳潴留。"},
+        {"statement": "总体严重度只能部分评价。"},
+    ]
+    output = SpecialtyInitialOutput.model_validate(payload)
+
+    class Generator:
+        def generate(self, *, schema_model, **kwargs):
+            schema = json_schema_response_format(
+                schema_model,
+                "evidence_assignments",
+                dependent_field_constraints=kwargs["dependent_field_constraints"],
+            )["json_schema"]["schema"]
+            valid_pairs = {
+                (direction, function)
+                for alternative in schema["$defs"]["_EvidenceSlotDecision"]["anyOf"]
+                for direction in alternative["properties"]["direction"]["enum"]
+                for function in alternative["properties"]["function"]["enum"]
+            }
+            assert ("neutral", "background") in valid_pairs
+            assert ("supports", "foundational") in valid_pairs
+            assert ("supports", "background") not in valid_pairs
+            assert ("neutral", "foundational") not in valid_pairs
+            return schema_model.model_validate({
+                "slot_0001": {
+                    "direction": "supports",
+                    "function": "foundational",
+                },
+                "slot_0002": {
+                    "direction": "neutral",
+                    "function": "qualifying",
+                },
+            }), {"validated": True}
+
+    validated, trace = assign_specialty_initial_evidence(
+        output,
+        SimpleNamespace(),
+        SpecialistTarget.PULMONOLOGY,
+        Generator(),
+    )
+
+    relations = validated.specialty_assessments.assessments[0].evidence.evidence_relations
+    assert trace["slot_count"] == 2
+    assert trace["batch_count"] == 1
+    assert trace["batches"][0]["validated"] is True
+    assert len(relations) == 2
+    assert {relation.target_claim_id for relation in relations} == {
+        "assessment_001_c001",
+        "assessment_001_c002",
+    }
+    assert {relation.evidence_ids[0] for relation in relations} == {"ev_1"}
+
+
+def test_fixed_slots_are_split_into_bounded_unique_batches(monkeypatch):
+    unit = SimpleNamespace(
+        may_support_diagnostic_claim=True,
+        clinical_propositions=SimpleNamespace(
+            evidence_blocks=[
+                SimpleNamespace(evidence_id=f"ev_{number}", text=f"证据{number}")
+                for number in range(1, 4)
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation.case_units",
+        lambda _: {"gu_001": unit},
+    )
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation._MAX_EVIDENCE_SLOTS_PER_CALL",
+        2,
+    )
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation.resolve_evidence_pointers",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        "src.agents.common.initial_output_validation.validate_pointers",
+        lambda *args: None,
+    )
+    output = SpecialtyInitialOutput.model_validate(output_payload())
+
+    class Generator:
+        def __init__(self):
+            self.slot_ids = []
+
+        def generate(self, *, schema_model, **kwargs):
+            batch_slot_ids = list(schema_model.model_fields)
+            self.slot_ids.extend(batch_slot_ids)
+            return schema_model.model_validate(
+                {slot_id: None for slot_id in batch_slot_ids}
+            ), {"slot_ids": batch_slot_ids}
+
+    generator = Generator()
+    _, trace = assign_specialty_initial_evidence(
+        output,
+        SimpleNamespace(),
+        SpecialistTarget.PULMONOLOGY,
+        generator,
+    )
+
+    assert generator.slot_ids == ["slot_0001", "slot_0002", "slot_0003"]
+    assert len(generator.slot_ids) == len(set(generator.slot_ids))
+    assert trace["slot_count"] == 3
+    assert trace["batch_count"] == 2
+
+
+def test_legacy_evidence_role_lists_migrate_to_relations():
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["evidence"] = {
+        "supporting": [pointer()],
+        "weakening": [],
+        "discriminating": [],
+        "qualifying": [],
+        "background": [],
+    }
+
+    output = SpecialtyInitialOutput.model_validate(payload)
+    evidence = output.model_dump(mode="json")["specialty_assessments"]["assessments"][0][
+        "evidence"
+    ]
+
+    assert set(evidence) == {"evidence_relations"}
+    assert evidence["evidence_relations"][0]["direction"] == "supports"
+    assert evidence["evidence_relations"][0]["function"] == "foundational"

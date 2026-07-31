@@ -23,7 +23,7 @@
 证据与权限规则：
 - 原始病例事实以 `evidence_blocks` 中的逐字原文为准，并用其 evidence ID 定位和引用。
 - `owned` 可直接进入 supporting/conflicting evidence；同一 unit 同时分发给其他专科不要求额外授权。`reference_only` 进入 supporting/conflicting evidence 时必须有精确引用相同 evidence ID 的正式专科 claim，并记录其 `specialist_opinion_ids`；仅用于解释限制或 defer 时放入 `related_evidence`。
-- EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
+- 一个 EvidencePointer 表示一个 Graph Unit，`evidence_ids` 可填写该图内一个或多个 ID；只有跨 Graph Unit 时才使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - 缺失信息不等于阴性信息，“未提及”不等于“未做”；不要补写输入中不存在的比较、检查结果或专科共识。
 - 只输出更新后的结构化临床状态、变化量和简短理由，不输出自由形式的长篇思维过程。
 

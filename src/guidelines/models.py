@@ -35,18 +35,35 @@ class GuidelineChunk(BaseModel):
     document_sha256: str = Field(min_length=64, max_length=64)
 
 
+class GuidelineQuoteUnit(BaseModel):
+    """An immutable, program-generated quote locator within one guideline chunk."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quote_unit_id: str = Field(min_length=1)
+    chunk_id: str = Field(min_length=1)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    text: str = Field(min_length=1)
+
+
 class GuidelineEvidencePointer(BaseModel):
-    """The LLM selects a retrieved chunk; source metadata is resolved locally."""
+    """The LLM selects quote units; exact source text is resolved locally."""
 
     model_config = ConfigDict(extra="forbid")
 
     chunk_id: str = Field(min_length=1)
-    quote: str = Field(
-        min_length=12,
-        description="从对应指南片段逐字复制、直接支持当前判断的连续完整原文。",
+    quote_unit_ids: list[str] = Field(
+        default_factory=list,
+        min_length=1,
+        description=(
+            "选择对应指南片段中一个或多个直接相关的 quote_unit_id；"
+            "程序按连续区间拆分并回填 quote 原文和字符偏移。"
+        ),
     )
     relevance: str = Field(min_length=1, description="该段指南与当前判断的关系。")
     application: str = Field(min_length=1, description="该段指南如何用于当前患者。")
+    quote: SkipJsonSchema[str] = ""
     guideline_id: SkipJsonSchema[str] = ""
     title: SkipJsonSchema[str] = ""
     organization: SkipJsonSchema[str] = ""

@@ -53,6 +53,21 @@ def not_found(error: FileNotFoundError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(error))
 
 
+def discussion_result(run_id: str, *, accepted: bool = False) -> dict:
+    result = catalog.discussion(run_id)
+    running = accepted
+    if not running and orchestrator.discussion_running(run_id):
+        summary = catalog.run_summary(catalog.run_dir(run_id))
+        running = (
+            summary["status"] == "running"
+            and summary["status_source"] == "mdt_discussion"
+        )
+    if running:
+        result["status"] = "running"
+        result["error"] = None
+    return result
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -168,10 +183,7 @@ async def run_chair(run_id: str) -> dict:
 @app.get("/api/runs/{run_id}/discussion")
 def discussion(run_id: str) -> dict:
     try:
-        result = catalog.discussion(run_id)
-        if result["status"] != "failed" and orchestrator.discussion_running(run_id):
-            result["status"] = "running"
-        return result
+        return discussion_result(run_id)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
 
@@ -180,9 +192,7 @@ def discussion(run_id: str) -> dict:
 async def run_discussion(run_id: str) -> dict:
     try:
         orchestrator.start_discussion(run_id)
-        result = catalog.discussion(run_id)
-        result["status"] = "running"
-        return result
+        return discussion_result(run_id, accepted=True)
     except FileNotFoundError as error:
         raise not_found(error) from error
     except ValueError as error:

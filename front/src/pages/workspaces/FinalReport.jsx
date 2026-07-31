@@ -70,7 +70,24 @@ function LabeledTag({ label, value, labels }) {
 }
 
 function caseEvidence(trace) {
-  return Object.values(trace?.evidence || {}).flat()
+  const evidence = trace?.evidence || {}
+  if (evidence.links?.length) {
+    return evidence.links.map((item) => ({
+      ...item,
+      relations: [{
+        relation: item.relation,
+        target_claim_id: item.target_claim_id,
+        rationale: item.rationale,
+        comparison_target: item.comparison_target,
+      }],
+    }))
+  }
+  return Object.entries(evidence)
+    .filter(([role]) => role !== 'links')
+    .flatMap(([role, items]) => (items || []).map((item) => ({
+      ...item,
+      relations: [{ relation: role, legacy: true }],
+    })))
 }
 
 function ClinicalLayer({ report }) {

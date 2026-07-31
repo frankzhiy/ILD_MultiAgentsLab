@@ -23,7 +23,7 @@
 证据使用规则：
 - `evidence_blocks` 是按 graph unit 顺序保存的逐字病例原文，也是定位和引用依据。
 - 证据权限以 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `shared_context` 都可进入首轮诊断性判断的 supporting/conflicting evidence；同一 `owned` unit 分发给多个专科不改变权限。`reference_only` 只能生成 `related_evidence`、待确认观察和专科问题。
-- 每项实际临床判断必须引用证据。每个 EvidencePointer 的 `evidence_ids` 只填写一个 ID；多个证据使用多个 EvidencePointer。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
+- 每项实际临床判断必须引用证据。一个 EvidencePointer 表示一个 Graph Unit，`evidence_ids` 可填写该图内一个或多个 ID；只有跨 Graph Unit 时才使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - `related_evidence` 只用于限制、defer 和待确认上下文，不能作为 working diagnosis 或鉴别诊断的支持/冲突证据。
 - 首轮没有可被呼吸科整合的正式专科意见，所有 `specialist_opinion_ids` 必须为空列表。
 - 数据缺口的 `related_evidence` 只引用用于说明现有信息背景的证据，不把证据当作“缺失本身”的证明；无相关现有资料时保持空列表。

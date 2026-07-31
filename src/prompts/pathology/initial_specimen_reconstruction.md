@@ -10,7 +10,7 @@
 
 证据规则：
 - 病例逐字原文和 evidence ID 是唯一病例事实来源。
-- 每项实际来源或标本判断应引用对应 evidence；每个 EvidencePointer 只填写一个 evidence ID。
+- 每项实际来源或标本判断应引用对应 evidence；一个 EvidencePointer 表示一个 Graph Unit，可填写该图内一个或多个 evidence ID，只有跨 Graph Unit 时才使用多个指针。
 - reference_only 资料只能放入 related_evidence、待确认观察或专科问题，不能直接支撑首轮病理结论。
 - “当前输入未提供材料”属于输入可评价性说明，可以不引用病例证据，但不得改写为“患者未做活检”。
 - 本轮没有正式专科意见，所有 specialist_opinion_ids 为空。

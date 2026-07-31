@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Callable
 
+from src.agents.common.initial_output import legacy_role_for_evidence_relation
 from src.agents.mdt_chair.models import (
     ChairSemanticLedger,
     CaseEvidenceCitation,
+    ClaimEvidenceLink,
     ChairEvidenceBundle,
     CitedChairStatement,
     CrossSpecialtyConflict,
@@ -38,7 +41,20 @@ SPECIALTIES = (
     "rheumatology",
     "pathology",
 )
-EVIDENCE_ROLES = ("supporting", "weakening", "discriminating", "background")
+EVIDENCE_ROLES = (
+    "supporting",
+    "weakening",
+    "discriminating",
+    "qualifying",
+    "background",
+)
+RELATION_TO_ROLE = {
+    "supports": "supporting",
+    "contradicts": "weakening",
+    "discriminates": "discriminating",
+    "qualifies": "qualifying",
+    "background": "background",
+}
 
 
 @dataclass
@@ -80,6 +96,9 @@ def _source_ref_schema_constraints(
     if semantic_ledger is None:
         return {
             "LedgerAtomicClaim": {"source_ref": assessments},
+            "LedgerEvidenceLink": {
+                "evidence_ref": set(bundle.evidence_registry),
+            },
             "LedgerQuestionRoute": {"source_refs": questions},
             "LedgerAnswerLink": {"source_refs": assessments},
             "LedgerEvidenceNeedGroup": {
@@ -129,8 +148,20 @@ def _source_ref_schema_constraints(
         for group in semantic_ledger.evidence_need_groups
         for ref in group.coverage_source_refs
     }
+    claim_ids = {
+        disposition: {
+            claim.claim_id
+            for group in semantic_ledger.claim_groups
+            if group.disposition == disposition
+            for claim in group.claims
+        }
+        for disposition in ("integrated", "boundary", "conflict")
+    }
     constraints = {
-        "IntegratedConclusion": {"source_refs": claims["integrated"]},
+        "IntegratedConclusion": {
+            "source_refs": claims["integrated"],
+            "atomic_claim_ids": claim_ids["integrated"],
+        },
         "AssessmentBoundary": {
             "source_refs": claims["boundary"] | questions | {
                 ref
@@ -139,8 +170,12 @@ def _source_ref_schema_constraints(
                 == "interspecialty_question"
             },
             "related_evidence_need_source_refs": blocking_needs,
+            "atomic_claim_ids": claim_ids["boundary"],
         },
-        "ConflictPosition": {"source_refs": claims["conflict"]},
+        "ConflictPosition": {
+            "source_refs": claims["conflict"],
+            "atomic_claim_ids": claim_ids["conflict"],
+        },
         "CrossSpecialtyConflict": {
             "related_question_source_refs": questions,
             "related_evidence_need_source_refs": blocking_needs | refinement_needs,
@@ -158,6 +193,27 @@ def _source_ref_schema_constraints(
                 values
             )
     return constraints
+
+
+def _claim_evidence_schema_constraints(
+    bundle: ChairPromptBundle,
+) -> dict[str, list[dict[str, set[str]]]]:
+    """Bind each atomic claim source to evidence declared by that assessment."""
+
+    return {
+        "LedgerAtomicClaim": [
+            {
+                "source_ref": {source_ref},
+                "evidence_links.evidence_ref": {
+                    evidence_ref
+                    for role in EVIDENCE_ROLES
+                    for evidence_ref in bundle.source_evidence[source_ref][role]
+                },
+            }
+            for source_ref, source in sorted(bundle.source_registry.items())
+            if source.source_type == "specialty_assessment"
+        ]
+    }
 
 
 def _discussion_previous_view(
@@ -277,7 +333,10 @@ class _Registry:
         )
         self.evidence: dict[str, CaseEvidenceCitation] = {}
         self.source_evidence: dict[str, dict[str, list[str]]] = {
-            ref: {role: list(values) for role, values in evidence.items()}
+            ref: {
+                role: list(evidence.get(role, []))
+                for role in EVIDENCE_ROLES
+            }
             for ref, evidence in (
                 seed.source_evidence.items() if seed is not None else []
             )
@@ -334,6 +393,11 @@ class _Registry:
                 source_ref=ref,
                 specialty=specialty,
                 source_type=source_type,
+                source_subtype=(
+                    "discussion_answer"
+                    if (metadata or {}).get("origin") == "discussion_answer"
+                    else str((metadata or {}).get("assessment_type") or source_type)
+                ),
                 source_path=source_path,
                 quote=quote,
             )
@@ -383,11 +447,7 @@ class _Registry:
                         *value["proposition_ids"],
                     ]),
                     node_ids=_ordered_unique([*existing.node_ids, *value["node_ids"]]),
-                    quote="\n".join(_ordered_unique([
-                        item
-                        for item in [existing.quote, value["quote"]]
-                        if item
-                    ])),
+                    quote=_merge_quotes(existing.quote, value["quote"]),
                 )
         return self._evidence_keys[key]
 
@@ -523,17 +583,6 @@ def build_chair_prompt_bundle(
     prompt_input = {
         "case_id": case_id,
         "specialties": compact,
-        "evidence_registry": [
-            {
-                "evidence_ref": item.evidence_ref,
-                "segment_id": item.segment_id,
-                "graph_unit_id": item.graph_unit_id,
-                "evidence_ids": item.evidence_ids,
-                "proposition_ids": item.proposition_ids,
-                "quote": item.quote,
-            }
-            for item in registry.evidence.values()
-        ],
     }
     question_refs = {
         ref
@@ -637,7 +686,23 @@ def _compact_specialty(
                 "status": item.get("status"),
                 "medical_basis": medical_basis,
                 "decision_impact": decision_impact,
-                "evidence": evidence,
+                "claims": list(item.get("claims") or []),
+                "evidence_options": [
+                    {
+                        "evidence_ref": evidence_ref,
+                        "declared_roles": [
+                            role
+                            for role in EVIDENCE_ROLES
+                            if evidence_ref in evidence[role]
+                        ],
+                        "quote": registry.evidence[evidence_ref].quote,
+                    }
+                    for evidence_ref in _ordered_unique(
+                        evidence_ref
+                        for role in EVIDENCE_ROLES
+                        for evidence_ref in evidence[role]
+                    )
+                ],
                 "limitations": list(item.get("limitations") or []),
             }
         )
@@ -724,6 +789,18 @@ def _compact_specialty(
 def _formal_evidence_refs(
     evidence: dict[str, Any], registry: _Registry
 ) -> dict[str, list[str]]:
+    relations = evidence.get("evidence_relations")
+    if isinstance(relations, list):
+        grouped = {role: [] for role in EVIDENCE_ROLES}
+        for relation in relations:
+            if not isinstance(relation, dict):
+                continue
+            role = legacy_role_for_evidence_relation(
+                relation.get("direction", "neutral"),
+                relation.get("function", "background"),
+            )
+            grouped[role].append(registry.pointer(relation))
+        return {role: _ordered_unique(refs) for role, refs in grouped.items()}
     return {
         role: [
             registry.pointer(pointer)
@@ -749,6 +826,15 @@ def _related_evidence_refs(
 
 def _ordered_unique(values: Iterable[Any]) -> list[Any]:
     return list(dict.fromkeys(values))
+
+
+def _merge_quotes(*values: str) -> str:
+    quotes = [value for value in _ordered_unique(values) if value]
+    return "\n".join(
+        quote
+        for quote in quotes
+        if not any(quote != other and quote in other for other in quotes)
+    )
 
 
 class MDTChairAgent:
@@ -952,10 +1038,17 @@ class MDTChairAgent:
             system_prompt=SYSTEM_PROMPT,
             user_prompt=ledger_prompt,
             extra_validation=lambda value: resolve_semantic_ledger(value, bundle),
+            dependent_field_constraints=_claim_evidence_schema_constraints(bundle),
             string_field_constraints=_source_ref_schema_constraints(bundle),
         )
 
         ledger_json = prompt_json(ledger.model_dump(mode="json"))
+        synthesis_input = deepcopy(bundle.prompt_input)
+        for specialty_input in synthesis_input.get("specialties", []):
+            for assessment in specialty_input.get("specialty_assessments", []):
+                for claim in assessment.get("claims", []):
+                    claim.pop("claim_id", None)
+        synthesis_input_json = prompt_json(synthesis_input)
         output_schema = (
             "由 API 的严格 JSON Schema response_format 提供。"
             if self.generator.response_format_mode == "json_schema"
@@ -964,7 +1057,7 @@ class MDTChairAgent:
         synthesis_prompt = render_template(
             self.prompt,
             {
-                "chair_input": compact_json,
+                "chair_input": synthesis_input_json,
                 "topic_ledger": ledger_json,
                 "discussion_context": discussion_context_json,
                 "output_schema": output_schema,
@@ -1032,7 +1125,7 @@ class MDTChairAgent:
             "total_chars": len(ledger_prompt) + len(synthesis_prompt),
             "ledger_prompt_chars": len(ledger_prompt),
             "integration_prompt_chars": len(synthesis_prompt),
-            "chair_input_chars": len(compact_json),
+            "chair_input_chars": len(synthesis_input_json),
             "topic_ledger_chars": len(ledger_json),
             "discussion_context_chars": len(discussion_context_json),
             "output_schema_chars": len(output_schema),
@@ -1054,8 +1147,30 @@ def resolve_chair_references(
     """Backfill deterministic IDs and provenance without judging medical semantics."""
 
     result.case_id = bundle.case_id
-    result.schema_version = "mdt_chair.v8"
+    result.schema_version = "mdt_chair.v9"
     for index, conclusion in enumerate(result.integrated_conclusions, 1):
+        if ledger is not None and conclusion.atomic_claim_ids:
+            integrated_claims = {
+                claim.claim_id: claim
+                for group in ledger.claim_groups
+                if group.disposition == "integrated"
+                for claim in group.claims
+            }
+            conclusion.atomic_claim_ids = _ordered_unique(
+                conclusion.atomic_claim_ids
+            )
+            unknown_claim_ids = sorted(
+                set(conclusion.atomic_claim_ids) - set(integrated_claims)
+            )
+            if unknown_claim_ids:
+                raise ValueError(
+                    "IntegratedConclusion contains unknown integrated ledger "
+                    f"atomic_claim_ids: {unknown_claim_ids}"
+                )
+            conclusion.source_refs = _ordered_unique(
+                integrated_claims[claim_id].source_ref
+                for claim_id in conclusion.atomic_claim_ids
+            )
         conclusion.conclusion_id = f"IC{index:03d}"
         _resolve_cited(
             conclusion,
@@ -1063,6 +1178,7 @@ def resolve_chair_references(
             "specialty_assessment",
             context=f"integrated_conclusions[{index - 1}].source_refs",
         )
+        _resolve_atomic_evidence(conclusion, ledger, bundle, "integrated")
         conclusion.supporting_specialties = _ordered_unique(
             citation.specialty for citation in conclusion.source_citations
         )
@@ -1080,6 +1196,7 @@ def resolve_chair_references(
             {"specialty_assessment", "interspecialty_question"},
             context=f"assessment_boundaries[{index - 1}].source_refs",
         )
+        _resolve_atomic_evidence(boundary, ledger, bundle, "boundary")
         _require_refs(
             boundary.related_evidence_need_source_refs,
             bundle,
@@ -1303,7 +1420,7 @@ def resolve_chair_references(
         question.question_id = f"Q{index:03d}"
 
     _link_output_items(result)
-    _resolve_conflicts(result.conflicts, result, bundle)
+    _resolve_conflicts(result.conflicts, result, bundle, ledger)
     if ledger is not None:
         _validate_output_refs_against_ledger(result, ledger)
     return result
@@ -1450,6 +1567,40 @@ def resolve_semantic_ledger(
                 {"specialty_assessment"},
                 context=f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}].source_ref",
             )
+            allowed_evidence = {
+                evidence_ref
+                for role in EVIDENCE_ROLES
+                for evidence_ref in bundle.source_evidence[claim.source_ref][role]
+            }
+            unknown_evidence = sorted(
+                {
+                    link.evidence_ref
+                    for link in claim.evidence_links
+                    if link.evidence_ref not in allowed_evidence
+                }
+            )
+            if unknown_evidence:
+                raise ValueError(
+                    f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}] "
+                    "uses evidence outside its specialty source: "
+                    f"{unknown_evidence}"
+                )
+            roles_by_evidence: dict[str, set[str]] = {}
+            for link in claim.evidence_links:
+                roles_by_evidence.setdefault(link.evidence_ref, set()).add(
+                    link.relation
+                )
+            conflicts = {
+                ref: sorted(relations)
+                for ref, relations in roles_by_evidence.items()
+                if len(relations) > 1
+            }
+            if conflicts:
+                raise ValueError(
+                    f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}] "
+                    "assigns multiple relations to the same evidence locator: "
+                    f"{conflicts}"
+                )
         _validate_conflict_group(group, bundle, topic_index - 1)
     normalized_routes = []
     for route in ledger.question_routes:
@@ -1663,6 +1814,77 @@ def _drop_incompatible_known_refs(
     return kept
 
 
+def _resolve_atomic_evidence(
+    statement: CitedChairStatement,
+    ledger: ChairSemanticLedger | None,
+    bundle: ChairPromptBundle,
+    disposition: str,
+) -> None:
+    """Replace source-wide evidence buckets with claim-specific evidence links."""
+
+    if ledger is None or not hasattr(statement, "atomic_claim_ids"):
+        return
+    available = {
+        claim.claim_id: claim
+        for group in ledger.claim_groups
+        if group.disposition == disposition
+        for claim in group.claims
+        if claim.source_ref in statement.source_refs
+    }
+    requested = list(getattr(statement, "atomic_claim_ids", []))
+    selected_ids = requested or list(available)
+    unknown = sorted(set(selected_ids) - set(available))
+    if unknown:
+        raise ValueError(
+            f"{type(statement).__name__}.atomic_claim_ids are not compatible "
+            f"with its source refs: {unknown}"
+        )
+    statement.atomic_claim_ids = selected_ids
+    links = []
+    seen = set()
+    for claim_id in selected_ids:
+        claim = available[claim_id]
+        for link in claim.evidence_links:
+            marker = (
+                claim_id,
+                link.evidence_ref,
+                link.relation,
+                link.rationale,
+                link.comparison_target,
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            citation = bundle.evidence_registry[link.evidence_ref]
+            links.append(ClaimEvidenceLink(
+                **citation.model_dump(mode="json"),
+                target_claim_id=claim_id,
+                relation=link.relation,
+                rationale=link.rationale,
+                comparison_target=link.comparison_target,
+            ))
+
+    grouped = {role: [] for role in EVIDENCE_ROLES}
+    grouped_refs = {role: set() for role in EVIDENCE_ROLES}
+    for link in links:
+        role = RELATION_TO_ROLE[link.relation]
+        if link.evidence_ref in grouped_refs[role]:
+            continue
+        grouped_refs[role].add(link.evidence_ref)
+        grouped[role].append(CaseEvidenceCitation.model_validate(
+            link.model_dump(
+                mode="json",
+                exclude={
+                    "target_claim_id",
+                    "relation",
+                    "rationale",
+                    "comparison_target",
+                },
+            )
+        ))
+    statement.evidence = ChairEvidenceBundle(links=links, **grouped)
+
+
 def _resolve_cited(
     statement: CitedChairStatement,
     bundle: ChairPromptBundle,
@@ -1813,6 +2035,7 @@ def _resolve_conflicts(
     conflicts: list[CrossSpecialtyConflict],
     result: MDTChairIntegration,
     bundle: ChairPromptBundle,
+    ledger: ChairSemanticLedger | None = None,
 ) -> None:
     expected_status = {
         (False, False): "unresolved",
@@ -1844,6 +2067,7 @@ def _resolve_conflicts(
                     f"conflicts[{index - 1}].positions[{position_index}].source_refs"
                 ),
             )
+            _resolve_atomic_evidence(position, ledger, bundle, "conflict")
             if position.source_citations:
                 position.specialty = position.source_citations[0].specialty
             specialties.append(position.specialty)

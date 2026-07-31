@@ -21,7 +21,7 @@
 
 证据和角色规则：
 - supporting/conflicting evidence 只能来自 diagnostic_evidence_units；context_only 只用于 related_evidence 或专科问题。
-- 每个 EvidencePointer 只填一个 evidence ID；本轮 specialist_opinion_ids 为空。
+- 一个 EvidencePointer 表示一个 Graph Unit，可填写该图内一个或多个 evidence ID；只有跨 Graph Unit 时才使用多个指针。本轮 specialist_opinion_ids 为空。
 - 不输出隐藏思维链、最终 MDT 诊断、活检风险裁决或治疗建议。
 
 适用临床规则（JSON）：

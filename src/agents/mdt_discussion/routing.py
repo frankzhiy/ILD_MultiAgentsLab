@@ -176,7 +176,21 @@ def _evidence_candidates(
         if isinstance(value, dict):
             evidence_ref = value.get("evidence_ref")
             if evidence_ref and value.get("evidence_ids") is not None:
-                found.setdefault(str(evidence_ref), value)
+                graph_unit_id = str(value.get("graph_unit_id") or "")
+                key = graph_unit_id or str(evidence_ref)
+                current = found.setdefault(key, {
+                    **value,
+                    "evidence_ref": key,
+                    "evidence_ids": [],
+                    "quotes": [],
+                })
+                current["evidence_ids"] = list(dict.fromkeys([
+                    *current["evidence_ids"],
+                    *(value.get("evidence_ids") or []),
+                ]))
+                quote = str(value.get("quote") or "").strip()
+                if quote and quote not in current["quotes"]:
+                    current["quotes"].append(quote)
             for item in value.values():
                 walk(item)
         elif isinstance(value, list):
@@ -202,7 +216,7 @@ def _evidence_candidates(
                 segment_id=str(item.get("segment_id") or ""),
                 graph_unit_id=str(item.get("graph_unit_id") or ""),
                 evidence_ids=evidence_ids,
-                quote=str(item.get("quote") or ""),
+                quote="\n".join(item.get("quotes") or []),
                 evidence_fragments=[
                     {
                         "evidence_id": block.get("evidence_id"),

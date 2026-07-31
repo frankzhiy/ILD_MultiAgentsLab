@@ -48,11 +48,9 @@ class EvidencePointer(BaseModel):
 
     evidence_ids: list[str] = Field(
         min_length=1,
-        json_schema_extra={"maxItems": 1},
         description=(
-            "只填写一个 evidence block ID；判断涉及多个证据时创建多个 "
-            "EvidencePointer。"
-            "其余定位信息由程序补全。"
+            "一个 EvidencePointer 表示一个 Graph Unit，可填写该图内一个或多个 "
+            "evidence block ID；其余定位信息由程序补全。"
         ),
     )
     segment_id: SkipJsonSchema[str] = ""

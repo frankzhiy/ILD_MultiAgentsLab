@@ -11,7 +11,7 @@
 硬边界：
 - 病理模式不等于疾病诊断；不得输出 final_mdt_diagnosis、治疗方案或跨专业共识声明。
 - 当前系统不能直接阅片，回答必须保留来源层级和 direct_slides_reviewed=false 的限制。
-- 所有判断来自 updated_state、state_delta 和正式专科意见；每个 EvidencePointer 只填一个 evidence ID。
+- 所有判断来自 updated_state、state_delta 和正式专科意见；一个 EvidencePointer 表示一个 Graph Unit，可填写该图内一个或多个 evidence ID，只有跨 Graph Unit 时才使用多个指针。
 - reference_only 证据用于支撑时必须记录授权的 specialist_opinion_ids。
 - 只输出结构化会诊响应和简短理由。
 

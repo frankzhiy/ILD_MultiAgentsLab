@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
+import { citationLabel } from '../../components/Citation'
 import { EvidenceDrawer } from '../../components/EvidenceDrawer'
 import { useWorkbenchStore } from '../../store'
 import { SpecialtyWorkspace } from './SpecialtyWorkspace'
@@ -35,7 +36,13 @@ function formalOutput(question = '判断疾病层面的首轮工作诊断') {
         status: 'favored',
         medical_basis: '病程和现有肺部资料形成连贯解释。',
         decision_impact: '影响后续病因审阅。',
-        evidence: { supporting: [pointer], weakening: [pointer], discriminating: [], background: [] },
+        evidence: {
+          evidence_relations: [{
+            ...pointer,
+            direction: 'supports',
+            function: 'qualifying',
+          }],
+        },
         guideline_evidence: [{ guideline_id: 'guide-1', source_file: 'guide.pdf', page: 3 }],
         limitations: ['缺少原始影像。'],
       }],
@@ -131,14 +138,71 @@ describe('SpecialtyWorkspace', () => {
     expect(screen.getAllByText('需其他专科回答的问题').length).toBeGreaterThan(0)
     ;['专科问题定位', '初步判断', '决策相关证据缺口', '本专科判断边界'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('临床推理论证')).not.toBeInTheDocument()
-    ;['支持证据', '削弱证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
-    fireEvent.click(screen.getAllByRole('button', { name: /ev-1/ })[0])
+    ;['患者证据图', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
+    fireEvent.click(screen.getAllByRole('button', { name: /患者证据图｜支持\/限定/ })[0])
     expect(await screen.findByText('证据检查器')).toBeInTheDocument()
+    expect(screen.getByText('被引用的患者原文')).toBeInTheDocument()
+    expect(screen.queryByText('原文证据摘录')).not.toBeInTheDocument()
     expect(screen.getByText('长期进行性呼吸困难。')).toBeInTheDocument()
-    expect(await screen.findByText('完整 Graph Unit 上下文')).toBeInTheDocument()
-    expect(screen.getByText('患者长期进行性呼吸困难。')).toBeInTheDocument()
-    expect(screen.getByText('原文证据块')).toBeInTheDocument()
+    expect(await screen.findByText('证据单元上下文（Graph Unit）')).toBeInTheDocument()
+    expect(document.querySelector('.evidence-source-context')).toHaveTextContent('患者长期进行性呼吸困难。')
+    expect(document.querySelector('.evidence-source-context mark')).toHaveTextContent('长期进行性呼吸困难。')
+    expect(screen.getAllByText('该证据图与当前原子判断的关系').length).toBeGreaterThan(0)
+    expect(screen.getByText('支持')).toBeInTheDocument()
+    expect(screen.getByText('限定')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Evidence ID → 原文证据块/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /引用类别与技术定位/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '定位到语义图' })).toBeInTheDocument()
+  })
+
+  it('does not repeat the context when an Evidence ID covers the entire graph unit', async () => {
+    api.specialties.mockResolvedValue(payload())
+    api.semantic.mockResolvedValue({
+      segments: [{
+        segment_id: 'seg-1',
+        text: pointer.quote,
+        units: [{
+          graph_unit_id: 'gu-1',
+          text: pointer.quote,
+          clinical_propositions: {
+            evidence_blocks: [
+              { evidence_id: 'ev-1', text: pointer.quote },
+              { evidence_id: 'ev-1', text: pointer.quote },
+            ],
+            propositions: [],
+          },
+          local_graph: { nodes: [], edges: [] },
+        }],
+      }],
+    })
+    renderWorkspace({ run: { status: 'completed' }, drawer: true })
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /患者证据图/ }))[0])
+    expect(await screen.findByText('覆盖整个 Graph Unit，不重复展示')).toBeInTheDocument()
+    expect(screen.queryByText('证据单元上下文（Graph Unit）')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.evidence-quote')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /Evidence ID → 原文证据块（1）/ })).toBeInTheDocument()
+  })
+
+  it('keeps source kinds distinct without presenting graph locators as numbered evidence', () => {
+    const items = [
+      { segment_id: 'seg-1' },
+      { graph_unit_id: 'gu-1' },
+      { evidence_ids: ['ev-1'] },
+      { node_id: 'node-1' },
+      { source_ref: 'S001', specialty: 'pulmonology', source_type: 'interspecialty_question' },
+      { guideline_id: 'guide-1' },
+      { evidence_ids: ['ev-2'] },
+    ]
+    expect(items.map((item, index) => citationLabel(item, items, index))).toEqual([
+      '原文片段',
+      '患者证据图',
+      '原文证据',
+      '图节点',
+      '呼吸科｜专科问题',
+      '指南依据',
+      '原文证据',
+    ])
   })
 
   it('switches specialties without leaking the previous specialty content', async () => {

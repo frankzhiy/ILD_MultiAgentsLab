@@ -21,6 +21,7 @@ from src.guidelines.models import (
 from src.guidelines.runtime import (
     GuidelineRuntime,
     guideline_evidence_schema_constraints,
+    guideline_quote_units,
     resolve_guideline_evidence,
 )
 from src.llm.structured import json_schema_response_format
@@ -70,17 +71,20 @@ def test_agent_yaml_uses_only_canonical_guideline_ids():
 
 
 def test_citation_metadata_is_resolved_only_from_retrieved_chunk():
+    source = chunk()
     pointer = GuidelineEvidencePointer(
-        chunk_id="guide:p001:c001",
-        quote="对疑似患者进行完整的临床、影像和肺功能综合评估",
+        chunk_id=source.chunk_id,
+        quote_unit_ids=[
+            unit.quote_unit_id for unit in guideline_quote_units(source)
+        ],
         relevance="规定诊断方法",
         application="用于解释患者资料",
     )
-    used = resolve_guideline_evidence(pointer, {pointer.chunk_id: chunk()})
+    used = resolve_guideline_evidence(pointer, {pointer.chunk_id: source})
     assert used == [pointer.chunk_id]
     assert pointer.page == 1
-    assert pointer.quote == "对疑似患者进行完整的临床、影像和肺功能综合评估"
-    assert chunk().text[pointer.quote_start : pointer.quote_end] == pointer.quote
+    assert pointer.quote == source.text
+    assert source.text[pointer.quote_start : pointer.quote_end] == pointer.quote
 
 
 def test_runtime_records_retrieved_candidates_for_stage():
@@ -125,7 +129,7 @@ def test_runtime_honors_stage_limit_and_skips_zero_limit_stage():
         "chunk_id",
         "section_path",
         "unit_type",
-        "text",
+        "quote_units",
     }
     assert skipped == "[]"
     assert allowed == {}
@@ -153,7 +157,7 @@ def test_runtime_reuses_one_retriever_for_the_same_directory(monkeypatch, tmp_pa
 def test_unretrieved_citation_is_rejected():
     pointer = GuidelineEvidencePointer(
         chunk_id="invented",
-        quote="这是一段长度足够但并没有被检索到的指南原文。",
+        quote_unit_ids=["invented:q001"],
         relevance="无",
         application="无",
     )
@@ -175,7 +179,11 @@ def test_retrieved_chunk_ids_are_closed_in_structured_output_schema():
     assert guideline_items["properties"]["chunk_id"]["enum"] == [
         "guide:p001:c001"
     ]
-    assert "quote" in guideline_items["required"]
+    assert "quote_unit_ids" in guideline_items["required"]
+    assert "quote" not in guideline_items["properties"]
+    assert guideline_items["properties"]["quote_unit_ids"]["items"]["enum"] == [
+        unit.quote_unit_id for unit in guideline_quote_units(chunk())
+    ]
 
     empty_schema = json_schema_response_format(
         model,
@@ -191,7 +199,9 @@ def test_shared_report_renders_exact_guideline_location(tmp_path):
     )
     pointer = GuidelineEvidencePointer(
         chunk_id=source.chunk_id,
-        quote="对疑似患者进行完整的临床、影像和肺功能综合评估",
+        quote_unit_ids=[
+            unit.quote_unit_id for unit in guideline_quote_units(source)
+        ],
         relevance="规定诊断方法",
         application="用于解释患者资料",
     )
@@ -329,3 +339,88 @@ def test_modified_or_ambiguous_guideline_quote_is_rejected():
     )
     with pytest.raises(ValueError, match="ambiguous"):
         resolve_guideline_evidence(ambiguous, {source.chunk_id: repeated_source})
+
+
+def test_legacy_exact_guideline_quote_remains_readable():
+    source = chunk()
+    quote = "对疑似患者进行完整的临床、影像和肺功能综合评估"
+    pointer = GuidelineEvidencePointer(
+        chunk_id=source.chunk_id,
+        quote=quote,
+        relevance="规定诊断方法",
+        application="用于解释患者资料",
+    )
+
+    resolve_guideline_evidence(pointer, {source.chunk_id: source})
+
+    assert pointer.quote_unit_ids == []
+    assert pointer.quote == quote
+    assert source.text[pointer.quote_start : pointer.quote_end] == quote
+
+
+def test_quote_unit_selection_preserves_original_unicode_characters():
+    source = chunk().model_copy(
+        update={
+            "text": (
+                "怀疑AAV时应查抗中性粒细胞胞质抗体"
+                "(anti‐neutrophil cytoplasmic antibodies, ANCA)。"
+            )
+        }
+    )
+    units = guideline_quote_units(source)
+    assert len(units) == 1
+    assert "(anti‐neutrophil cytoplasmic antibodies, ANCA)" in units[0].text
+    pointer = GuidelineEvidencePointer(
+        chunk_id=source.chunk_id,
+        quote_unit_ids=[unit.quote_unit_id for unit in units],
+        relevance="规定检查项目",
+        application="用于当前检查判断",
+    )
+
+    resolve_guideline_evidence(pointer, {source.chunk_id: source})
+
+    assert "anti‐neutrophil" in pointer.quote
+    assert "anti-neutrophil" not in pointer.quote
+    assert pointer.quote == source.text
+
+
+def test_quote_units_must_belong_to_the_chunk_and_noncontiguous_are_split():
+    source = chunk().model_copy(
+        update={
+            "text": (
+                "第一项完整且足够长度的指南建议，"
+                "第二项完整且足够长度的指南建议，"
+                "第三项完整且足够长度的指南建议。"
+            )
+        }
+    )
+    units = guideline_quote_units(source)
+    unknown = GuidelineEvidencePointer(
+        chunk_id=source.chunk_id,
+        quote_unit_ids=[f"{source.chunk_id}:q999"],
+        relevance="相关",
+        application="用于判断",
+    )
+    with pytest.raises(ValueError, match="do not belong"):
+        resolve_guideline_evidence(unknown, {source.chunk_id: source})
+
+    noncontiguous = GuidelineEvidencePointer(
+        chunk_id=source.chunk_id,
+        quote_unit_ids=[units[0].quote_unit_id, units[2].quote_unit_id],
+        relevance="相关",
+        application="用于判断",
+    )
+    result = {"guideline_evidence": [noncontiguous]}
+
+    resolve_guideline_evidence(result, {source.chunk_id: source})
+
+    pointers = result["guideline_evidence"]
+    assert [pointer.quote_unit_ids for pointer in pointers] == [
+        [units[0].quote_unit_id],
+        [units[2].quote_unit_id],
+    ]
+    assert [pointer.quote for pointer in pointers] == [units[0].text, units[2].text]
+    assert all(
+        source.text[pointer.quote_start : pointer.quote_end] == pointer.quote
+        for pointer in pointers
+    )

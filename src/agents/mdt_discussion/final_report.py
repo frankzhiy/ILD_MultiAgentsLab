@@ -121,6 +121,7 @@ class FinalReportAgent:
         )
 
         def resolve(result: MDTFinalReport) -> MDTFinalReport:
+            result.schema_version = "mdt_final_report.v3"
             result.case_id = case_id
             result.discussion_rounds = len(rounds)
             result.reasoning_trace = _resolve_reasoning_trace(result, chair_result)
@@ -232,7 +233,25 @@ def _collect_provenance(
         )
     if value.get("evidence"):
         bundle = ChairEvidenceBundle.model_validate(value["evidence"])
-        for role in ("supporting", "weakening", "discriminating", "background"):
+        _append_unique(
+            evidence.links,
+            bundle.links,
+            lambda item: (
+                item.target_claim_id,
+                item.evidence_ref,
+                item.relation,
+                tuple(item.evidence_ids),
+                tuple(item.proposition_ids),
+                tuple(item.node_ids),
+            ),
+        )
+        for role in (
+            "supporting",
+            "weakening",
+            "discriminating",
+            "qualifying",
+            "background",
+        ):
             _append_unique(
                 getattr(evidence, role),
                 getattr(bundle, role),
@@ -500,9 +519,11 @@ def _research_metrics(report: MDTFinalReport) -> ResearchAuditMetrics:
         claims_with_specialty_citations=sum(bool(item.source_citations) for item in traces),
         claims_with_patient_evidence=sum(
             any((
+                item.evidence.links,
                 item.evidence.supporting,
                 item.evidence.weakening,
                 item.evidence.discriminating,
+                item.evidence.qualifying,
                 item.evidence.background,
             ))
             for item in traces

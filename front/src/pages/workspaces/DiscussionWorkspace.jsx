@@ -7,7 +7,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Card, Collapse, Empty, Progress, Segmented, Skeleton, Space, Spin, Table, Tag, Timeline, Typography } from 'antd'
 import { api } from '../../api'
-import { Citation } from '../../components/Citation'
+import { Citation, CitationGroup } from '../../components/Citation'
 import { QueryError } from '../../components/QueryState'
 import { StatusTag } from '../../components/StatusTag'
 import { ChairResultTabs } from './ChairWorkspace'
@@ -46,6 +46,7 @@ const REVIEW_OUTCOME = {
 }
 
 const DISCUSSION_EVENTS = [
+  'manual_stage_started',
   'discussion_started',
   'discussion_round_started',
   'discussion_task_started',
@@ -59,6 +60,32 @@ const DISCUSSION_EVENTS = [
   'discussion_completed',
   'discussion_failed',
 ]
+
+const CHAIR_SECTIONS = [
+  ['integrated_conclusions', '整合结论', 'conclusion_id'],
+  ['assessment_boundaries', '判断边界', 'boundary_id'],
+  ['conflicts', '真实冲突', 'conflict_id'],
+  ['questions', '待回答问题', 'question_id'],
+  ['evidence_needs', '证据需求', 'need_id'],
+]
+
+export function chairChangeSummary(current, previous) {
+  if (!previous) return ['首轮主持人更新，作为后续轮次的比较基线']
+  const changes = CHAIR_SECTIONS.flatMap(([key, label, idKey]) => {
+    const before = new Map((previous[key] || []).map((item, index) => [item[idKey] || index, item]))
+    const after = new Map((current?.[key] || []).map((item, index) => [item[idKey] || index, item]))
+    const added = [...after.keys()].filter((id) => !before.has(id)).length
+    const removed = [...before.keys()].filter((id) => !after.has(id)).length
+    const updated = [...after].filter(([id, item]) => before.has(id) && JSON.stringify(before.get(id)) !== JSON.stringify(item)).length
+    const parts = [
+      added && `新增 ${added}`,
+      updated && `更新 ${updated}`,
+      removed && `移除 ${removed}`,
+    ].filter(Boolean)
+    return parts.length ? [`${label}：${parts.join('、')}`] : []
+  })
+  return changes.length ? changes : ['相比上一轮，五个板块无结构性变化']
+}
 
 function specialtyLabel(value) {
   return SPECIALTIES[value] || value
@@ -95,7 +122,10 @@ function useDiscussionEvents(runId, onEvent) {
     }
     const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`)
     const notify = () => onEvent()
-    source.onopen = () => setConnection('connected')
+    source.onopen = () => {
+      setConnection('connected')
+      onEvent()
+    }
     source.onerror = () => setConnection('disconnected')
     DISCUSSION_EVENTS.forEach((type) => source.addEventListener(type, notify))
     return () => {
@@ -178,7 +208,7 @@ function TaskAssignment({ round, selectedTaskId, onSelect }) {
       render: (_, task) => {
         const first = task.evidence_candidates?.[0]
         if (!first) return <Text type="secondary">0 组</Text>
-        return <Space size={4}><Citation value={first} />{task.evidence_candidates.length > 1 && <Text type="secondary">+{task.evidence_candidates.length - 1}</Text>}</Space>
+        return <Space size={4}><Citation value={first} collection={task.evidence_candidates} />{task.evidence_candidates.length > 1 && <Text type="secondary">+{task.evidence_candidates.length - 1}</Text>}</Space>
       },
     },
   ]
@@ -261,8 +291,8 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
   const [answerLabel, answerColor] = ANSWERABILITY[answer?.answerability] || ['等待回答', 'default']
   const existingViews = [...(task.specialty_context || []), ...(task.prior_answers || [])]
   const evidenceColumns = [
-    { title: '引用证据', width: 86, render: (_, item) => <Citation value={item} /> },
-    { title: '证据摘要', dataIndex: 'quote', width: 118, render: (value) => value || '该证据包未携带原文摘要' },
+    { title: '引用类别', width: 86, render: (_, item, index) => <Citation value={item} collection={evidenceRows} index={index} /> },
+    { title: '引用原文（quote）', dataIndex: 'quote', width: 150, render: (value) => value || '该引用未携带原文' },
     { title: '支持的结论', dataIndex: 'interpretation', render: (value) => value || '—' },
   ]
   return (
@@ -307,20 +337,10 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
               ? answer.answer_claims.map((claim) => (
                 <Paragraph className="discussion-answer" key={claim.claim_id || claim.statement}>
                   {claim.statement}{' '}
-                  <Space size={[4, 4]} wrap>
-                    {(claim.evidence_uses || []).map((item, index) => (
-                      <Citation
-                        key={`${item.evidence_ref}-${index}`}
-                        value={{ ...item, claim_statement: claim.statement }}
-                      />
-                    ))}
-                    {(claim.guideline_evidence || []).map((item, index) => (
-                      <Citation
-                        key={`${item.guideline_id || item.chunk_id || 'guideline'}-${index}`}
-                        value={{ ...item, claim_statement: claim.statement }}
-                      />
-                    ))}
-                  </Space>
+                  <CitationGroup refs={[
+                    ...(claim.evidence_uses || []).map((item) => ({ ...item, claim_statement: claim.statement })),
+                    ...(claim.guideline_evidence || []).map((item) => ({ ...item, claim_statement: claim.statement })),
+                  ]} />
                 </Paragraph>
               ))
               : <>
@@ -361,9 +381,9 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
             : <div className="discussion-answer-pending">{progress?.status === 'running' ? <Spin size="small" /> : <ClockCircleOutlined />}<Text type="secondary">{progress?.status === 'running' ? '专科正在使用证据形成回答…' : '等待专科开始分析'}</Text></div>}
       </div>
       <div className="discussion-detail-section">
-        <div className="discussion-evidence-heading"><Text className="discussion-detail-label">证据使用路径</Text><Text type="secondary">引用证据 → 证据摘要 → 支持的结论</Text></div>
+        <div className="discussion-evidence-heading"><Text className="discussion-detail-label">证据使用路径</Text><Text type="secondary">引用类别 → 引用原文 → 支持的结论</Text></div>
         <Table size="small" rowKey={(item) => item.evidence_ref} columns={evidenceColumns} dataSource={evidenceRows} pagination={false} tableLayout="fixed" locale={{ emptyText: '没有可用证据' }} />
-        {answer?.guideline_evidence?.length > 0 && <Space size={[5, 5]} wrap className="discussion-guidelines"><Text strong>指南依据：</Text>{answer.guideline_evidence.map((item, index) => <Citation value={item} key={`${item.guideline_id || item.chunk_id || 'guideline'}-${index}`} />)}</Space>}
+        {answer?.guideline_evidence?.length > 0 && <div className="discussion-guidelines"><Text strong>指南依据：</Text><CitationGroup refs={answer.guideline_evidence} /></div>}
       </div>
     </Card>
   )
@@ -374,7 +394,7 @@ export function DiscussionWorkspace({ runId }) {
   const query = useQuery({
     queryKey: ['discussion', runId],
     queryFn: () => api.discussion(runId),
-    refetchInterval: (current) => current.state.data?.status === 'running' ? 5000 : false,
+    refetchInterval: (current) => current.state.data?.status === 'running' ? 2000 : false,
   })
   const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['discussion', runId] })
@@ -383,9 +403,22 @@ export function DiscussionWorkspace({ runId }) {
   const connection = useDiscussionEvents(runId, refresh)
   const mutation = useMutation({
     mutationFn: () => api.runDiscussion(runId),
+    onMutate: () => {
+      const previous = queryClient.getQueryData(['discussion', runId])
+      queryClient.cancelQueries({ queryKey: ['discussion', runId] })
+      queryClient.setQueryData(['discussion', runId], (current = {}) => ({
+        ...current,
+        status: 'running',
+        error: null,
+      }))
+      return { previous }
+    },
     onSuccess: (value) => {
       queryClient.setQueryData(['discussion', runId], value)
-      refresh()
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+    },
+    onError: (_error, _variables, context) => {
+      queryClient.setQueryData(['discussion', runId], context?.previous)
     },
   })
   const [selectedRound, setSelectedRound] = useState()
@@ -404,6 +437,7 @@ export function DiscussionWorkspace({ runId }) {
     if (activeRoundNumber) setSelectedRound(activeRoundNumber)
   }, [activeRoundNumber])
   const round = rounds.find((item) => item.round_number === selectedRound) || rounds.at(-1)
+  const previousChairResult = rounds[rounds.findIndex((item) => item.round_number === round?.round_number) - 1]?.chair_result
   useEffect(() => {
     const tasks = round?.tasks || []
     if (!tasks.some((task) => task.task_id === selectedTaskId)) setSelectedTaskId(tasks[0]?.task_id)
@@ -453,7 +487,8 @@ export function DiscussionWorkspace({ runId }) {
         </div>
       </div>
 
-      {connection === 'disconnected' && <Alert className="section-gap" type="warning" showIcon title="实时事件流已断开" description="页面会自动重连，并每 5 秒从服务端恢复一次讨论进度。" />}
+      {connection === 'disconnected' && <Alert className="section-gap" type="warning" showIcon title="实时事件流已断开" description="页面会自动重连，并每 2 秒从服务端恢复一次讨论进度。" />}
+      {running && <Alert className="section-gap" type="info" showIcon title="新一轮团队讨论已启动" description={hasResult ? '正在初始化任务；下方暂时保留上一次运行结果，新进度写入后会自动替换。' : '正在初始化任务与运行资源，新进度写入后会自动显示。'} />}
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="团队讨论尚不可运行" description={value.error} />}
       {value.status === 'pending' && <Alert className="section-gap" type="info" showIcon title="现有输出已就绪" description="启动后将实时显示任务分配、专科处理、证据使用和主持人更新。" />}
       {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="主持人结果已更新" description="下方是基于旧主持人结果的讨论记录，请重新运行以匹配当前结果。" />}
@@ -473,7 +508,13 @@ export function DiscussionWorkspace({ runId }) {
           </div>
           {(round?.chair_result || round?.round_number === value.active_round?.round_number) && (
             <Card className="discussion-chair-tabs" title={<Space><TeamOutlined /><span>主持人第 {round.round_number} 轮更新</span></Space>} extra={<Text type="secondary">专科回应回填后，由主持人更新同一套五板块</Text>}>
-              {round.chair_result ? <ChairResultTabs result={round.chair_result} /> : <div className="discussion-chair-pending">{chairProgress === 'failed' ? <ExclamationCircleFilled className="discussion-icon-error" /> : <Spin />}<Text type="secondary">{chairProgress === 'running' ? '主持人正在整合本轮结果…' : chairProgress === 'failed' ? '主持人整合失败；已保留本轮已生成内容' : '等待全部专科回答后开始整合'}</Text></div>}
+              {round.chair_result ? <>
+                <div className="discussion-change-summary">
+                  <Text strong>{previousChairResult ? '相比上一轮' : '本轮变化'}</Text>
+                  <Space size={[6, 6]} wrap>{chairChangeSummary(round.chair_result, previousChairResult).map((item) => <Tag color="blue" key={item}>{item}</Tag>)}</Space>
+                </div>
+                <ChairResultTabs result={round.chair_result} />
+              </> : <div className="discussion-chair-pending">{chairProgress === 'failed' ? <ExclamationCircleFilled className="discussion-icon-error" /> : <Spin />}<Text type="secondary">{chairProgress === 'running' ? '主持人正在整合本轮结果…' : chairProgress === 'failed' ? '主持人整合失败；已保留本轮已生成内容' : '等待全部专科回答后开始整合'}</Text></div>}
             </Card>
           )}
           {round?.round_decision?.stop_reason && (

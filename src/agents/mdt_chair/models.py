@@ -44,6 +44,13 @@ ConflictNature = Literal[
     "direct_contradiction",
     "decision_relevant_discordance",
 ]
+EvidenceRelation = Literal[
+    "supports",
+    "contradicts",
+    "discriminates",
+    "qualifies",
+    "background",
+]
 
 
 class SpecialtySourceCitation(BaseModel):
@@ -52,6 +59,7 @@ class SpecialtySourceCitation(BaseModel):
     source_ref: str
     specialty: Specialty
     source_type: SourceType
+    source_subtype: str = ""
     source_path: str
     quote: str
 
@@ -68,12 +76,38 @@ class CaseEvidenceCitation(BaseModel):
     quote: str = ""
 
 
+class LedgerEvidenceLink(BaseModel):
+    """Claim-level selection of one evidence graph locator and its logical role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_ref: str = Field(min_length=1)
+    relation: EvidenceRelation
+    rationale: str = Field(min_length=1)
+    comparison_target: str = ""
+
+    @model_validator(mode="after")
+    def require_discrimination_target(self):
+        if self.relation == "discriminates" and not self.comparison_target.strip():
+            raise ValueError("discriminates evidence requires comparison_target")
+        return self
+
+
+class ClaimEvidenceLink(CaseEvidenceCitation):
+    target_claim_id: str
+    relation: EvidenceRelation
+    rationale: str
+    comparison_target: str = ""
+
+
 class ChairEvidenceBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    links: list[ClaimEvidenceLink] = Field(default_factory=list)
     supporting: list[CaseEvidenceCitation] = Field(default_factory=list)
     weakening: list[CaseEvidenceCitation] = Field(default_factory=list)
     discriminating: list[CaseEvidenceCitation] = Field(default_factory=list)
+    qualifying: list[CaseEvidenceCitation] = Field(default_factory=list)
     background: list[CaseEvidenceCitation] = Field(default_factory=list)
 
 
@@ -107,6 +141,7 @@ class LedgerAtomicClaim(BaseModel):
     professional_level: ProfessionalLevel
     position_role: PositionRole
     epistemic_status: EpistemicStatus
+    evidence_links: list[LedgerEvidenceLink] = Field(default_factory=list)
 
 
 class LedgerClaimGroup(BaseModel):
@@ -194,6 +229,7 @@ class IntegratedConclusion(CitedChairStatement):
     status: Literal["supported", "favored", "possible"]
     supporting_specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    atomic_claim_ids: list[str] = Field(default_factory=list)
 
 
 class AssessmentBoundary(CitedChairStatement):
@@ -219,6 +255,7 @@ class AssessmentBoundary(CitedChairStatement):
     specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
     assessment_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
     question_source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    atomic_claim_ids: list[str] = Field(default_factory=list)
 
 
 class QuestionAnswer(CitedChairStatement):
@@ -335,6 +372,7 @@ class ConflictPosition(CitedChairStatement):
     specialty: SkipJsonSchema[Specialty] = "pulmonology"
     stance: Literal["affirms", "denies", "favors"]
     position: str = Field(min_length=1)
+    atomic_claim_ids: list[str] = Field(default_factory=list)
 
 
 class CrossSpecialtyConflict(BaseModel):
@@ -407,8 +445,14 @@ class MDTChairIntegration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: SkipJsonSchema[
-        Literal["mdt_chair.v5", "mdt_chair.v6", "mdt_chair.v7", "mdt_chair.v8"]
-    ] = "mdt_chair.v8"
+        Literal[
+            "mdt_chair.v5",
+            "mdt_chair.v6",
+            "mdt_chair.v7",
+            "mdt_chair.v8",
+            "mdt_chair.v9",
+        ]
+    ] = "mdt_chair.v9"
     case_id: SkipJsonSchema[str] = ""
     integrated_conclusions: list[IntegratedConclusion] = Field(default_factory=list)
     assessment_boundaries: list[AssessmentBoundary] = Field(default_factory=list)

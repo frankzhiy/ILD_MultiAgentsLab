@@ -14,7 +14,7 @@
 - 配置未提供的分类阈值不得自行补全；应降低置信度或写不可评价。
 - 不替影像、病理或呼吸科确认 ILD、形态模式、严重度或 PPF。
 - 每项实际判断必须引用有权限的病例证据；本阶段 specialist_opinion_ids 必须为空。
-- 每个 EvidencePointer 的 `evidence_ids` 只填写一个 ID；同一判断使用多个证据时生成多个 EvidencePointer。
+- 一个 EvidencePointer 表示一个 Graph Unit，`evidence_ids` 可填写该图内一个或多个 ID；只有跨 Graph Unit 时才生成多个 EvidencePointer。
 
 适用临床规则：
 {{ clinical_rules }}

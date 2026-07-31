@@ -90,23 +90,60 @@ class RunCatalog:
             if f"{case_id}_{specialty}_initial.json" in names
         ]
         has_error = any(name.endswith("_error.json") or "failure_trace" in name for name in names)
-        if manifest.get("status") in {"queued", "running", "cancelled", "failed"}:
-            status = manifest["status"]
+        candidates = []
+        manifest_status = manifest.get("status")
+        if manifest_status in {"queued", "running", "completed", "cancelled", "failed"}:
+            timestamp = 0.0
+            for field in ("status_updated_at", "finished_at", "started_at", "created_at"):
+                if manifest.get(field):
+                    timestamp = datetime.fromisoformat(manifest[field]).timestamp()
+                    break
+            candidates.append(
+                (timestamp, manifest_status, manifest.get("status_source", "run"))
+            )
+
+        chair_result_path = run_dir / f"{case_id}_mdt_chair_integration.json"
+        chair_failure_path = (
+            run_dir / f"{case_id}_mdt_chair_cross_specialty_integration_failure_trace.json"
+        )
+        if chair_complete:
+            candidates.append((chair_result_path.stat().st_mtime, "completed", "mdt_chair"))
+        if chair_failure_path.exists():
+            candidates.append((chair_failure_path.stat().st_mtime, "failed", "mdt_chair"))
+
+        discussion_state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
+        discussion_failure_path = (
+            run_dir / f"{case_id}_mdt_discussion_team_discussion_failure_trace.json"
+        )
+        if discussion_state_path.exists() and discussion["status"] in {
+            "running", "completed", "failed", "cancelled"
+        }:
+            candidates.append(
+                (discussion_state_path.stat().st_mtime, discussion["status"], "mdt_discussion")
+            )
+        if discussion_failure_path.exists():
+            candidates.append(
+                (discussion_failure_path.stat().st_mtime, "failed", "mdt_discussion")
+            )
+
+        if candidates:
+            _, status, status_source = max(candidates, key=lambda item: item[0])
         elif len(completed_specialties) == len(SPECIALTIES):
-            status = "completed"
+            status, status_source = "completed", "specialties"
         elif completed_specialties:
-            status = "specialists_running"
+            status, status_source = "specialists_running", "specialties"
         elif semantic_complete:
-            status = "routing_pending"
+            status, status_source = "routing_pending", "semantic_graphing"
         elif has_error:
-            status = "failed"
+            status, status_source = "failed", "run"
         else:
-            status = "semantic_running"
+            status, status_source = "semantic_running", "semantic_graphing"
         stat = run_dir.stat()
         return {
             "id": run_dir.name,
             "case_id": case_id,
             "status": status,
+            "status_source": status_source,
             "semantic_complete": semantic_complete,
             "chair_complete": chair_complete,
             "discussion_complete": discussion["status"] == "completed",
@@ -360,15 +397,44 @@ class RunCatalog:
 
     def errors(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self.run_dir(run_id)
+        case_id = self.case_id(run_dir)
+        run_summary = self.run_summary(run_dir)
         records = []
         for path in sorted(run_dir.glob("*.json")):
             if not (path.name.endswith("_error.json") or "failure_trace" in path.name):
                 continue
             payload = self._json(path, {})
+            agent_id = self._error_agent(path.name)
+            if "workbench_failure_trace" in path.name:
+                current = (
+                    run_summary["status"] == "failed"
+                    and run_summary["status_source"] == "run"
+                )
+            elif agent_id == "mdt_chair":
+                current = (
+                    run_summary["status"] == "failed"
+                    and run_summary["status_source"] == "mdt_chair"
+                )
+            elif agent_id == "mdt_discussion":
+                current = (
+                    run_summary["status"] == "failed"
+                    and run_summary["status_source"] == "mdt_discussion"
+                )
+            else:
+                success_path = run_dir / (
+                    f"{case_id}_{agent_id}_initial.json"
+                    if agent_id in SPECIALTIES
+                    else f"{case_id}_local_graphs.json"
+                )
+                current = (
+                    not success_path.exists()
+                    or path.stat().st_mtime > success_path.stat().st_mtime
+                )
             records.append(
                 {
                     "artifact": path.name,
-                    "agent_id": self._error_agent(path.name),
+                    "agent_id": agent_id,
+                    "current": current,
                     "failed_stage": payload.get("failed_stage") or payload.get("stage"),
                     "error_type": payload.get("error_type"),
                     "error": payload.get("error") or payload.get("message") or "产物记录了失败，但未提供摘要。",
@@ -429,12 +495,10 @@ class RunCatalog:
 
     @staticmethod
     def _is_current_chair_output(value: Any) -> bool:
-        if not isinstance(value, dict) or value.get("schema_version") not in {
-            "mdt_chair.v5",
-            "mdt_chair.v6",
-            "mdt_chair.v7",
-            "mdt_chair.v8",
-        }:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != "mdt_chair.v9"
+        ):
             return False
         return all(
             isinstance(value.get(field), list)

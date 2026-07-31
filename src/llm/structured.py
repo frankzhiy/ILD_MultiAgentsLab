@@ -27,6 +27,9 @@ def json_schema_response_format(
     model: type[BaseModel],
     name: str,
     *,
+    dependent_field_constraints: (
+        dict[str, list[dict[str, set[str]]]] | None
+    ) = None,
     pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
     string_field_constraints: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict:
@@ -37,6 +40,8 @@ def json_schema_response_format(
         _apply_pointer_field_constraints(schema, pointer_field_constraints)
     if string_field_constraints:
         _apply_string_field_constraints(schema, string_field_constraints)
+    if dependent_field_constraints:
+        _apply_dependent_field_constraints(schema, dependent_field_constraints)
     return {
         "type": "json_schema",
         "json_schema": {
@@ -77,6 +82,9 @@ class StructuredLLMGenerator:
         system_prompt: str,
         user_prompt: str,
         extra_validation: Callable[[T], T] | None = None,
+        dependent_field_constraints: (
+            dict[str, list[dict[str, set[str]]]] | None
+        ) = None,
         pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
         string_field_constraints: dict[str, dict[str, set[str]]] | None = None,
     ) -> tuple[T, dict]:
@@ -90,6 +98,7 @@ class StructuredLLMGenerator:
         response_format = self._initial_response_format(
             schema_model,
             schema_name,
+            dependent_field_constraints,
             pointer_field_constraints,
             string_field_constraints,
         )
@@ -281,6 +290,9 @@ class StructuredLLMGenerator:
         self,
         schema_model: type[BaseModel],
         schema_name: str,
+        dependent_field_constraints: (
+            dict[str, list[dict[str, set[str]]]] | None
+        ),
         pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None,
         string_field_constraints: dict[str, dict[str, set[str]]] | None,
     ) -> dict:
@@ -288,6 +300,7 @@ class StructuredLLMGenerator:
             return json_schema_response_format(
                 schema_model,
                 schema_name,
+                dependent_field_constraints=dependent_field_constraints,
                 pointer_field_constraints=pointer_field_constraints,
                 string_field_constraints=string_field_constraints,
             )
@@ -478,3 +491,53 @@ def _apply_string_field_constraints(
             target = field_schema.get("items", field_schema)
             if isinstance(target, dict):
                 target["enum"] = sorted(allowed)
+
+
+def _apply_dependent_field_constraints(
+    schema: dict[str, Any],
+    constraints: dict[str, list[dict[str, set[str]]]],
+) -> None:
+    """Bind fields in one model through request-specific schema alternatives."""
+
+    definitions = schema.get("$defs", {})
+
+    def inline(value: dict[str, Any]) -> dict[str, Any]:
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            return deepcopy(definitions[reference.removeprefix("#/$defs/")])
+        return deepcopy(value)
+
+    def restrict(
+        value: dict[str, Any],
+        path: list[str],
+        allowed: set[str],
+    ) -> None:
+        field = value["properties"][path[0]]
+        if len(path) == 1:
+            target = field.get("items", field)
+            target["enum"] = sorted(allowed)
+            return
+        if field.get("type") == "array":
+            if not allowed:
+                field["maxItems"] = 0
+                return
+            child = inline(field["items"])
+            field["items"] = child
+        else:
+            child = inline(field)
+            value["properties"][path[0]] = child
+        restrict(child, path[1:], allowed)
+
+    for model_name, alternatives in constraints.items():
+        base = definitions.get(model_name)
+        if not isinstance(base, dict) or not alternatives:
+            continue
+        choices = []
+        for alternative in alternatives:
+            choice = deepcopy(base)
+            for field_path, allowed in alternative.items():
+                restrict(choice, field_path.split("."), allowed)
+            choices.append(choice)
+        definitions[model_name] = (
+            choices[0] if len(choices) == 1 else {"anyOf": choices}
+        )

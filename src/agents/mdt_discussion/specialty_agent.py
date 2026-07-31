@@ -154,6 +154,24 @@ class SpecialtyDiscussionAgent:
                 for claim in draft.answer_claims
                 for use in claim.evidence_uses
             ]
+            for claim_index, claim in enumerate(draft.answer_claims):
+                relations_by_locator: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+                for use in claim.evidence_uses:
+                    locator = (
+                        use.evidence_ref,
+                        tuple(sorted(use.proposition_ids)),
+                    )
+                    relations_by_locator.setdefault(locator, set()).add(use.effect)
+                conflicts = {
+                    str(locator): sorted(relations)
+                    for locator, relations in relations_by_locator.items()
+                    if len(relations) > 1
+                }
+                if conflicts:
+                    raise ValueError(
+                        f"answer_claims[{claim_index}] assigns multiple relations "
+                        f"to the same evidence locator: {conflicts}"
+                    )
             for use in [*claim_uses, *draft.evidence_uses]:
                 if use.evidence_ref not in candidates:
                     raise ValueError(f"Unknown evidence_ref for {task.task_id}: {use.evidence_ref}")
@@ -307,7 +325,14 @@ def discussion_evidence_schema_constraints(
                 },
             }
             for candidate in task.evidence_candidates
-        ]
+        ],
+        "related_evidence": [{
+            "evidence_ids": {
+                evidence_id
+                for candidate in task.evidence_candidates
+                for evidence_id in candidate.evidence_ids
+            },
+        }],
     }
 
 

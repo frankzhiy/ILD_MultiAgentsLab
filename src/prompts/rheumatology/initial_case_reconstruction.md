@@ -7,7 +7,7 @@
 
 规则：
 - `graph_unit.text` 是事实来源。`owned` 与 `shared_context` 可以进入诊断性判断；`reference_only` 只可进入 related_evidence、待确认观察或专科问题。
-- 每个临床判断引用 EvidencePointer；每个指针的 evidence_ids 只填写一个 ID，多个证据使用多个指针。
+- 每个临床判断引用 EvidencePointer；一个指针表示一个 Graph Unit，evidence_ids 可填写该图内一个或多个 ID，只有跨 Graph Unit 时才使用多个指针。
 - 本阶段 specialist_opinion_ids 必须为空。不得输出最终 MDT 诊断、治疗方案或自行确认影像/病理模式。
 
 适用临床规则：

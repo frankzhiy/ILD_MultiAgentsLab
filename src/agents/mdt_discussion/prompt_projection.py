@@ -104,7 +104,13 @@ def _project_value(value: Any) -> Any:
     for key, item in value.items():
         if key == "source_citations":
             projected[key] = [
-                _select(citation, "source_ref", "specialty", "source_type")
+                _select(
+                    citation,
+                    "source_ref",
+                    "specialty",
+                    "source_type",
+                    "source_subtype",
+                )
                 for citation in item or []
             ]
         elif key == "evidence":
@@ -116,6 +122,16 @@ def _project_value(value: Any) -> Any:
                         "graph_unit_id",
                         "evidence_ids",
                         "proposition_ids",
+                        *(
+                            (
+                                "target_claim_id",
+                                "relation",
+                                "rationale",
+                                "comparison_target",
+                            )
+                            if role == "links"
+                            else ()
+                        ),
                     )
                     for citation in citations or []
                 ]

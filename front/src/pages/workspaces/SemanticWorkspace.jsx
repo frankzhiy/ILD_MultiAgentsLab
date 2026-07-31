@@ -82,7 +82,7 @@ function LocalGraph({ unit, node, onNode }) {
 function GraphDetail({ node, unit }) {
   if (!unit) return null
   if (!node) return <aside className="graph-detail"><Title level={5}>节点详情</Title><Paragraph>点击图节点查看语义、状态和原文证据。</Paragraph></aside>
-  return <aside className="graph-detail"><Title level={5}>{node.node_type === 'event' ? (FRAME_LABELS[node.label] || node.label) : node.label}</Title><Space wrap><Tag>{node.node_type}</Tag><Tag>{node.semantic_type}</Tag>{node.status && <Tag color="blue">{node.status}</Tag>}{node.certainty && <Tag color="gold">{node.certainty}</Tag>}</Space><Text strong>证据原文</Text><Paragraph className="graph-quote">{node.evidence?.quote || '无'}</Paragraph><Citation value={{ ...node.evidence, node_id: node.node_id, graph_unit_id: unit.graph_unit_id, segment_id: unit.segment.segment_id }} label="检查节点证据" /></aside>
+  return <aside className="graph-detail"><Title level={5}>{node.node_type === 'event' ? (FRAME_LABELS[node.label] || node.label) : node.label}</Title><Space wrap><Tag>{node.node_type}</Tag><Tag>{node.semantic_type}</Tag>{node.status && <Tag color="blue">{node.status}</Tag>}{node.certainty && <Tag color="gold">{node.certainty}</Tag>}</Space><Text strong>图节点携带的原文定位</Text><Paragraph className="graph-quote">{node.evidence?.quote || '无'}</Paragraph><Citation value={{ ...node.evidence, node_id: node.node_id, graph_unit_id: unit.graph_unit_id, segment_id: unit.segment.segment_id }} /></aside>
 }
 
 function RawSegments({ segments, selected }) {

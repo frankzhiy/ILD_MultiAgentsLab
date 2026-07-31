@@ -8,16 +8,22 @@ def specialty_output_contract(
     pointer_style: str,
     initial_stage: bool = True,
     partitioned_evidence: bool = False,
+    defer_case_evidence: bool = False,
     extra_rules: tuple[str, ...] = (),
 ) -> str:
     targets = ", ".join(item.value for item in SpecialistTarget)
     rules = [
         f"专科问题的 specialty 只能是：{targets}；shared_context 不是专科。",
     ]
-    if pointer_style == "evidence_id":
+    if defer_case_evidence:
         rules.append(
-            "每个 EvidencePointer 的 evidence_ids 恰好填写一个 ID；"
-            "多个证据使用多个 EvidencePointer。"
+            "本阶段只把每项 assessment 拆成原子 claims，不选择或返回病例证据；"
+            "程序将在下一阶段生成固定 claim × evidence 槽位。"
+        )
+    elif pointer_style == "evidence_id":
+        rules.append(
+            "一个 EvidencePointer 代表一张患者证据图：evidence_ids 可填写同一 "
+            "Graph Unit 内一个或多个 ID；不得把同一图按 Evidence ID、命题或节点拆成多份证据。"
         )
         if partitioned_evidence:
             rules.extend(
@@ -40,6 +46,12 @@ def specialty_output_contract(
         )
     else:
         raise ValueError(f"Unknown pointer style: {pointer_style}")
+    if not defer_case_evidence:
+        rules.append(
+            "同一原文证据块在同一判断的结构化证据中只引用一次；"
+            "若 schema 提供 evidence_relations，分别用 direction 表示支持方向、"
+            "用 function 表示证据功能。"
+        )
     rules.append("所有 specialist_opinion_ids 必须为空列表。")
     rules.extend(extra_rules)
     return (

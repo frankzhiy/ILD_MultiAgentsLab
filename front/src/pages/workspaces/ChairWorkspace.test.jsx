@@ -100,8 +100,7 @@ const result = {
   }],
 }
 
-function renderWorkspace(run = { status: 'completed' }) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
+function renderWorkspace(run = { status: 'completed' }, client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })) {
   return render(
     <QueryClientProvider client={client}>
       <ChairWorkspace runId="run-1" run={run} />
@@ -133,12 +132,14 @@ describe('ChairWorkspace', () => {
     ;['专科回应情况：目标专科均已回应', '回答状态：受关键资料限制，本轮终止', '复核状态：已转证据需求', '讨论处置：受关键资料限制，本轮终止', '闭环方式：转为证据需求', '问题提出专科', '目标专科', '已回应专科', '满足状态：部分满足', '需求提出专科', '已提供专科'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('仍待回答专科')).not.toBeInTheDocument()
     ;['冲突状态：等待澄清', '冲突性质：硬冲突', '冲突类别：形态/影像解释', '比较目标：', '比较前提：', '立场：肯定该命题', '立场：否定该命题', '不可兼容原因：', '解决条件：', '已有解决路径：'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
-    ;['支持证据', '削弱证据', '鉴别证据', '背景证据', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
+    ;['患者证据图', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
     expect(screen.getByText('已有专科回答')).toBeInTheDocument()
     expect(screen.getByText('回答来源：')).toBeInTheDocument()
     expect(screen.getByText('问题来源：')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /gu-answer/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /answer-guide/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /(患者证据图|指南依据|专科)/ }).length).toBeGreaterThan(2)
+    expect(screen.getAllByRole('button', { name: /患者证据图｜支持\/反证\/鉴别\/背景/ }).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /gu-answer/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /answer-guide/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /question-bg/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /question-guide/ })).not.toBeInTheDocument()
     expect(screen.getByText('当前结果')).toBeInTheDocument()
@@ -149,10 +150,13 @@ describe('ChairWorkspace', () => {
   it('starts only the chair stage from a ready pending state', async () => {
     api.chair.mockResolvedValueOnce({ status: 'pending', runnable: true, result: null }).mockResolvedValue({ status: 'completed', runnable: true, result })
     api.runChair.mockResolvedValue({ status: 'running', runnable: true, result: null })
-    renderWorkspace()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
+    const invalidated = vi.spyOn(client, 'invalidateQueries')
+    renderWorkspace({ status: 'completed' }, client)
 
     fireEvent.click(await screen.findByRole('button', { name: '运行主持人整合' }))
     await waitFor(() => expect(api.runChair).toHaveBeenCalledWith('run-1'))
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ['run', 'run-1'] })
     expect(screen.getByText('此按钮只运行 MDT 主持人，会直接使用现有四个专科结果，不会重新运行前序 Agent。')).toBeInTheDocument()
   })
 

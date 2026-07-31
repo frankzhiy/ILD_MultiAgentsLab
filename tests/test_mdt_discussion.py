@@ -176,6 +176,18 @@ def expanded_chair_result():
                 "quote": "不应进入共享提示的完整专科原文",
             }],
             "evidence": {
+                "links": [{
+                    "evidence_ref": "E001",
+                    "segment_id": "seg-1",
+                    "graph_unit_id": "gu-1",
+                    "evidence_ids": ["ev-1"],
+                    "proposition_ids": ["gu-1::prop-1"],
+                    "node_ids": ["gu-1::prop-1"],
+                    "quote": "不应在主席共享视图中重复的病例原文",
+                    "target_claim_id": "T001-A001",
+                    "relation": "supports",
+                    "rationale": "该证据图直接支持这一原子判断。",
+                }],
                 "supporting": [{
                     "evidence_ref": "E001",
                     "segment_id": "seg-1",
@@ -246,6 +258,15 @@ def test_chair_prompt_view_keeps_semantics_and_compacts_provenance():
         "graph_unit_id": "gu-1",
         "evidence_ids": ["ev-1"],
         "proposition_ids": ["gu-1::prop-1"],
+    }]
+    assert conclusion["evidence"]["links"] == [{
+        "evidence_ref": "E001",
+        "graph_unit_id": "gu-1",
+        "evidence_ids": ["ev-1"],
+        "proposition_ids": ["gu-1::prop-1"],
+        "target_claim_id": "T001-A001",
+        "relation": "supports",
+        "rationale": "该证据图直接支持这一原子判断。",
     }]
     assert conclusion["guideline_evidence"] == [{
         "chunk_id": "guide:p001:c001",
@@ -373,14 +394,14 @@ def test_program_backfills_answer_and_evidence_ids_from_the_selected_task():
         answer_claims=[DiscussionAnswerClaimDraft(
             statement="现有资料支持低氧存在，但不能完成相对贡献量化。",
             evidence_uses=[DiscussionEvidenceUseDraft(
-                evidence_ref="gu-1:ev-1",
+                evidence_ref="gu-1",
                 proposition_ids=[proposition.proposition_id],
                 effect="supporting",
                 interpretation="证明低氧存在，不能单独证明病因。",
             )],
         )],
         evidence_uses=[DiscussionEvidenceUseDraft(
-            evidence_ref="gu-1:ev-1",
+            evidence_ref="gu-1",
             proposition_ids=[proposition.proposition_id],
             effect="supporting",
             interpretation="证明低氧存在，不能单独证明病因。",
@@ -415,7 +436,7 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
                 "answer_claims":[{
                     "statement":"低氧存在，但当前资料不能完成病因贡献量化。",
                     "evidence_uses":[{
-                        "evidence_ref":"gu-1:ev-1",
+                        "evidence_ref":"gu-1",
                         "proposition_ids":["gu-1::prop-1"],
                         "effect":"supporting",
                         "interpretation":"证明低氧存在，不能单独证明病因。"
@@ -423,7 +444,7 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
                     "guideline_evidence":[]
                 }],
                 "evidence_uses":[{
-                    "evidence_ref":"gu-1:ev-1",
+                    "evidence_ref":"gu-1",
                     "proposition_ids":["gu-1::prop-1"],
                     "effect":"supporting",
                     "interpretation":"证明低氧存在，不能单独证明病因。"
@@ -783,15 +804,19 @@ def test_discussion_schema_closes_evidence_uses_to_task_candidates():
         "discussion_answer",
         pointer_field_constraints=discussion_evidence_schema_constraints(task),
     )["json_schema"]["schema"]
-    expected = ["gu-1:ev-1"]
+    expected = ["gu-1"]
     top_level = schema["properties"]["evidence_uses"]["items"]["properties"]
     claim_level = schema["$defs"]["DiscussionAnswerClaimDraft"]["properties"][
         "evidence_uses"
+    ]["items"]["properties"]
+    related_evidence = schema["$defs"]["EvidenceGap"]["properties"][
+        "related_evidence"
     ]["items"]["properties"]
 
     for properties in (top_level, claim_level):
         assert properties["evidence_ref"]["enum"] == expected
         assert properties["proposition_ids"]["items"]["enum"] == ["gu-1::prop-1"]
+    assert related_evidence["evidence_ids"]["items"]["enum"] == ["ev-1"]
 
 
 def test_discussion_schema_allows_evidence_without_extracted_propositions():
@@ -812,7 +837,7 @@ def test_discussion_schema_allows_evidence_without_extracted_propositions():
     )["json_schema"]["schema"]
     properties = schema["properties"]["evidence_uses"]["items"]["properties"]
 
-    assert properties["evidence_ref"]["enum"] == ["gu-1:ev-1"]
+    assert properties["evidence_ref"]["enum"] == ["gu-1"]
     assert properties["proposition_ids"]["maxItems"] == 0
 
 
@@ -919,7 +944,7 @@ def test_legacy_report_is_migrated_without_inventing_diagnostic_layers():
     assert radiology.confidence == "unknown"
 
 
-def test_v2_report_restores_exact_provenance_from_selected_chair_items():
+def test_v3_report_restores_exact_provenance_from_selected_chair_items():
     class FakeLLM:
         supports_json_schema = False
 
@@ -939,10 +964,12 @@ def test_v2_report_restores_exact_provenance_from_selected_chair_items():
         stop_reason="讨论结束。",
     )
 
-    assert report.schema_version == "mdt_final_report.v2"
+    assert report.schema_version == "mdt_final_report.v3"
     assert len(report.reasoning_trace) == 8
     trace = report.reasoning_trace[0]
     assert trace.source_citations[0].quote == "不应进入共享提示的完整专科原文"
+    assert trace.evidence.links[0].target_claim_id == "T001-A001"
+    assert trace.evidence.links[0].relation == "supports"
     assert trace.evidence.supporting[0].quote == "不应在主席共享视图中重复的病例原文"
     assert trace.guideline_evidence[0].quote == "不应进入共享提示的完整指南原文"
     assert report.research_metrics.diagnostic_claims == 8

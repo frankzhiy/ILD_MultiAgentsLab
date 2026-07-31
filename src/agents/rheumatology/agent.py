@@ -9,6 +9,7 @@ from src.agents.common.evidence_projection import (
 )
 from src.agents.common.initial_output import SpecialtyInitialConsultResult, SpecialtyInitialOutput
 from src.agents.common.initial_output_validation import (
+    assign_specialty_initial_evidence,
     formal_evidence_schema_constraints,
     validate_specialty_initial_output,
 )
@@ -213,6 +214,14 @@ class RheumatologyAgent:
             ),
             formal_evidence_schema_constraints(case_input),
         )
+        formal_output, evidence_trace = assign_specialty_initial_evidence(
+            formal_output,
+            case_input,
+            SpecialistTarget.RHEUMATOLOGY,
+            self.generator,
+            internal_state,
+        )
+        output_trace["evidence_assignment"] = evidence_trace
         return SpecialtyInitialConsultResult(
             internal_state=internal_state,
             formal_output=formal_output,
@@ -261,6 +270,7 @@ class RheumatologyAgent:
             pointer_style="evidence_id",
             initial_stage=stage.startswith("initial_"),
             partitioned_evidence=stage != "initial_case_reconstruction",
+            defer_case_evidence=stage == "initial_reasoning_output",
             extra_rules=_CONTRACT_RULES_BY_STAGE.get(stage, ()),
         )
         prompt = f"{prompt}\n\n{contract}"

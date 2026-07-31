@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from src.workbench.app import app, orchestrator
@@ -63,8 +65,35 @@ def test_discussion_endpoint_is_ready_from_existing_chair_outputs():
     assert response.json()["max_rounds"] == 3
 
 
-def test_discussion_endpoint_keeps_failed_state_while_worker_cleans_up(monkeypatch):
+def test_discussion_endpoint_replaces_previous_failure_while_rerun_is_active(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator.catalog,
+        "discussion",
+        lambda _run_id: {"status": "failed", "error": "previous failure"},
+    )
+    monkeypatch.setattr(orchestrator.catalog, "run_dir", lambda _run_id: Path("run-1"))
+    monkeypatch.setattr(
+        orchestrator.catalog,
+        "run_summary",
+        lambda _run_dir: {"status": "running", "status_source": "mdt_discussion"},
+    )
+    monkeypatch.setattr(orchestrator, "discussion_running", lambda _run_id: True)
+
+    response = TestClient(app).get("/api/runs/run-1/discussion")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    assert response.json()["error"] is None
+
+
+def test_discussion_endpoint_keeps_current_failure_while_worker_cleans_up(monkeypatch):
     monkeypatch.setattr(orchestrator.catalog, "discussion", lambda _run_id: {"status": "failed"})
+    monkeypatch.setattr(orchestrator.catalog, "run_dir", lambda _run_id: Path("run-1"))
+    monkeypatch.setattr(
+        orchestrator.catalog,
+        "run_summary",
+        lambda _run_dir: {"status": "failed", "status_source": "mdt_discussion"},
+    )
     monkeypatch.setattr(orchestrator, "discussion_running", lambda _run_id: True)
 
     response = TestClient(app).get("/api/runs/run-1/discussion")
