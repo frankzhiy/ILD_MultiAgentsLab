@@ -5,6 +5,7 @@ from typing import Any, Callable, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from src.llm.base import LLMClient, LLMMessage
+from src.llm.throttle import request_throttle
 from src.utils.json_utils import parse_llm_json
 
 T = TypeVar("T", bound=BaseModel)
@@ -116,12 +117,13 @@ class StructuredLLMGenerator:
                 },
             )
             try:
-                response = self.llm.complete(
-                    messages,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    response_format=response_format,
-                )
+                with request_throttle.slot():
+                    response = self.llm.complete(
+                        messages,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                        response_format=response_format,
+                    )
             except RuntimeError as exc:
                 llm_duration = time.perf_counter() - attempt_started
                 self._emit(

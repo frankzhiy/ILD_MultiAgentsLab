@@ -5,7 +5,7 @@ import {
   ExclamationCircleFilled, FileSearchOutlined, PlayCircleOutlined, ReloadOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, Collapse, Empty, Progress, Segmented, Skeleton, Space, Spin, Table, Tag, Timeline, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, Empty, InputNumber, Modal, Progress, Segmented, Skeleton, Space, Spin, Table, Tag, Timeline, Typography } from 'antd'
 import { api } from '../../api'
 import { Citation, CitationGroup } from '../../components/Citation'
 import { QueryError } from '../../components/QueryState'
@@ -423,6 +423,18 @@ export function DiscussionWorkspace({ runId }) {
   })
   const [selectedRound, setSelectedRound] = useState()
   const [selectedTaskId, setSelectedTaskId] = useState()
+  const [batchOpen, setBatchOpen] = useState(false)
+  const [batchRunIds, setBatchRunIds] = useState([])
+  const [batchCaseConcurrency, setBatchCaseConcurrency] = useState(2)
+  const [batchRequestConcurrency, setBatchRequestConcurrency] = useState(6)
+  const batchRuns = useQuery({ queryKey: ['runs'], queryFn: api.runs, enabled: batchOpen })
+  const batchMutation = useMutation({
+    mutationFn: () => api.createBatch({ kind: 'discussion', run_ids: batchRunIds, max_case_concurrency: batchCaseConcurrency, max_request_concurrency: batchRequestConcurrency }),
+    onSuccess: (result) => {
+      window.history.pushState({}, '', `/batches/${encodeURIComponent(result.id)}`)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    },
+  })
 
   const value = query.data || {}
   const running = value.status === 'running' || mutation.isPending
@@ -483,6 +495,7 @@ export function DiscussionWorkspace({ runId }) {
           <Text type="secondary">讨论前主持人基线不计入轮次</Text>
           {elapsed && <Text type="secondary">已用时 {elapsed}</Text>}
           <div className="discussion-overall-progress"><Text type="secondary">总体进度</Text><Progress percent={progressPercent} size="small" /></div>
+          <Button onClick={() => { setBatchRunIds([runId]); setBatchOpen(true) }}>批量运行团队讨论</Button>
           <Button type="primary" aria-label={hasResult ? '重新运行团队讨论' : '运行团队讨论'} icon={hasResult ? <ReloadOutlined /> : <PlayCircleOutlined />} loading={running} disabled={!value.runnable || running} onClick={() => mutation.mutate()}>{hasResult ? '重新运行团队讨论' : '运行团队讨论'}</Button>
         </div>
       </div>
@@ -494,6 +507,12 @@ export function DiscussionWorkspace({ runId }) {
       {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="主持人结果已更新" description="下方是基于旧主持人结果的讨论记录，请重新运行以匹配当前结果。" />}
       {value.status === 'failed' && <Alert className="section-gap" type="error" showIcon title="团队讨论失败；已保留完成的步骤" description={value.error} />}
       {mutation.isError && <Alert className="section-gap" type="error" showIcon title="无法启动团队讨论" description={mutation.error.message} />}
+      <Modal title="批量运行团队讨论" open={batchOpen} onCancel={() => setBatchOpen(false)} onOk={() => batchMutation.mutate()} okText="开始批量运行" confirmLoading={batchMutation.isPending} okButtonProps={{ disabled: !batchRunIds.length }} width={820}>
+        <Text type="secondary">仅显示拥有当前主持人整合结果的运行。排队期间主持人结果变化的病例会被安全跳过。</Text>
+        <Table className="section-gap" size="small" rowKey="id" loading={batchRuns.isLoading} dataSource={(batchRuns.data || []).filter((item) => item.chair_complete)} pagination={{ pageSize: 6 }} rowSelection={{ selectedRowKeys: batchRunIds, onChange: setBatchRunIds }} columns={[{ title: '病例', dataIndex: 'case_id' }, { title: '运行 ID', dataIndex: 'id', ellipsis: true }]} />
+        <Space size={16}><span>病例并发 <InputNumber min={1} max={16} value={batchCaseConcurrency} onChange={(value) => setBatchCaseConcurrency(value || 1)} /></span><span>模型请求并发 <InputNumber min={1} max={64} value={batchRequestConcurrency} onChange={(value) => setBatchRequestConcurrency(value || 1)} /></span></Space>
+        {batchMutation.isError && <Alert className="section-gap" type="error" showIcon title="无法创建讨论批次" description={batchMutation.error.message} />}
+      </Modal>
 
       {rounds.length > 0 ? (
         <>

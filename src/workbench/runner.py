@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from src.utils.config import load_yaml
+from src.llm.throttle import request_throttle
 from src.workbench.catalog import RunCatalog, SPECIALTIES
 from src.workbench.events import EventStore
 from src.workbench.workflow import WorkbenchWorkflow
@@ -35,8 +36,12 @@ class RunOrchestrator:
         self.events = events
         self.workflow = WorkbenchWorkflow(self.root, events)
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.batch_tasks: dict[str, asyncio.Task[None]] = {}
+        self.batches_dir = self.root / "outputs/batches"
+        self.batches_dir.mkdir(parents=True, exist_ok=True)
         self.active_chairs: set[str] = set()
         self.active_discussions: set[str] = set()
+        self._recover_batches()
 
     def prepare(self, request: dict[str, Any]) -> tuple[str, Path]:
         case_id = str(request.get("case_id") or "").strip()
@@ -114,12 +119,13 @@ class RunOrchestrator:
         self._write_json(run_dir / ".workbench_run.json", manifest)
         return run_id, input_path
 
-    def start(self, run_id: str, input_path: Path) -> None:
+    def start(self, run_id: str, input_path: Path) -> asyncio.Task[None]:
         if run_id in self.tasks and not self.tasks[run_id].done():
             raise ValueError(f"运行已启动：{run_id}")
         task = asyncio.create_task(self._execute(run_id, input_path), name=f"run:{run_id}")
         self.tasks[run_id] = task
         task.add_done_callback(lambda _: self.tasks.pop(run_id, None))
+        return task
 
     def start_chair(self, run_id: str) -> None:
         run_dir = self.catalog.run_dir(run_id)
@@ -150,7 +156,7 @@ class RunOrchestrator:
     def chair_running(self, run_id: str) -> bool:
         return run_id in self.active_chairs
 
-    def start_discussion(self, run_id: str) -> None:
+    def start_discussion(self, run_id: str) -> asyncio.Task[None]:
         run_dir = self.catalog.run_dir(run_id)
         readiness = self.catalog.discussion(run_id)
         if not readiness["runnable"]:
@@ -175,6 +181,90 @@ class RunOrchestrator:
         self.active_discussions.add(run_id)
         self.tasks[key] = task
         task.add_done_callback(lambda _: self._finish_discussion(key, run_id))
+        return task
+
+    def create_batch(self, request: dict[str, Any]) -> dict[str, Any]:
+        kind = str(request.get("kind") or "")
+        if kind not in {"run", "discussion"}:
+            raise ValueError("批次类型必须是 run 或 discussion。")
+        if kind == "run":
+            item_ids = self._unique_ids(request.get("case_ids"), "病例")
+            for case_id in item_ids:
+                if not SAFE_CASE_ID.fullmatch(case_id):
+                    raise ValueError(f"病例 ID 不合法：{case_id}")
+                if not (self.catalog.cases_dir / f"{case_id}.txt").is_file():
+                    raise FileNotFoundError(f"病例不存在：{case_id}")
+            items = []
+            for case_id in item_ids:
+                run_id, input_path = self.prepare(
+                    {**request, "source": "library", "case_id": case_id}
+                )
+                items.append(
+                    {
+                        "case_id": case_id,
+                        "run_id": run_id,
+                        "input_path": str(input_path),
+                        "status": "queued",
+                    }
+                )
+        else:
+            item_ids = self._unique_ids(request.get("run_ids"), "运行")
+            items = []
+            for run_id in item_ids:
+                readiness = self.catalog.discussion(run_id)
+                if not readiness["runnable"]:
+                    raise ValueError(f"{run_id} 不满足团队讨论条件：{readiness['error']}")
+                items.append(
+                    {
+                        "case_id": self.catalog.case_id(self.catalog.run_dir(run_id)),
+                        "run_id": run_id,
+                        "baseline_sha256": self._chair_sha256(run_id),
+                        "status": "queued",
+                    }
+                )
+
+        batch_id = self._new_batch_id(kind)
+        batch = {
+            "schema_version": "workbench.batch.v1",
+            "id": batch_id,
+            "kind": kind,
+            "status": "queued",
+            "created_at": self._now(),
+            "updated_at": self._now(),
+            "request": {**request, "case_ids": item_ids if kind == "run" else [], "run_ids": item_ids if kind == "discussion" else []},
+            "items": items,
+        }
+        self._write_batch(batch)
+        task = asyncio.create_task(self._execute_batch(batch_id), name=f"batch:{batch_id}")
+        self.batch_tasks[batch_id] = task
+        task.add_done_callback(lambda _: self.batch_tasks.pop(batch_id, None))
+        return self.batch(batch_id)
+
+    def list_batches(self) -> list[dict[str, Any]]:
+        return sorted(
+            (self.batch(path.stem) for path in self.batches_dir.glob("*.json")),
+            key=lambda item: item["updated_at"],
+            reverse=True,
+        )
+
+    def batch(self, batch_id: str) -> dict[str, Any]:
+        value = self._read_batch(batch_id)
+        counts = {status: 0 for status in ("queued", "running", "completed", "failed", "skipped", "interrupted")}
+        for item in value["items"]:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        return {**value, "summary": {"total": len(value["items"]), **counts}}
+
+    def retry_batch(self, batch_id: str) -> dict[str, Any]:
+        batch = self._read_batch(batch_id)
+        retry_items = [item for item in batch["items"] if item["status"] in {"failed", "interrupted"}]
+        if not retry_items:
+            raise ValueError("该批次没有可重跑的失败或中断病例。")
+        request = dict(batch["request"])
+        if batch["kind"] == "run":
+            request["case_ids"] = [item["case_id"] for item in retry_items]
+        else:
+            request["run_ids"] = [item["run_id"] for item in retry_items]
+        return self.create_batch(request)
 
     def discussion_running(self, run_id: str) -> bool:
         return run_id in self.active_discussions
@@ -487,6 +577,109 @@ class RunOrchestrator:
         if manifest_path.exists():
             self._write_json(manifest_path, manifest)
         return result
+
+    async def _execute_batch(self, batch_id: str) -> None:
+        batch = self._read_batch(batch_id)
+        request_throttle.register(batch_id, int(batch["request"]["max_request_concurrency"]))
+        self._update_batch(batch_id, status="running")
+        limiter = asyncio.Semaphore(int(batch["request"]["max_case_concurrency"]))
+
+        async def run_item(item: dict[str, Any]) -> None:
+            async with limiter:
+                self._update_batch_item(batch_id, item["run_id"], status="running", started_at=self._now(), error=None)
+                try:
+                    if batch["kind"] == "run":
+                        await self.start(item["run_id"], Path(item["input_path"]))
+                        result = self.catalog.run_summary(self.catalog.run_dir(item["run_id"]))
+                        if not result["chair_complete"]:
+                            raise RuntimeError((result.get("manifest") or {}).get("error") or "未完成 MDT 主持人整合。")
+                    else:
+                        if self._chair_sha256(item["run_id"]) != item["baseline_sha256"]:
+                            self._update_batch_item(batch_id, item["run_id"], status="skipped", finished_at=self._now(), error="主持人整合结果已变化，请重新选择该运行。")
+                            return
+                        await self.start_discussion(item["run_id"])
+                        result = self.catalog.discussion(item["run_id"])
+                        if result["status"] != "completed":
+                            raise RuntimeError(result.get("error") or "团队讨论未完成。")
+                except Exception as error:
+                    self._update_batch_item(batch_id, item["run_id"], status="failed", finished_at=self._now(), error=str(error))
+                    return
+                self._update_batch_item(batch_id, item["run_id"], status="completed", finished_at=self._now(), error=None)
+
+        try:
+            await asyncio.gather(*(run_item(item) for item in batch["items"]))
+        finally:
+            request_throttle.unregister(batch_id)
+        self._update_batch(batch_id, status="completed")
+
+    def _recover_batches(self) -> None:
+        for path in self.batches_dir.glob("*.json"):
+            batch = self._read_json(path)
+            if batch.get("status") not in {"queued", "running"}:
+                continue
+            for item in batch.get("items", []):
+                if item.get("status") in {"queued", "running"}:
+                    item["status"] = "interrupted"
+                    item["finished_at"] = self._now()
+                    item["error"] = "服务重启，未完成的批次任务已安全中断。"
+            batch["status"] = "interrupted"
+            batch["updated_at"] = self._now()
+            self._write_json(path, batch)
+
+    def _new_batch_id(self, kind: str) -> str:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"{stamp}_{kind}_batch"
+        batch_id = base
+        counter = 2
+        while self._batch_path(batch_id).exists():
+            batch_id = f"{base}_{counter}"
+            counter += 1
+        return batch_id
+
+    def _unique_ids(self, values: Any, label: str) -> list[str]:
+        if not isinstance(values, list):
+            raise ValueError(f"请至少选择一个{label}。")
+        result = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+        if not result:
+            raise ValueError(f"请至少选择一个{label}。")
+        return result
+
+    def _chair_sha256(self, run_id: str) -> str:
+        run_dir = self.catalog.run_dir(run_id)
+        path = run_dir / f"{self.catalog.case_id(run_dir)}_mdt_chair_integration.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"主持人整合结果不存在：{run_id}")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _batch_path(self, batch_id: str) -> Path:
+        if not SAFE_CASE_ID.fullmatch(batch_id):
+            raise FileNotFoundError(batch_id)
+        return self.batches_dir / f"{batch_id}.json"
+
+    def _read_batch(self, batch_id: str) -> dict[str, Any]:
+        path = self._batch_path(batch_id)
+        if not path.is_file():
+            raise FileNotFoundError(batch_id)
+        return self._read_json(path)
+
+    def _write_batch(self, batch: dict[str, Any]) -> None:
+        self._write_json(self._batch_path(batch["id"]), batch)
+
+    def _update_batch(self, batch_id: str, **changes: Any) -> None:
+        batch = self._read_batch(batch_id)
+        batch.update(changes)
+        batch["updated_at"] = self._now()
+        self._write_batch(batch)
+
+    def _update_batch_item(self, batch_id: str, run_id: str, **changes: Any) -> None:
+        batch = self._read_batch(batch_id)
+        for item in batch["items"]:
+            if item["run_id"] == run_id:
+                item.update(changes)
+                batch["updated_at"] = self._now()
+                self._write_batch(batch)
+                return
+        raise FileNotFoundError(run_id)
 
     def _update_manifest(self, path: Path, **changes: Any) -> None:
         manifest = self._read_json(path)

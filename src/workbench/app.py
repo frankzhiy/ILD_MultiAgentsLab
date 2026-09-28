@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,28 @@ class CreateRunRequest(BaseModel):
             raise ValueError("source must be library or paste")
         if self.source == "paste" and not (self.raw_text or "").strip():
             raise ValueError("raw_text is required when source=paste")
+        return self
+
+
+class CreateBatchRequest(BaseModel):
+    kind: Literal["run", "discussion"]
+    source: str = "library"
+    case_ids: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    max_concurrency: int = Field(default=6, ge=1, le=16)
+    max_case_concurrency: int = Field(default=2, ge=1, le=16)
+    max_request_concurrency: int = Field(default=6, ge=1, le=64)
+    agents: dict[str, AgentOverride] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_batch(self):
+        if self.kind == "run":
+            if self.source != "library":
+                raise ValueError("批量完整运行目前仅支持病例库输入。")
+            if not self.case_ids:
+                raise ValueError("请至少选择一个病例。")
+        elif not self.run_ids:
+            raise ValueError("请至少选择一个运行。")
         return self
 
 app = FastAPI(title="ILD Multi-Agent Research Workbench", version="0.1.0")
@@ -120,6 +143,39 @@ async def create_run(request: CreateRunRequest) -> dict:
         return catalog.run_summary(catalog.run_dir(run_id))
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/batches")
+def list_batches() -> list[dict]:
+    return orchestrator.list_batches()
+
+
+@app.post("/api/batches", status_code=202)
+async def create_batch(request: CreateBatchRequest) -> dict:
+    try:
+        return orchestrator.create_batch(request.model_dump(exclude_none=True))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/batches/{batch_id}")
+def get_batch(batch_id: str) -> dict:
+    try:
+        return orchestrator.batch(batch_id)
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.post("/api/batches/{batch_id}/retry", status_code=202)
+async def retry_batch(batch_id: str) -> dict:
+    try:
+        return orchestrator.retry_batch(batch_id)
+    except FileNotFoundError as error:
+        raise not_found(error) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
