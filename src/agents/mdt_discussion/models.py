@@ -16,6 +16,7 @@ from src.agents.mdt_chair.models import (
     ChairEvidenceBundle,
     CrossSpecialtyConflict,
     EvidenceNeed,
+    LedgerEvidenceNeedGroup,
     SpecialtySourceCitation,
 )
 from src.guidelines.models import GuidelineEvidencePointer
@@ -269,14 +270,27 @@ class ReportDifferentialDiagnosis(BaseModel):
     chair_item_ids: list[str] = Field(min_length=1)
 
 
+class ReportSecondaryJudgment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1)
+    medical_basis: str = Field(min_length=1)
+    chair_item_ids: list[str] = Field(min_length=1)
+
+
 class ClinicalMDTReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    overall_conclusion: str = Field(min_length=1)
-    overall_confidence: DiagnosticConfidence
-    integrated_summary: str = Field(min_length=1)
+    # Legacy fields remain readable; new reports derive the opening from the matrix.
+    overall_conclusion: SkipJsonSchema[str] = ""
+    overall_confidence: SkipJsonSchema[DiagnosticConfidence] = "unknown"
+    pulmonary_description: SkipJsonSchema[str] = ""
+    key_boundary: SkipJsonSchema[str] = ""
+    secondary_judgments: list[ReportSecondaryJudgment]
+    integrated_summary: SkipJsonSchema[str] = ""
     diagnostic_matrix: list[ReportDiagnosticItem] = Field(min_length=7, max_length=7)
     differential_diagnoses: list[ReportDifferentialDiagnosis] = Field(default_factory=list)
+    clinical_narrative: SkipJsonSchema[str] = ""
 
     @model_validator(mode="after")
     def require_each_diagnostic_dimension(self):
@@ -287,6 +301,15 @@ class ClinicalMDTReport(BaseModel):
         ranks = [item.rank for item in self.differential_diagnoses]
         if ranks != list(range(1, len(ranks) + 1)):
             raise ValueError("differential diagnosis ranks must be consecutive from 1")
+        diagnosis = next(item for item in self.diagnostic_matrix if item.dimension == "mdt_diagnosis")
+        sentences = [diagnosis.statement, diagnosis.medical_basis]
+        for item in self.secondary_judgments:
+            sentences.extend((item.statement, item.medical_basis))
+        self.clinical_narrative = "".join(
+            sentence.strip() if sentence.strip().endswith(("。", "！", "？"))
+            else sentence.strip() + "。"
+            for sentence in sentences if sentence.strip()
+        )
         return self
 
 
@@ -373,8 +396,8 @@ class MDTFinalReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: SkipJsonSchema[
-        Literal["mdt_final_report.v2", "mdt_final_report.v3"]
-    ] = "mdt_final_report.v3"
+        Literal["mdt_final_report.v2", "mdt_final_report.v3", "mdt_final_report.v4", "mdt_final_report.v5"]
+    ] = "mdt_final_report.v5"
     case_id: SkipJsonSchema[str] = ""
     consensus_status: SkipJsonSchema[Literal[
         "consensus_reached",
@@ -393,14 +416,25 @@ class MDTFinalReport(BaseModel):
     assessment_boundaries: SkipJsonSchema[list[AssessmentBoundary]] = Field(default_factory=list)
     unresolved_conflicts: SkipJsonSchema[list[CrossSpecialtyConflict]] = Field(default_factory=list)
     evidence_needs: SkipJsonSchema[list[EvidenceNeed]] = Field(default_factory=list)
+    evidence_need_groups: SkipJsonSchema[list[LedgerEvidenceNeedGroup]] = Field(default_factory=list)
     judgment_changes: SkipJsonSchema[list[JudgmentChangeEvent]] = Field(default_factory=list)
     legacy_source: SkipJsonSchema[bool] = False
 
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_report(cls, value):
-        if not isinstance(value, dict) or "clinical_report" in value:
+        if not isinstance(value, dict):
             return value
+        if "clinical_report" in value:
+            if value.get("schema_version") not in {"mdt_final_report.v2", "mdt_final_report.v3"}:
+                return value
+            migrated = dict(value)
+            clinical = dict(migrated["clinical_report"])
+            clinical.setdefault("pulmonary_description", "")
+            clinical.setdefault("key_boundary", "")
+            clinical.setdefault("secondary_judgments", [])
+            migrated["clinical_report"] = clinical
+            return migrated
         if "primary_conclusion" not in value:
             return value
         migrated = dict(value)
@@ -416,6 +450,9 @@ class MDTFinalReport(BaseModel):
         migrated["clinical_report"] = {
             "overall_conclusion": primary,
             "overall_confidence": "unknown",
+            "pulmonary_description": "",
+            "key_boundary": "",
+            "secondary_judgments": [],
             "integrated_summary": integrated_summary,
             "diagnostic_matrix": [
                 {

@@ -258,6 +258,7 @@ class LedgerEvidenceNeedGroup(BaseModel):
     required_information: str = Field(min_length=1)
     decision_role: Literal["blocking_boundary", "non_blocking_refinement", "limitation_only"]
     coverage_source_refs: list[str] = Field(default_factory=list)
+    source_citations: SkipJsonSchema[list[SpecialtySourceCitation]] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -529,6 +530,7 @@ class MDTChairIntegration(BaseModel):
     conflicts: list[CrossSpecialtyConflict] = Field(default_factory=list)
     questions: list[IntegratedQuestion] = Field(default_factory=list)
     evidence_needs: list[EvidenceNeed] = Field(default_factory=list)
+    evidence_need_groups: SkipJsonSchema[list[LedgerEvidenceNeedGroup]] = Field(default_factory=list)
 
 
 class IntegratedConclusionDraft(IntegratedConclusion):
@@ -536,6 +538,7 @@ class IntegratedConclusionDraft(IntegratedConclusion):
 
     source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list, exclude=True)
     atomic_claim_ids: list[str] = Field(min_length=1)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -548,6 +551,7 @@ class IntegratedConclusionDraft(IntegratedConclusion):
 class AssessmentBoundaryDraft(AssessmentBoundary):
     source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list, exclude=True)
     question_source_refs: list[str] = Field(default_factory=list)
+    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod

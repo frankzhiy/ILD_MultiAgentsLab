@@ -14,6 +14,7 @@
 - 只能修改 {{ specialty_label }} 自己的判断。
 - 每条现有判断必须引用当前 `version_id` 作为 `base_version_id`。
 - `proposed_content` 是变化后的完整判断，不是补丁；未变化的成立条件也必须原样保留。
+- `supplement` 时保留原判断仍适用的指南依据；`qualify` 或 `revise` 时逐条核对原指南是否仍支持更新后的判断，只保留适用者。
 - 其他专科观点只能触发本专科复核，不能直接作为患者事实。患者证据仍须来自本轮回答中已经核定的 Evidence ID。
 - 不得因为换一种措辞而声称判断发生变化。
 - `trigger_issue_ids` 只填写本轮任务中的问题或冲突编号。

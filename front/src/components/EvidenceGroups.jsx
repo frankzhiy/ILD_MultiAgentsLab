@@ -51,14 +51,14 @@ export function EvidenceGroups({ evidence = {}, guidelineEvidence = [] }) {
       }))
       : GROUPS.flatMap(([key, label]) => (evidence[key] || []).map((item) => ({
         ...item,
-        relations: [{ relation: key, rationale: `旧版${label}关系，未经过原子结论级重新校验。`, legacy: true }],
+        relations: [{ relation: key, rationale: label, legacy: true }],
       })))
   if (!caseEvidence.length && !guidelineEvidence?.length) return null
   return (
     <div className="evidence-groups">
       {caseEvidence.length > 0 && (
         <div className="evidence-group">
-          <Tag color="cyan">患者证据图</Tag>
+          <Tag color="cyan">病历原文</Tag>
           <CitationGroup refs={caseEvidence} />
         </div>
       )}

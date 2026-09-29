@@ -9,6 +9,7 @@ from src.agents.common.decision_state import (
     MultiSpecialtyDecisionState,
     SpecialtyJudgmentVersion,
     SpecialtyJudgmentUpdate,
+    prepare_judgment_change,
 )
 from src.agents.common.initial_output import SpecialtyAssessment
 from src.agents.mdt_chair.models import MDTChairIntegration
@@ -65,11 +66,18 @@ def final_report_v2_payload(*, chair_item_id="IC001"):
         "clinical_report": {
             "overall_conclusion": "纤维化性间质性肺病工作诊断，具体类型待分类。",
             "overall_confidence": "moderate",
+            "pulmonary_description": "影像提示双肺纤维化性间质改变。",
+            "key_boundary": "具体影像模式尚未确定。",
+            "secondary_judgments": [],
             "integrated_summary": "模式与病因分别保留判断边界。",
             "diagnostic_matrix": [
                 {
                     "dimension": dimension,
-                    "statement": f"{dimension} 的当前判断。",
+                    "statement": (
+                        "纤维化性间质性肺病工作诊断，具体类型待分类。"
+                        if dimension == "mdt_diagnosis"
+                        else f"{dimension} 的当前判断。"
+                    ),
                     "status": (
                         "favored" if dimension in {"ild_presence", "mdt_diagnosis"}
                         else "not_assessable"
@@ -721,6 +729,8 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations():
         active_judgments=[current],
     )
     assert update.proposals[0].proposed_content.guideline_evidence == []
+    preserved, _ = prepare_judgment_change(current, update.proposals[0])
+    assert preserved.guideline_evidence[0].guideline_id == "guide-1"
 
 
 def test_judgment_update_repairs_change_type_before_committing_core_change():
@@ -1247,6 +1257,7 @@ def test_final_report_uses_the_compact_chair_view():
     assert "不应进入共享提示的完整专科原文" not in trace["prompt"]
     assert "不应在主席共享视图中重复的病例原文" not in trace["prompt"]
     assert report.consensus_status == "consensus_reached"
+    assert report.schema_version == "mdt_final_report.v2"
 
 
 def test_v2_report_requires_each_diagnostic_dimension_once():
@@ -1255,6 +1266,35 @@ def test_v2_report_requires_each_diagnostic_dimension_once():
 
     with pytest.raises(ValueError, match="at least 7 items"):
         MDTFinalReport.model_validate(payload)
+
+
+def test_final_report_retries_clunky_overall_conclusion():
+    class FakeLLM:
+        supports_json_schema = False
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, **kwargs):
+            self.calls += 1
+            payload = final_report_v2_payload()
+            if self.calls == 1:
+                next(item for item in payload["clinical_report"]["diagnostic_matrix"]
+                     if item["dimension"] == "mdt_diagnosis")["statement"] = (
+                    "目前肺部疾病工作诊断为感染可能参与的间质性／渗出性肺部过程。"
+                )
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
+    llm = FakeLLM()
+    report, _ = FinalReportAgent(llm, config={"max_attempts": 2}).generate(
+        case_id="case-1",
+        chair_result=expanded_chair_result(),
+        rounds=[],
+        stop_reason="讨论结束。",
+    )
+
+    assert llm.calls == 2
+    assert report.clinical_report.overall_conclusion.startswith("纤维化性间质性肺病")
 
 
 def test_legacy_report_is_migrated_without_inventing_diagnostic_layers():
@@ -1281,18 +1321,16 @@ def test_legacy_report_is_migrated_without_inventing_diagnostic_layers():
     )
     assert radiology.status == "not_assessable"
     assert radiology.confidence == "unknown"
+    previous = final_report_v2_payload()
+    previous["schema_version"] = "mdt_final_report.v3"
+    for field in ("pulmonary_description", "key_boundary", "secondary_judgments"):
+        previous["clinical_report"].pop(field)
+    restored = MDTFinalReport.model_validate(previous)
+    assert restored.clinical_report.pulmonary_description == ""
+    assert restored.clinical_report.secondary_judgments == []
 
 
-def test_v3_report_restores_exact_provenance_from_selected_chair_items():
-    class FakeLLM:
-        supports_json_schema = False
-
-        def complete(self, messages, *, temperature, max_tokens, response_format=None):
-            return LLMResponse(
-                content=json.dumps(final_report_v2_payload(), ensure_ascii=False),
-                raw={"choices": [{}]},
-            )
-
+def test_v4_report_restores_exact_provenance_from_selected_chair_items():
     decision_state = MultiSpecialtyDecisionState(
         case_id="case-1",
         change_events=[JudgmentChangeEvent(
@@ -1309,28 +1347,64 @@ def test_v3_report_restores_exact_provenance_from_selected_chair_items():
             changed_fields=["limitations"],
         )],
     )
+    chair = expanded_chair_result()
+    chair["integrated_conclusions"][0]["guideline_evidence"][0]["quote_unit_ids"] = ["quote-1"]
+    chair["integrated_conclusions"][0]["guideline_evidence"].append({
+        **chair["integrated_conclusions"][0]["guideline_evidence"][0],
+        "quote_unit_ids": ["quote-2"],
+        "quote": "同一指南片段中的另一段已核验原文",
+    })
+    chair["evidence_need_groups"] = [{
+        "source_refs": ["S010"],
+        "required_information": "可获得的既有抗体报告。",
+        "decision_role": "blocking_boundary",
+    }]
+    payload = final_report_v2_payload()
+    payload["clinical_report"]["overall_conclusion"] = "旧的独立主结论。"
+    payload["clinical_report"]["integrated_summary"] = "旧的独立摘要。"
+    payload["clinical_report"]["clinical_narrative"] = "与矩阵矛盾的段落。"
+    payload["clinical_report"]["secondary_judgments"] = [{
+        "statement": "另有需保留的病因判断。",
+        "medical_basis": "主持人保留该判断。",
+        "chair_item_ids": ["IC001"],
+    }]
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
     report, _ = FinalReportAgent(
         FakeLLM(),
         config={"max_attempts": 1},
     ).generate(
         case_id="case-1",
-        chair_result=expanded_chair_result(),
+        chair_result=chair,
         rounds=[],
         stop_reason="讨论结束。",
         decision_state=decision_state,
     )
 
-    assert report.schema_version == "mdt_final_report.v3"
-    assert len(report.reasoning_trace) == 8
+    assert report.schema_version == "mdt_final_report.v5"
+    assert len(report.reasoning_trace) == 9
+    assert report.clinical_report.overall_conclusion == report.clinical_report.diagnostic_matrix[3].statement
+    assert report.clinical_report.integrated_summary == report.clinical_report.diagnostic_matrix[3].medical_basis
+    assert report.clinical_report.clinical_narrative.startswith(report.clinical_report.overall_conclusion)
+    assert "与矩阵矛盾" not in report.clinical_report.clinical_narrative
+    assert "另有需保留的病因判断。主持人保留该判断。" in report.clinical_report.clinical_narrative
+    assert report.reasoning_trace[-1].claim_statement == "另有需保留的病因判断。"
     trace = report.reasoning_trace[0]
     assert trace.source_citations[0].quote == "不应进入共享提示的完整专科原文"
     assert trace.evidence.links[0].target_claim_id == "T001-A001"
     assert trace.evidence.links[0].relation == "supports"
     assert trace.evidence.supporting[0].quote == "不应在主席共享视图中重复的病例原文"
     assert trace.guideline_evidence[0].quote == "不应进入共享提示的完整指南原文"
-    assert report.research_metrics.diagnostic_claims == 8
-    assert report.research_metrics.claims_with_patient_evidence == 8
+    assert [item.quote_unit_ids for item in trace.guideline_evidence] == [["quote-1"], ["quote-2"]]
+    assert report.research_metrics.diagnostic_claims == 9
+    assert report.research_metrics.claims_with_patient_evidence == 9
     assert report.judgment_changes == decision_state.change_events
+    assert report.evidence_need_groups[0].decision_role == "blocking_boundary"
 
 
 def test_v2_report_rejects_unknown_chair_item_reference():
@@ -1355,6 +1429,50 @@ def test_v2_report_rejects_unknown_chair_item_reference():
             chair_result=expanded_chair_result(),
             rounds=[],
             stop_reason="讨论结束。",
+        )
+
+
+def test_secondary_judgment_requires_a_chair_conclusion():
+    chair = expanded_chair_result()
+    chair["assessment_boundaries"] = [{"boundary_id": "B001"}]
+    payload = final_report_v2_payload()
+    payload["clinical_report"]["secondary_judgments"] = [{
+        "statement": "不能确定具体病因。",
+        "medical_basis": "仍有判断边界。",
+        "chair_item_ids": ["B001"],
+    }]
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
+    with pytest.raises(RuntimeError, match="次要判断须引用至少一条主持人疾病或病因结论"):
+        FinalReportAgent(FakeLLM(), config={"max_attempts": 1}).generate(
+            case_id="case-1", chair_result=chair, rounds=[], stop_reason="讨论结束。"
+        )
+
+
+def test_secondary_judgment_rejects_imaging_only_conclusion():
+    chair = expanded_chair_result()
+    chair["integrated_conclusions"][0]["conclusion_type"] = "imaging_interpretation"
+    payload = final_report_v2_payload()
+    payload["clinical_report"]["secondary_judgments"] = [{
+        "statement": "左肺空洞性质未明。",
+        "medical_basis": "影像报告描述空洞。",
+        "chair_item_ids": ["IC001"],
+    }]
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
+    with pytest.raises(RuntimeError, match="次要判断须引用至少一条主持人疾病或病因结论"):
+        FinalReportAgent(FakeLLM(), config={"max_attempts": 1}).generate(
+            case_id="case-1", chair_result=chair, rounds=[], stop_reason="讨论结束。"
         )
 
 

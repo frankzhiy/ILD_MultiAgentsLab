@@ -3,7 +3,12 @@ from pathlib import Path
 
 from src.workbench.catalog import RunCatalog
 from src.workbench.events import EventStore
-from src.workbench.runner import RunOrchestrator
+from src.workbench.runner import RunOrchestrator, SAFE_CASE_ID
+
+
+def test_library_case_id_with_internal_space_is_safe():
+    assert SAFE_CASE_ID.fullmatch("81- IPF")
+    assert not SAFE_CASE_ID.fullmatch("../escape")
 
 
 def test_batch_limits_case_concurrency_and_keeps_other_cases_running(monkeypatch, tmp_path):

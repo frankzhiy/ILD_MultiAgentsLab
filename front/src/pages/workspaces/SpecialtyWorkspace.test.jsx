@@ -138,8 +138,8 @@ describe('SpecialtyWorkspace', () => {
     expect(screen.getAllByText('需其他专科回答的问题').length).toBeGreaterThan(0)
     ;['专科问题定位', '初步判断', '决策相关证据缺口', '本专科判断边界'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('临床推理论证')).not.toBeInTheDocument()
-    ;['患者证据图', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
-    fireEvent.click(screen.getAllByRole('button', { name: /患者证据图｜支持\/限定/ })[0])
+    ;['病历原文', '指南依据'].forEach((label) => expect(screen.getAllByText(label).length).toBeGreaterThan(0))
+    fireEvent.click(screen.getAllByRole('button', { name: /病历原文｜支持\/限定/ })[0])
     expect(await screen.findByText('证据检查器')).toBeInTheDocument()
     expect(screen.getByText('被引用的患者原文')).toBeInTheDocument()
     expect(screen.queryByText('原文证据摘录')).not.toBeInTheDocument()
@@ -177,7 +177,7 @@ describe('SpecialtyWorkspace', () => {
     })
     renderWorkspace({ run: { status: 'completed' }, drawer: true })
 
-    fireEvent.click((await screen.findAllByRole('button', { name: /患者证据图/ }))[0])
+    fireEvent.click((await screen.findAllByRole('button', { name: /病历原文/ }))[0])
     expect(await screen.findByText('覆盖整个 Graph Unit，不重复展示')).toBeInTheDocument()
     expect(screen.queryByText('证据单元上下文（Graph Unit）')).not.toBeInTheDocument()
     expect(document.querySelectorAll('.evidence-quote')).toHaveLength(1)
@@ -196,7 +196,7 @@ describe('SpecialtyWorkspace', () => {
     ]
     expect(items.map((item, index) => citationLabel(item, items, index))).toEqual([
       '原文片段',
-      '患者证据图',
+      '病历原文',
       '原文证据',
       '图节点',
       '呼吸科｜专科问题',

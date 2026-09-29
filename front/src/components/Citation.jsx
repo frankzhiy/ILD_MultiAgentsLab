@@ -54,7 +54,7 @@ export function citationCategory(value) {
     const label = sourceLabel(value)
     return [`specialty_${value?.source_subtype || value?.source_type || 'source'}`, label]
   }
-  if (value?.graph_unit_id) return ['patient_graph', '患者证据图']
+  if (value?.graph_unit_id) return ['patient_graph', '病历原文']
   if (value?.node_id) return ['graph_node', '图节点']
   if (value?.evidence_ids?.length || value?.evidence_fragments?.length) return ['evidence_block', '原文证据']
   if (value?.node_ids?.length) return ['graph_node', '图节点']
@@ -103,7 +103,7 @@ export function Citation({ value, collection, index = 0 }) {
           ? <ApartmentOutlined />
           : <AimOutlined />
   return (
-    <Tooltip title={value?.quote || value?.text || '打开证据检查器'}>
+    <Tooltip title={value?.quote || value?.text || '查看依据'}>
       <Button size="small" className="citation-button" icon={icon} onClick={() => selectEvidence(items[index], items, index)}>
         {citationLabel(value, items, index)}
       </Button>

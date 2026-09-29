@@ -34,6 +34,8 @@ from src.agents.mdt_discussion.models import (
     SpecialtyRoundResponse,
     SpecialtyTaskAnswer,
 )
+from src.guidelines.models import GuidelineChunk
+from src.guidelines.runtime import guideline_quote_units
 from src.llm.base import LLMResponse
 from src.llm.structured import json_schema_response_format
 
@@ -1099,6 +1101,39 @@ def test_ledger_reports_relation_conflict_even_if_other_assessment_is_omitted():
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
 
     assert "multiple relations" in str(error.value)
+
+
+def test_ledger_repair_error_uses_raw_group_index_before_conflict_normalization():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    claim = deepcopy(payload["claim_groups"][0]["claims"][0])
+    evidence_ref = bundle.source_evidence[claim["source_ref"]]["supporting"][0]
+    claim["evidence_links"] = [
+        {"evidence_ref": evidence_ref, "relation": "supports", "rationale": "直接依据。"},
+        {"evidence_ref": evidence_ref, "relation": "qualifies", "rationale": "限定信息。"},
+    ]
+    payload["claim_groups"][0]["claims"][0] = claim
+    payload["claim_groups"].insert(0, {
+        "label": "无效冲突占位",
+        "disposition": "conflict",
+        "conflict_nature": "direct_contradiction",
+        "comparison_target": "当前诊断",
+        "comparison_conditions": "现有资料",
+        "why_incompatible": "占位分歧",
+        "decision_impact": "需核对",
+        "claims": [deepcopy(claim) | {"evidence_links": []}, deepcopy(claim) | {"evidence_links": []}],
+    })
+    payload["question_routes"] = {
+        route["source_refs"][0]: {
+            key: value for key, value in route.items()
+            if key not in {"source_refs", "target_specialties"}
+        }
+        for route in payload["question_routes"]
+    }
+    draft = _ledger_generation_model(bundle).model_validate(payload)
+
+    with pytest.raises(ValueError, match=r"claim_groups\[1\]\.claims\[0\].*multiple relations"):
+        _ledger_from_draft(draft, bundle)
 
 
 def test_ledger_repairs_all_conflicting_evidence_links_without_regenerating():
@@ -2256,6 +2291,25 @@ def test_agent_uses_ledger_then_integration_structured_calls():
     bundle.prompt_input["specialties"][0]["specialty_assessments"][0]["claims"] = [
         {"claim_id": source_claim_id, "statement": "专科内部原子判断。"}
     ]
+    chunk = GuidelineChunk(
+        chunk_id="chair-guide:p001:u001",
+        guideline_id="chair-guide",
+        title="ILD 多学科诊断指南",
+        organization="Test",
+        year=2025,
+        source_file="chair-guide.pdf",
+        page=1,
+        unit_type="recommendation",
+        text="建议结合临床和影像信息进行间质性肺疾病多学科诊断。",
+        document_sha256="a" * 64,
+    )
+
+    class FakeGuidelines:
+        def prepare_query(self, query):
+            assert "间质性肺疾病多学科诊断" in query
+            return "已检索到指南片段", {chunk.chunk_id: chunk}, {
+                "query": query, "candidates": [{"chunk_id": chunk.chunk_id}], "used_chunk_ids": [],
+            }
 
     class FakeLLM:
         supports_json_schema = True
@@ -2270,6 +2324,13 @@ def test_agent_uses_ledger_then_integration_structured_calls():
                 if len(self.calls) % 2
                 else integration_generation_payload(bundle, ledger_payload(bundle))
             )
+            if len(self.calls) == 2:
+                payload["integrated_conclusions"][0]["guideline_evidence"] = [{
+                    "chunk_id": chunk.chunk_id,
+                    "quote_unit_ids": [unit.quote_unit_id for unit in guideline_quote_units(chunk)],
+                    "relevance": "规定多学科诊断方法。",
+                    "application": "用于校准当前疾病层级判断。",
+                }]
             return LLMResponse(
                 content=json.dumps(payload, ensure_ascii=False),
                 raw={"usage": {"prompt_tokens": 100, "completion_tokens": 50}},
@@ -2281,10 +2342,17 @@ def test_agent_uses_ledger_then_integration_structured_calls():
         ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
         prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
         max_attempts=1,
+        guideline_runtime=FakeGuidelines(),
     )
     result, trace = agent.integrate(bundle)
     assert len(llm.calls) == 2
     assert result.integrated_conclusions[0].conclusion_id == "IC001"
+    assert any(
+        item.quote == chunk.text
+        for item in result.integrated_conclusions[0].guideline_evidence
+    )
+    assert trace["guideline_retrieval"]["used_chunk_ids"] == [chunk.chunk_id]
+    assert len(result.evidence_need_groups) == 2
     assert trace["semantic_ledger"]["claim_groups"][0]["topic_id"] == "T001"
     assert "topic_ledger_chars" in trace["prompt_components"]
     assert source_claim_id in llm.calls[0][0][-1].content

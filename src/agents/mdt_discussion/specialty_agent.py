@@ -49,7 +49,7 @@ SPECIALTY_LABELS = {
 }
 ROLE_BOUNDARIES = {
     "pulmonology": "负责临床疾病层面的整合，但不是 MDT 主席。",
-    "thoracic_radiology": "只能解释提供的影像文字资料，不能声称直接阅片。",
+    "thoracic_radiology": "依据提供的影像文字资料作专业判断，不声称直接阅片。",
     "rheumatology": "负责风湿病和 CTD 归因判断，不代替影像或病理模式判断。",
     "pathology": "只能解释提供的病理文字资料；没有材料时不得形成组织学模式。",
 }

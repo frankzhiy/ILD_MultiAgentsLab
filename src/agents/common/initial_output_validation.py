@@ -18,6 +18,7 @@ from src.agents.common.initial_output import (
     SpecialtyInitialOutput,
     synchronize_judgment_conditions,
 )
+from src.agents.common.judgment_protocol import validate_clinical_text
 from src.agents.common.validation import (
     case_units,
     resolve_evidence_pointers,
@@ -383,6 +384,7 @@ def validate_specialty_initial_output(
     for text in _iter_text(result):
         if _CROSS_SPECIALTY_CONFLICT.search(text):
             raise ValueError("Formal initial output must not detect cross-specialty conflict")
+        validate_clinical_text(text)
     return result
 
 

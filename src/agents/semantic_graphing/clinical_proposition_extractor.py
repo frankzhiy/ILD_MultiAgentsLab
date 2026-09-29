@@ -47,6 +47,9 @@ class ExtractedClinicalProposition(ClinicalProposition):
     rationale: SkipJsonSchema[str] = "命题边界由原文证据确定。"
 
 
+ExtractedGraphUnitClinicalPropositions.model_rebuild()
+
+
 class ClinicalPropositionExtractor:
     def __init__(
         self,

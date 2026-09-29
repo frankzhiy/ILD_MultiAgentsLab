@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 from pathlib import Path
 from threading import Lock
@@ -126,6 +127,14 @@ class GuidelineRuntime:
             ensure_ascii=False,
             separators=(",", ":"),
         ), chunks, trace
+
+
+@atexit.register
+def _close_cached_retrievers() -> None:
+    for retriever in GuidelineRuntime._retrievers.values():
+        client = getattr(retriever, "client", None)
+        if client is not None:
+            client.close()
 
 
 def resolve_guideline_evidence(value: object, allowed: dict[str, GuidelineChunk]) -> list[str]:

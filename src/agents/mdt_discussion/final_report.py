@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Callable
 
 from src.agents.common.decision_state import MultiSpecialtyDecisionState
-from src.agents.common.judgment_protocol import judgment_system_prompt
+from src.agents.common.judgment_protocol import judgment_system_prompt, validate_clinical_text
 from src.agents.mdt_chair.models import (
     AssessmentBoundary,
     ChairEvidenceBundle,
     CrossSpecialtyConflict,
     EvidenceNeed,
+    LedgerEvidenceNeedGroup,
     SpecialtySourceCitation,
 )
 from src.agents.mdt_discussion.models import (
@@ -31,6 +33,11 @@ from src.utils.config import load_text, load_yaml, render_template
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/final_report.md"
+_REPORT_STYLE = re.compile(
+    r"^(?:目前|当前|本次|本轮)?.{0,8}(?:工作诊断|工作判断)(?:为|是)"
+    r"|间质性[／/]渗出性肺部过程"
+    r"|^(?:主要诊断|肺部改变|关键边界|次要判断|诊断依据)\s*[:：]"
+)
 
 
 class FinalReportAgent:
@@ -125,10 +132,48 @@ class FinalReportAgent:
         dropped_diagnoses: list[str] = []
 
         def resolve(result: MDTFinalReport) -> MDTFinalReport:
-            result.schema_version = "mdt_final_report.v3"
+            clinical = result.clinical_report
+            diagnosis = next(
+                item for item in clinical.diagnostic_matrix if item.dimension == "mdt_diagnosis"
+            )
+            narrative_parts = [diagnosis.statement, diagnosis.medical_basis]
+            for item in clinical.secondary_judgments:
+                narrative_parts.extend((item.statement, item.medical_basis))
+            if any(_REPORT_STYLE.search(part) for part in narrative_parts):
+                raise ValueError("医生段落应直接陈述判断，不使用栏目标题或流程前缀")
+            clinical.overall_conclusion = diagnosis.statement
+            clinical.overall_confidence = diagnosis.confidence
+            clinical.integrated_summary = diagnosis.medical_basis
+            validate_clinical_text(clinical.clinical_narrative)
+            for item in clinical.secondary_judgments:
+                validate_clinical_text(item.statement)
+                validate_clinical_text(item.medical_basis)
+            for item in clinical.diagnostic_matrix:
+                for value in (item.statement, item.medical_basis, *item.limitations):
+                    validate_clinical_text(value)
+            for item in clinical.differential_diagnoses:
+                for value in (item.diagnosis, item.rationale):
+                    validate_clinical_text(value)
+            result.schema_version = (
+                "mdt_final_report.v2" if result.legacy_source else "mdt_final_report.v5"
+            )
             result.case_id = case_id
             result.discussion_rounds = len(rounds)
             result.reasoning_trace = _resolve_reasoning_trace(result, chair_result)
+            disease_conclusion_ids = {
+                item["conclusion_id"]
+                for item in chair_result.get("integrated_conclusions", [])
+                if item.get("conclusion_type") in {
+                    "working_diagnosis",
+                    "rheumatic_disease",
+                    "etiologic_attribution",
+                    "ild_attribution",
+                    "etiologic_association",
+                }
+            }
+            for item in clinical.secondary_judgments:
+                if not disease_conclusion_ids.intersection(item.chair_item_ids):
+                    raise ValueError("次要判断须引用至少一条主持人疾病或病因结论")
             alternative_ids = {
                 item["conclusion_id"]
                 for item in chair_result.get("integrated_conclusions", [])
@@ -170,6 +215,10 @@ class FinalReportAgent:
                 EvidenceNeed.model_validate(item)
                 for item in chair_result.get("evidence_needs", [])
             ]
+            result.evidence_need_groups = [
+                LedgerEvidenceNeedGroup.model_validate(item)
+                for item in chair_result.get("evidence_need_groups", [])
+            ]
             result.judgment_changes = (
                 list(decision_state.change_events) if decision_state is not None else []
             )
@@ -195,7 +244,7 @@ class FinalReportAgent:
             schema_model=MDTFinalReport,
             schema_name="mdt_final_report",
             system_prompt=judgment_system_prompt(
-                "你是以呼吸科为主要背景的 ILD MDT 主持人，负责在讨论结束后形成统一报告。"
+                "你是专门诊断间质性肺疾病的多学科团队主持人，以呼吸科为主要背景，负责在讨论结束后形成统一报告。"
                 "忠实保留证据边界和未解决分歧，只返回符合 schema 的 JSON。"
             ),
             user_prompt=prompt,
@@ -299,7 +348,7 @@ def _collect_provenance(
         _append_unique(
             guideline_evidence,
             pointers,
-            lambda item: item.chunk_id,
+            lambda item: (item.chunk_id, tuple(item.quote_unit_ids)),
         )
     for key, item in value.items():
         if key not in {"source_citations", "evidence", "guideline_evidence"}:
@@ -375,6 +424,17 @@ def _resolve_reasoning_trace(
             registry=registry,
         )
         for item in report.clinical_report.differential_diagnoses
+    )
+    traces.extend(
+        _reasoning_trace(
+            claim_id=f"SJ{index:02d}",
+            statement=item.statement,
+            medical_basis=item.medical_basis,
+            chair_item_ids=item.chair_item_ids,
+            limitations=[],
+            registry=registry,
+        )
+        for index, item in enumerate(report.clinical_report.secondary_judgments, start=1)
     )
     return traces
 

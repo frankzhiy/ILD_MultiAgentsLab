@@ -37,6 +37,12 @@ from src.agents.mdt_chair.models import (
     SpecialtySourceCitation,
 )
 from src.guidelines.models import GuidelineEvidencePointer
+from src.guidelines.runtime import (
+    GuidelineRuntime,
+    PROMPT_RULES,
+    guideline_evidence_schema_constraints,
+    resolve_guideline_evidence,
+)
 from src.llm.base import LLMClient
 from src.llm.prompting import prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
@@ -44,7 +50,7 @@ from src.utils.config import load_text, load_yaml, render_template
 
 
 SYSTEM_PROMPT = (
-    "你是以呼吸科为主要背景的 ILD MDT 主持人。你只整合四个专科当前有效的正式判断、"
+    "你是专门诊断间质性肺疾病的多学科团队主持人，以呼吸科为主要背景。你只整合四个专科当前有效的正式判断、"
     "链接会中针对原问题的专科答复、合并专科已经提出的问题，并按共同协议筛选证据需求；"
     "不创造问题，不联系或重新运行专科 Agent，"
     "识别并如实描述未解决的跨专科冲突，但不裁决冲突，不输出最终 MDT 诊断或治疗方案。"
@@ -118,6 +124,17 @@ def _ledger_generation_model(bundle: ChairPromptBundle) -> type[BaseModel]:
 
 def _ledger_from_draft(draft: BaseModel, bundle: ChairPromptBundle) -> ChairSemanticLedger:
     decisions = draft.question_routes.model_dump(mode="json")
+    relation_errors = []
+    for group_index, generated in enumerate(draft.claim_groups):
+        for claim_index, claim in enumerate(generated.claims):
+            for ref, links in _evidence_relation_conflicts(claim.evidence_links):
+                relation_errors.append(
+                    f"claim_groups[{group_index}].claims[{claim_index}] "
+                    f"evidence_links {links} assign multiple relations to "
+                    f"evidence locator {ref}"
+                )
+    if relation_errors:
+        raise ValueError("; ".join(relation_errors))
     groups = []
     for generated in draft.claim_groups:
         group = LedgerClaimGroup.model_validate(generated.model_dump(mode="json"))
@@ -165,6 +182,21 @@ def _ledger_from_draft(draft: BaseModel, bundle: ChairPromptBundle) -> ChairSema
             if group.source_refs
         ],
     )
+
+
+def _evidence_relation_conflicts(
+    evidence_links: list[ClaimEvidenceLink],
+) -> list[tuple[str, list[tuple[int, str]]]]:
+    links_by_evidence: dict[str, list[tuple[int, str]]] = {}
+    for link_index, link in enumerate(evidence_links):
+        links_by_evidence.setdefault(link.evidence_ref, []).append(
+            (link_index, link.relation)
+        )
+    return [
+        (ref, links)
+        for ref, links in links_by_evidence.items()
+        if len({relation for _, relation in links}) > 1
+    ]
 
 
 def _integration_generation_model(
@@ -1314,10 +1346,12 @@ class MDTChairAgent:
         max_tokens: int = 12000,
         max_attempts: int = 2,
         retry_backoff_seconds: float = 0.0,
+        guideline_runtime: GuidelineRuntime | None = None,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.ledger_prompt = load_text(ledger_prompt_path)
         self.prompt = load_text(prompt_path)
+        self.guideline_runtime = guideline_runtime
         self.generator = StructuredLLMGenerator(
             llm,
             temperature=temperature,
@@ -1349,6 +1383,7 @@ class MDTChairAgent:
             max_tokens=int(config.get("max_tokens", 12000)),
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
+            guideline_runtime=GuidelineRuntime.from_config(config),
             event_callback=event_callback,
         )
 
@@ -1533,6 +1568,21 @@ class MDTChairAgent:
         ledger = resolved_ledger
 
         ledger_json = prompt_json(ledger.model_dump(mode="json"))
+        guideline_query = "间质性肺疾病多学科诊断、分类与病因判断 " + " ".join(
+            claim.statement[:80]
+            for group in ledger.claim_groups
+            if group.disposition == "integrated"
+            for claim in group.claims
+            if claim.professional_level in {"disease_diagnosis", "etiologic_attribution"}
+        )[:600]
+        if self.guideline_runtime:
+            guideline_context, allowed_guidelines, guideline_trace = (
+                self.guideline_runtime.prepare_query(guideline_query)
+            )
+        else:
+            guideline_context, allowed_guidelines, guideline_trace = "[]", {}, {
+                "query": guideline_query, "candidates": [], "used_chunk_ids": []
+            }
         synthesis_input = deepcopy(bundle.prompt_input)
         for specialty_input in synthesis_input.get("specialties", []):
             for assessment in specialty_input.get("specialty_assessments", []):
@@ -1550,10 +1600,15 @@ class MDTChairAgent:
                 "chair_input": synthesis_input_json,
                 "topic_ledger": ledger_json,
                 "discussion_context": discussion_context_json,
+                "guideline_context": guideline_context,
+                "guideline_rules": PROMPT_RULES if allowed_guidelines else "",
                 "output_schema": output_schema,
             },
         )
         def resolve(value: MDTChairIntegrationDraft) -> MDTChairIntegration:
+            guideline_trace["used_chunk_ids"] = resolve_guideline_evidence(
+                value, allowed_guidelines
+            )
             value = materialize_integration_draft(
                 value, ledger, bundle, preserved_constraints
             )
@@ -1588,6 +1643,18 @@ class MDTChairAgent:
                 None if discussion_previous is not None else ledger,
                 claim_ledger=ledger,
             )
+            groups = list(discussion_previous.evidence_need_groups) if discussion_previous else []
+            for group in ledger.evidence_need_groups:
+                groups = [
+                    previous for previous in groups
+                    if not set(previous.source_refs).intersection(group.source_refs)
+                ]
+                group.source_citations = [
+                    bundle.source_registry[ref]
+                    for ref in group.source_refs
+                ]
+                groups.append(group)
+            resolved.evidence_need_groups = groups
             if discussion_previous is not None:
                 _validate_review_destinations(
                     resolved,
@@ -1603,6 +1670,7 @@ class MDTChairAgent:
             system_prompt=judgment_system_prompt(SYSTEM_PROMPT),
             user_prompt=synthesis_prompt,
             extra_validation=resolve,
+            pointer_field_constraints=guideline_evidence_schema_constraints(allowed_guidelines),
             string_field_constraints=_source_ref_schema_constraints(
                 bundle,
                 semantic_ledger=ledger,
@@ -1615,6 +1683,7 @@ class MDTChairAgent:
             "ledger_generation": ledger_trace,
             "integration_generation": synthesis_trace,
             "semantic_ledger_normalizations": bundle.normalization_events,
+            "guideline_retrieval": guideline_trace,
         }
         trace["prompt_components"] = {
             "total_chars": len(ledger_prompt) + len(synthesis_prompt),
@@ -2112,18 +2181,12 @@ def resolve_semantic_ledger(
                     "uses evidence outside its specialty source: "
                     f"{unknown_evidence}"
                 )
-            links_by_evidence: dict[str, list[tuple[int, str]]] = {}
-            for link_index, link in enumerate(claim.evidence_links):
-                links_by_evidence.setdefault(link.evidence_ref, []).append(
-                    (link_index, link.relation)
+            for ref, links in _evidence_relation_conflicts(claim.evidence_links):
+                ledger_errors.append(
+                    f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}] "
+                    f"evidence_links {links} assign multiple relations to "
+                    f"evidence locator {ref}"
                 )
-            for ref, links in links_by_evidence.items():
-                if len({relation for _, relation in links}) > 1:
-                    ledger_errors.append(
-                        f"claim_groups[{topic_index - 1}].claims[{claim_index - 1}] "
-                        f"evidence_links {links} assign multiple relations to "
-                        f"evidence locator {ref}"
-                    )
         boundary_statuses = {
             "indeterminate", "not_assessable", "not_applicable"
         }
@@ -2460,7 +2523,7 @@ def _resolve_cited(
         )
         evidence[role] = [bundle.evidence_registry[ref] for ref in refs]
     statement.evidence = ChairEvidenceBundle(**evidence)
-    guidelines = [
+    guidelines = list(statement.guideline_evidence) + [
         pointer
         for source_ref in statement.source_refs
         for pointer in bundle.source_guidelines[source_ref]

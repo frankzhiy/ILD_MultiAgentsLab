@@ -13,3 +13,14 @@ max_attempts: 3
 retry_backoff_seconds: 2
 ledger_prompt: src/prompts/mdt_chair/semantic_ledger.md
 prompt: src/prompts/mdt_chair/initial_synthesis.md
+guideline_retrieval:
+  enabled: true
+  directory: data/guidelines
+  limit: 6
+  scope:
+    - ers-eular-ctd-ild-2025
+    - ers-ats-iip-classification-2025
+    - ats-ers-jrs-alat-ipf-ppf-2022
+    - cra-ctd-ild-2022-zh
+    - cts-ild-mdd-2023-zh
+    - acr-chest-sard-ild-2023

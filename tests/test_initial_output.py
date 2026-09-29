@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.agents.common.initial_output import SpecialtyInitialOutput
+from src.agents.common.judgment_protocol import validate_clinical_text
 from src.agents.common.initial_output_validation import (
     assign_specialty_initial_evidence,
     validate_specialty_initial_output,
@@ -35,7 +36,7 @@ def assessment(
         "decision_impact": "决定后续跨专科核对方向。",
         "evidence": evidence_bundle(),
         "guideline_evidence": [],
-        "limitations": ["缺少原始薄层影像。"],
+        "limitations": ["报告未描述病变分布，无法进一步区分影像模式。"],
     }
 
 
@@ -59,7 +60,7 @@ def output_payload(*, questions: list[dict] | None = None) -> dict:
             "evidence_gaps": [
                 {
                     "available_information": "仅有影像报告摘录。",
-                    "missing_information": "缺少原始薄层影像。",
+                    "missing_information": "报告未描述病变分布。",
                     "why_it_matters": "不能可靠判断形态模式。",
                     "decision_unlocked": "完成影像模式判断。",
                     "related_assessment_ids": ["assessment_001"],
@@ -116,6 +117,12 @@ def test_formal_output_has_exactly_two_top_level_sections():
     schema = SpecialtyInitialOutput.model_json_schema()
     assert "clinical_reasoning" not in str(schema)
     assert "professional_conclusions" not in schema["properties"]
+
+
+def test_clinical_text_rejects_generic_missing_image_excuses():
+    with pytest.raises(ValueError, match="面向医生的结论"):
+        validate_clinical_text("仅有影像报告文字，未提供原始图像供独立复核。")
+    validate_clinical_text("影像所见记录双肺实变；报告未描述病变分布，无法进一步区分模式。")
 
 
 def test_legacy_output_is_readable_but_serializes_with_current_labels():

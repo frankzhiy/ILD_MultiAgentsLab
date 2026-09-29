@@ -4,6 +4,7 @@ import pytest
 
 from src.agents.semantic_graphing.clinical_proposition_extractor import (
     ClinicalPropositionExtractor,
+    ExtractedGraphUnitClinicalPropositions,
     build_evidence_blocks,
     split_dense_unit_evidence_blocks,
     split_dense_unit_text,
@@ -31,6 +32,11 @@ from src.schemas.semantic_graphing.primary_frame import (
     GraphUnitPrimaryFrame,
     PrimaryFrame,
 )
+
+
+def test_extraction_schema_is_ready_before_parallel_requests():
+    assert ExtractedGraphUnitClinicalPropositions.__pydantic_complete__
+    assert ExtractedGraphUnitClinicalPropositions.model_json_schema()["type"] == "object"
 
 
 class CapturingLLM:

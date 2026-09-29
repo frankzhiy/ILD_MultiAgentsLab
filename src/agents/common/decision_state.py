@@ -454,6 +454,15 @@ def prepare_judgment_change(
             key = json.dumps(relation.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
             if key not in present:
                 assessment.evidence.evidence_relations.append(relation.model_copy(deep=True))
+        existing_guides = {
+            (item.chunk_id, tuple(item.quote_unit_ids))
+            for item in assessment.guideline_evidence
+        }
+        assessment.guideline_evidence.extend(
+            item.model_copy(deep=True)
+            for item in previous.guideline_evidence
+            if (item.chunk_id, tuple(item.quote_unit_ids)) not in existing_guides
+        )
         synchronize_judgment_conditions(assessment)
     elif proposal.change_type == "qualify":
         assessment.limitations = list(dict.fromkeys([

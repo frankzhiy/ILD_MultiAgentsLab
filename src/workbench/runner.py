@@ -18,7 +18,7 @@ from src.workbench.workflow import WorkbenchWorkflow
 
 
 AGENTS = ("semantic_graphing", *SPECIALTIES, "mdt_chair")
-SAFE_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+SAFE_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,79}$")
 
 
 def build_run_signature(config: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +47,7 @@ class RunOrchestrator:
         case_id = str(request.get("case_id") or "").strip()
         if not SAFE_CASE_ID.fullmatch(case_id):
             raise ValueError(
-                "case_id 只能包含字母、数字、点、下划线和连字符，且长度不超过 80。"
+                "case_id 只能包含字母、数字、空格、点、下划线和连字符，且长度不超过 80。"
             )
         source = request.get("source", "library")
         if source == "library":
