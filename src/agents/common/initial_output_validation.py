@@ -16,6 +16,7 @@ from src.agents.common.initial_output import (
     EvidenceRelation,
     SpecialtyAtomicClaim,
     SpecialtyInitialOutput,
+    synchronize_judgment_conditions,
 )
 from src.agents.common.validation import (
     case_units,
@@ -281,6 +282,7 @@ def validate_specialty_initial_output(
     assessments = result.specialty_assessments
     relation_conflicts = {}
     for assessment in assessments.assessments:
+        synchronize_judgment_conditions(assessment)
         groups = assessment.evidence
         claim_ids = {claim.claim_id for claim in assessment.claims}
         invalid_targets = sorted(

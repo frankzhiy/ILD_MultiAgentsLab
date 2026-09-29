@@ -119,6 +119,11 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     assert catalog.chair("run-1")["status"] == "completed"
     assert catalog.run_summary(run_dir)["chair_complete"] is True
 
+    write_json(run_dir / "case-1_mdt_decision_state.json", {"judgments": ["initial"]})
+    pending_discussion = catalog.discussion("run-1")
+    assert pending_discussion["status"] == "pending"
+    assert pending_discussion["decision_state"] is None
+
     baseline_path = run_dir / "case-1_mdt_chair_integration.json"
     write_json(run_dir / ".workbench_run.json", {"case_id": "case-1", "status": "failed"})
     write_json(

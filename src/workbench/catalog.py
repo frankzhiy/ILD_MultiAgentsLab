@@ -342,6 +342,7 @@ class RunCatalog:
             run_dir / f"{case_id}_mdt_discussion_team_discussion_failure_trace.json"
         )
         state = self._json(state_path, None)
+        decision_state = (state or {}).get("decision_state")
         baseline_hash = (
             sha256(baseline_path.read_bytes()).hexdigest()
             if baseline_path.exists()
@@ -373,6 +374,7 @@ class RunCatalog:
             "active_round": (state or {}).get("active_round"),
             "report_status": (state or {}).get("report_status", "waiting"),
             "latest_chair_result": (state or {}).get("latest_chair_result"),
+            "decision_state": decision_state,
             "stop_reason": (state or {}).get("stop_reason"),
             "final_report": (state or {}).get("final_report"),
             "error": (

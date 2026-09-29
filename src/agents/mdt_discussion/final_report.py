@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from src.agents.common.decision_state import MultiSpecialtyDecisionState
 from src.agents.mdt_chair.models import (
     AssessmentBoundary,
     ChairEvidenceBundle,
@@ -74,6 +75,7 @@ class FinalReportAgent:
         rounds: list[DiscussionRound],
         stop_reason: str,
         baseline_chair_result: dict[str, Any] | None = None,
+        decision_state: MultiSpecialtyDecisionState | None = None,
     ) -> tuple[MDTFinalReport, dict[str, Any]]:
         output_schema = (
             "由 API 的严格 JSON Schema response_format 提供。"
@@ -142,6 +144,9 @@ class FinalReportAgent:
                 EvidenceNeed.model_validate(item)
                 for item in chair_result.get("evidence_needs", [])
             ]
+            result.judgment_changes = (
+                list(decision_state.change_events) if decision_state is not None else []
+            )
             result.research_metrics = _research_metrics(result)
             has_open_issues = bool(
                 chair_result.get("conflicts") or chair_result.get("questions")

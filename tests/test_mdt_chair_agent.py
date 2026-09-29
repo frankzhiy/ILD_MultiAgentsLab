@@ -1,20 +1,27 @@
 import json
+from copy import deepcopy
 
 import pytest
 
 from src.agents.mdt_chair.agent import (
     MDTChairAgent,
+    _integration_generation_model,
+    _ledger_generation_model,
+    _source_ref_schema_constraints,
     _discussion_previous_view,
     _materialize_evidence_need_conversion_refs,
     _validate_review_destinations,
     build_chair_prompt_bundle,
     build_semantic_evidence_catalog,
+    materialize_integration_draft,
+    rebase_integration_to_active_judgments,
     resolve_chair_references,
     resolve_semantic_ledger,
 )
 from src.agents.mdt_chair.models import (
     ChairSemanticLedger,
     MDTChairIntegration,
+    MDTChairIntegrationDraft,
 )
 from src.agents.mdt_discussion.integration import (
     apply_review_outcomes,
@@ -27,6 +34,7 @@ from src.agents.mdt_discussion.models import (
     SpecialtyTaskAnswer,
 )
 from src.llm.base import LLMResponse
+from src.llm.structured import json_schema_response_format
 
 
 SPECIALTIES = (
@@ -261,6 +269,114 @@ def ledger_payload(bundle):
     }
 
 
+def ledger_generation_payload(payload):
+    result = deepcopy(payload)
+    result["question_routes"] = {
+        ref: {
+            key: value
+            for key, value in route.items()
+            if key not in {"source_refs", "route_id", "target_specialties"}
+        }
+        for route in payload["question_routes"]
+        for ref in route["source_refs"]
+    }
+    return result
+
+
+def test_ledger_generation_requires_one_fixed_slot_per_source_question():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    model = _ledger_generation_model(bundle)
+    payload = ledger_generation_payload(ledger_payload(bundle))
+    assert set(model.model_validate(payload).question_routes.model_dump()) == (
+        bundle.question_refs_to_classify
+    )
+
+    missing = deepcopy(payload)
+    missing["question_routes"].pop(next(iter(bundle.question_refs_to_classify)))
+    with pytest.raises(ValueError, match="Field required"):
+        model.model_validate(missing)
+
+    extra = deepcopy(payload)
+    extra["question_routes"]["S999"] = next(iter(payload["question_routes"].values()))
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        model.model_validate(extra)
+
+
+def test_ledger_generation_rejects_mixed_group_and_missing_comparison_target():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    model = _ledger_generation_model(bundle)
+    payload = ledger_generation_payload(ledger_payload(bundle))
+    mixed = deepcopy(payload)
+    mixed["claim_groups"][1]["claims"].append(
+        deepcopy(mixed["claim_groups"][0]["claims"][0])
+    )
+    with pytest.raises(ValueError):
+        model.model_validate(mixed)
+
+    invalid_link = deepcopy(payload)
+    invalid_link["claim_groups"][0]["claims"][0]["evidence_links"] = [{
+        "evidence_ref": next(iter(bundle.evidence_registry)),
+        "relation": "discriminates",
+        "rationale": "区分候选解释。",
+        "comparison_target": "",
+    }]
+    with pytest.raises(ValueError):
+        model.model_validate(invalid_link)
+
+
+def test_ledger_keeps_atomic_status_when_assessment_is_not_assessable():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    pulmonary = payload["claim_groups"][0]["claims"][0]["source_ref"]
+    bundle.source_metadata[pulmonary].update({
+        "status": "not_assessable",
+        "version_id": "V001",
+        "conditions": {"timeframe": {"description": "当前"}},
+    })
+
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    assert ledger.claim_groups[0].claims[0].epistemic_status == "affirms"
+    assert ledger.claim_groups[0].claims[0].position_role == "preferred"
+
+
+def test_ledger_requires_coverage_of_every_specialty_assessment():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    payload["claim_groups"].pop()
+
+    with pytest.raises(ValueError, match="omits specialty assessments"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_discussion_ledger_covers_active_versions_without_requiring_superseded_sources():
+    initial_outputs = outputs()
+    initial_bundle = build_chair_prompt_bundle("case-1", initial_outputs)
+    revised_outputs = deepcopy(initial_outputs)
+    revised_outputs["pulmonology"]["professional_conclusions"]["conclusions"][0]["statement"] = (
+        "当前只能维持待分类的间质性肺病工作判断。"
+    )
+    bundle = build_chair_prompt_bundle(
+        "case-1", revised_outputs, discussion_round=1, source_seed=initial_bundle,
+    )
+    old_ref = source_ref(initial_bundle, "pulmonology", "native_conclusion")
+    active_ref = bundle.prompt_input["specialties"][0]["specialty_assessments"][0]["source_ref"]
+    payload = ledger_payload(initial_bundle)
+    payload["claim_groups"][0]["claims"][0]["source_ref"] = active_ref
+    payload["question_routes"] = []
+    payload["evidence_need_groups"] = []
+
+    assert active_ref != old_ref
+    assert old_ref in bundle.source_registry
+    assert active_ref in _source_ref_schema_constraints(bundle)["IntegratedLedgerAtomicClaim"]["source_ref"]
+    assert old_ref not in _source_ref_schema_constraints(bundle)["IntegratedLedgerAtomicClaim"]["source_ref"]
+    resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    payload["claim_groups"][0]["claims"][0]["source_ref"] = old_ref
+    with pytest.raises(ValueError, match="superseded specialty assessment"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
 def integration_payload(bundle):
     pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
     radiology = source_ref(bundle, "thoracic_radiology", "native_conclusion")
@@ -330,6 +446,56 @@ def integration_payload(bundle):
     }
 
 
+def integration_generation_payload(bundle, ledger_value):
+    """Represent claim provenance once, as ledger claim selections."""
+
+    payload = integration_payload(bundle)
+    claims_by_disposition = {
+        disposition: {
+            claim["source_ref"]: f"T{group_index:03d}-A{claim_index:03d}"
+            for group_index, group in enumerate(ledger_value["claim_groups"], 1)
+            if group["disposition"] == disposition
+            for claim_index, claim in enumerate(group["claims"], 1)
+        }
+        for disposition in ("integrated", "boundary", "conflict")
+    }
+    for item in payload["integrated_conclusions"]:
+        item["atomic_claim_ids"] = [
+            claims_by_disposition["integrated"][ref]
+            for ref in item.pop("source_refs")
+        ]
+    for item in payload["assessment_boundaries"]:
+        refs = item.pop("source_refs")
+        item["atomic_claim_ids"] = [
+            claims_by_disposition["boundary"][ref]
+            for ref in refs
+            if ref in claims_by_disposition["boundary"]
+        ]
+        item["question_source_refs"] = [
+            ref
+            for ref in refs
+            if bundle.source_registry[ref].source_type == "interspecialty_question"
+        ]
+        blocking_refs = {
+            ref
+            for group in ledger_value["evidence_need_groups"]
+            if group["decision_role"] == "blocking_boundary"
+            for ref in group["source_refs"]
+        }
+        item["related_evidence_need_source_refs"] = [
+            ref
+            for ref in item["related_evidence_need_source_refs"]
+            if ref in blocking_refs
+        ]
+    for conflict in payload["conflicts"]:
+        for position in conflict["positions"]:
+            position["atomic_claim_ids"] = [
+                claims_by_disposition["conflict"][ref]
+                for ref in position.pop("source_refs")
+            ]
+    return payload
+
+
 def resolved_ledger(bundle):
     return resolve_semantic_ledger(
         ChairSemanticLedger.model_validate(ledger_payload(bundle)), bundle
@@ -342,7 +508,7 @@ def test_prompt_projection_excludes_internal_reasoning_and_runtime_guidelines():
     assert "内部推理不得输入主持人" not in compact
     assert "指南运行时不应进入主持人输入" not in compact
     assert "guideline_evidence" not in compact
-    assert "supporting" in compact
+    assert "declared_roles" not in compact
     assert any(bundle.source_guidelines.values())
     assert "evidence_registry" not in bundle.prompt_input
     for specialty in bundle.prompt_input["specialties"]:
@@ -389,6 +555,104 @@ def test_prompt_projection_labels_each_specialty_source_type():
     assert {item["source_type"] for item in specialty["evidence_needs"]} == {
         "assessment_evidence_need"
     }
+
+
+def test_discussion_answer_is_not_projected_as_a_formal_specialty_judgment():
+    answer = SpecialtyTaskAnswer(
+        answer_id="R01-Q001-thoracic_radiology-A",
+        task_id="R01-Q001-thoracic_radiology",
+        issue_type="question",
+        issue_id="Q001",
+        answerability="partially_answered",
+        answer="现有文字只能支持有限影像表型。",
+        confidence="moderate",
+        medical_basis="缺少原始影像。",
+        changed_from_previous=False,
+    )
+    response = SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty="thoracic_radiology",
+        answers=[answer],
+    )
+    current = append_round_responses(outputs(), [response])
+
+    bundle = build_chair_prompt_bundle("case-1", current)
+    radiology = next(
+        item
+        for item in bundle.prompt_input["specialties"]
+        if item["specialty"] == "thoracic_radiology"
+    )
+
+    assert len(radiology["specialty_assessments"]) == 1
+    assert len(radiology["discussion_answers"]) == 1
+    assert radiology["discussion_answers"][0]["source_type"] == "discussion_answer"
+    assert {
+        bundle.source_registry[ref].source_type
+        for ref in bundle.source_registry
+        if bundle.source_metadata[ref].get("assessment_id") == answer.answer_id
+    } == {"discussion_answer"}
+
+
+def test_prior_chair_state_is_rebased_to_the_current_judgment_version():
+    previous_outputs = outputs()
+    prior_item = previous_outputs["pulmonology"]["professional_conclusions"][
+        "conclusions"
+    ][0]
+    prior_item.update({
+        "judgment_id": "pulmonology_1",
+        "version_id": "pulmonology_1@v001",
+        "previous_version_id": None,
+        "conditions": {
+            "subject": "纤维化性间质性肺病",
+            "professional_level": "disease_diagnosis",
+            "timeframe": {"kind": "current", "description": "当前评估时点。"},
+            "evidence_scope": {
+                "evidence_ids": ["seg_001_gu_001_ev_001"],
+                "source_types": ["case_evidence"],
+                "scope_limitations": [],
+            },
+            "applicability_conditions": [],
+        },
+    })
+    previous_bundle = build_chair_prompt_bundle("case-1", previous_outputs)
+    previous = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(previous_bundle)),
+        previous_bundle,
+        resolved_ledger(previous_bundle),
+    )
+    old_ref = next(
+        ref
+        for ref, metadata in previous_bundle.source_metadata.items()
+        if metadata.get("version_id") == "pulmonology_1@v001"
+    )
+
+    current_outputs = deepcopy(previous_outputs)
+    current_item = current_outputs["pulmonology"]["professional_conclusions"][
+        "conclusions"
+    ][0]
+    current_item.update({
+        "statement": "现有资料仅支持未分类间质性肺病。",
+        "version_id": "pulmonology_1@v002",
+        "previous_version_id": "pulmonology_1@v001",
+    })
+    current_bundle = build_chair_prompt_bundle(
+        "case-1", current_outputs, source_seed=previous_bundle
+    )
+    new_ref = next(
+        ref
+        for ref, metadata in current_bundle.source_metadata.items()
+        if metadata.get("version_id") == "pulmonology_1@v002"
+    )
+
+    rebased = rebase_integration_to_active_judgments(previous, current_bundle)
+    serialized = json.dumps(rebased.model_dump(mode="json"), ensure_ascii=False)
+    current_prompt = json.dumps(current_bundle.prompt_input, ensure_ascii=False)
+
+    assert old_ref not in serialized
+    assert new_ref not in serialized
+    assert new_ref in current_prompt
+    assert "现有资料仅支持未分类间质性肺病。" in current_prompt
 
 
 def test_llm_json_schemas_do_not_contain_program_generated_ids():
@@ -458,6 +722,271 @@ def test_chair_conclusion_uses_only_atomic_claim_evidence_links():
     assert conclusion.evidence.weakening == []
 
 
+def test_integration_draft_derives_claim_sources_from_ledger():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger_value = ledger_payload(bundle)
+    draft_payload = integration_generation_payload(bundle, ledger_value)
+    schema = MDTChairIntegrationDraft.model_json_schema()
+    for name in (
+        "IntegratedConclusionDraft",
+        "AssessmentBoundaryDraft",
+        "ConflictPositionDraft",
+    ):
+        assert "source_refs" not in schema["$defs"][name]["properties"]
+
+    ledger = resolved_ledger(bundle)
+    result = materialize_integration_draft(
+        MDTChairIntegrationDraft.model_validate(draft_payload), ledger, bundle
+    )
+    assert result.integrated_conclusions[0].source_refs == [
+        source_ref(bundle, "pulmonology", "specialty_assessment")
+    ]
+    assert result.assessment_boundaries[0].source_refs == [
+        source_ref(bundle, specialty, "specialty_assessment")
+        for specialty in ("thoracic_radiology", "rheumatology", "pathology")
+    ]
+
+    draft_payload["assessment_boundaries"][0]["source_refs"] = [
+        source_ref(bundle, "pulmonology", "specialty_assessment")
+    ]
+    with pytest.raises(ValueError, match="source_refs are derived"):
+        MDTChairIntegrationDraft.model_validate(draft_payload)
+
+
+def test_integration_draft_requires_explicit_claim_selection():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger_value = ledger_payload(bundle)
+    payload = integration_generation_payload(bundle, ledger_value)
+    payload["integrated_conclusions"][0]["atomic_claim_ids"] = []
+    with pytest.raises(ValueError, match="at least 1 item"):
+        MDTChairIntegrationDraft.model_validate(payload)
+
+    payload = integration_generation_payload(bundle, ledger_value)
+    payload["assessment_boundaries"][0]["atomic_claim_ids"] = []
+    payload["assessment_boundaries"][0]["question_source_refs"] = []
+    payload["assessment_boundaries"][0]["related_evidence_need_source_refs"] = []
+    with pytest.raises(ValueError, match="requires a ledger basis"):
+        MDTChairIntegrationDraft.model_validate(payload)
+
+    legacy = resolve_chair_references(
+        MDTChairIntegration.model_validate(integration_payload(bundle)),
+        bundle,
+        resolved_ledger(bundle),
+    )
+    assert legacy.integrated_conclusions[0].atomic_claim_ids == []
+    assert legacy.integrated_conclusions[0].evidence.links == []
+
+
+def test_question_only_boundary_has_question_provenance_without_claim_evidence():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger_value = ledger_payload(bundle)
+    payload = integration_generation_payload(bundle, ledger_value)
+    boundary = payload["assessment_boundaries"][0]
+    boundary["atomic_claim_ids"] = []
+    boundary["question_source_refs"] = [
+        source_ref(bundle, "pulmonology", "interspecialty_question")
+    ]
+    ledger = resolved_ledger(bundle)
+    result = materialize_integration_draft(
+        MDTChairIntegrationDraft.model_validate(payload), ledger, bundle
+    )
+    resolved = resolve_chair_references(result, bundle, ledger)
+    boundary = resolved.assessment_boundaries[0]
+    assert boundary.source_refs == [
+        source_ref(bundle, "pulmonology", "interspecialty_question")
+    ]
+    assert boundary.atomic_claim_ids == []
+    assert boundary.evidence.links == []
+
+
+def test_blocking_need_only_boundary_has_no_claim_evidence():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger = resolved_ledger(bundle)
+    need_group = ledger.evidence_need_groups[0]
+    need_group.decision_role = "blocking_boundary"
+    payload = integration_generation_payload(bundle, ledger_payload(bundle))
+    payload["integrated_conclusions"] = []
+    payload["questions"] = []
+    payload["evidence_needs"] = []
+    boundary = payload["assessment_boundaries"][0]
+    boundary["atomic_claim_ids"] = []
+    boundary["question_source_refs"] = []
+    boundary["related_evidence_need_source_refs"] = need_group.source_refs
+
+    result = materialize_integration_draft(
+        MDTChairIntegrationDraft.model_validate(payload), ledger, bundle
+    )
+    result = resolve_chair_references(result, bundle, ledger)
+    assert result.assessment_boundaries[0].source_refs == need_group.source_refs
+    assert result.assessment_boundaries[0].atomic_claim_ids == []
+    assert result.assessment_boundaries[0].evidence.links == []
+
+
+def test_conflict_draft_derives_each_position_source_from_selected_claim():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger = resolved_ledger(bundle)
+    conflict_group = ledger.claim_groups[0]
+    conflict_group.disposition = "conflict"
+    conflict_group.conflict_nature = "direct_contradiction"
+    opposing = ledger.claim_groups[1].claims[0].model_copy(deep=True)
+    opposing.claim_id = "T001-A002"
+    opposing.epistemic_status = "denies"
+    conflict_group.claims.append(opposing)
+    payload = {
+        "integrated_conclusions": [],
+        "assessment_boundaries": [],
+        "questions": [],
+        "evidence_needs": [],
+        "conflicts": [{
+            "topic": "同一命题",
+            "conflict_nature": "direct_contradiction",
+            "conflict_domain": "diagnostic_interpretation",
+            "comparison_target": "命题 X",
+            "comparison_conditions": "相同条件",
+            "positions": [
+                {"stance": "affirms", "position": "肯定", "atomic_claim_ids": ["T001-A001"]},
+                {"stance": "denies", "position": "否定", "atomic_claim_ids": ["T001-A002"]},
+            ],
+            "why_incompatible": "不能同时成立",
+            "decision_impact": "需要讨论",
+            "resolution_requirement": "核对依据",
+        }],
+    }
+    result = materialize_integration_draft(
+        MDTChairIntegrationDraft.model_validate(payload), ledger, bundle
+    )
+    assert [position.source_refs for position in result.conflicts[0].positions] == [
+        [claim.source_ref] for claim in conflict_group.claims
+    ]
+
+    payload["conflicts"][0]["positions"][1]["atomic_claim_ids"] = ["T002-A001"]
+    with pytest.raises(ValueError, match="belongs to boundary, not conflict"):
+        materialize_integration_draft(
+            MDTChairIntegrationDraft.model_validate(payload), ledger, bundle
+        )
+
+
+def test_no_integrated_ledger_claims_forbid_generated_conclusions():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger_value = ledger_payload(bundle)
+    ledger_value["claim_groups"][0]["disposition"] = "follow_up"
+    ledger = resolve_semantic_ledger(
+        ChairSemanticLedger.model_validate(ledger_value), bundle
+    )
+    model = _integration_generation_model(ledger)
+    schema = json_schema_response_format(
+        model,
+        "mdt_chair_integration",
+        string_field_constraints=_source_ref_schema_constraints(
+            bundle, semantic_ledger=ledger
+        ),
+    )["json_schema"]["schema"]
+    assert schema["properties"]["integrated_conclusions"]["maxItems"] == 0
+    assert schema["properties"]["conflicts"]["maxItems"] == 0
+    assert schema["$defs"]["IntegratedConclusionDraft"]["properties"][
+        "atomic_claim_ids"
+    ]["maxItems"] == 0
+
+    payload = integration_generation_payload(bundle, ledger_payload(bundle))
+    with pytest.raises(ValueError, match="at most 0 items"):
+        model.model_validate(payload)
+
+
+def test_ledger_rejects_boundary_claims_in_substantive_group():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    payload["claim_groups"][0]["claims"].append(
+        payload["claim_groups"][1]["claims"][0]
+    )
+    with pytest.raises(ValueError, match="places boundary claims"):
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_integration_retries_full_snapshot_after_invalid_section_selection():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger_value = ledger_payload(bundle)
+    ledger_value["claim_groups"][0]["disposition"] = "follow_up"
+    invalid = integration_generation_payload(bundle, ledger_payload(bundle))
+    corrected = {
+        "integrated_conclusions": [],
+        "assessment_boundaries": [],
+        "conflicts": [],
+        "questions": [],
+        "evidence_needs": [],
+    }
+
+    class FakeLLM:
+        supports_json_schema = True
+
+        def __init__(self):
+            self.formats = []
+
+        def complete(self, messages, **kwargs):
+            self.formats.append(kwargs["response_format"]["type"])
+            payload = (
+                ledger_generation_payload(ledger_value)
+                if len(self.formats) == 1
+                else invalid
+                if len(self.formats) == 2
+                else corrected
+            )
+            return LLMResponse(
+                content=json.dumps(payload, ensure_ascii=False),
+                raw={"choices": [{"finish_reason": "stop"}]},
+            )
+
+    llm = FakeLLM()
+    result, trace = MDTChairAgent(
+        llm,
+        ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
+        prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
+        max_attempts=2,
+    ).integrate(bundle)
+    assert result.integrated_conclusions == []
+    assert trace["integration_generation"]["attempts"][0]["validated"] is False
+    assert llm.formats == ["json_schema", "json_schema", "json_schema"]
+
+
+def test_ledger_regenerates_full_snapshot_for_mixed_claim_group():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    corrected_ledger = ledger_payload(bundle)
+    invalid_ledger = deepcopy(corrected_ledger)
+    invalid_ledger["claim_groups"][0]["claims"].append(
+        invalid_ledger["claim_groups"][1]["claims"][0]
+    )
+
+    class FakeLLM:
+        supports_json_schema = True
+
+        def __init__(self):
+            self.formats = []
+
+        def complete(self, messages, **kwargs):
+            self.formats.append(kwargs["response_format"]["type"])
+            payload = (
+                ledger_generation_payload(invalid_ledger)
+                if len(self.formats) == 1
+                else ledger_generation_payload(corrected_ledger)
+                if len(self.formats) == 2
+                else integration_generation_payload(bundle, corrected_ledger)
+            )
+            return LLMResponse(
+                content=json.dumps(payload, ensure_ascii=False),
+                raw={"choices": [{"finish_reason": "stop"}]},
+            )
+
+    llm = FakeLLM()
+    result, trace = MDTChairAgent(
+        llm,
+        ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
+        prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
+        max_attempts=2,
+    ).integrate(bundle)
+    assert result.integrated_conclusions
+    assert trace["ledger_generation"]["attempts"][0]["validated"] is False
+    assert llm.formats == ["json_schema", "json_schema", "json_schema"]
+
+
 def test_semantic_ledger_rejects_two_relations_for_same_claim_locator():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
@@ -478,6 +1007,112 @@ def test_semantic_ledger_rejects_two_relations_for_same_claim_locator():
 
     with pytest.raises(ValueError, match="multiple relations"):
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+
+def test_ledger_reports_relation_conflict_and_missing_assessment_together():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    claim = payload["claim_groups"][0]["claims"][0]
+    evidence_ref = bundle.source_evidence[claim["source_ref"]]["supporting"][0]
+    claim["evidence_links"] = [
+        {"evidence_ref": evidence_ref, "relation": "supports", "rationale": "主要证据。"},
+        {"evidence_ref": evidence_ref, "relation": "qualifies", "rationale": "范围限制。"},
+    ]
+    omitted = payload["claim_groups"][1]["claims"].pop()["source_ref"]
+
+    with pytest.raises(ValueError) as error:
+        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    assert "multiple relations" in str(error.value)
+    assert f"omits specialty assessments: ['{omitted}']" in str(error.value)
+
+
+def test_ledger_repairs_all_conflicting_evidence_links_without_regenerating():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    for group_index in (0, 1):
+        claim = payload["claim_groups"][group_index]["claims"][0]
+        evidence_ref = bundle.source_evidence[claim["source_ref"]]["supporting"][0]
+        claim["evidence_links"] = [
+            {"evidence_ref": evidence_ref, "relation": "supports", "rationale": "主要证据。"},
+            {"evidence_ref": evidence_ref, "relation": "qualifies", "rationale": "范围限制。"},
+        ]
+
+    class FakeLLM:
+        supports_json_schema = True
+
+        def __init__(self):
+            self.formats = []
+
+        def complete(self, messages, **kwargs):
+            self.formats.append(kwargs["response_format"]["type"])
+            if len(self.formats) == 1:
+                value = ledger_generation_payload(payload)
+            elif len(self.formats) == 2:
+                assert "claim_groups[0].claims[0]" in messages[-1].content
+                assert "claim_groups[1].claims[0]" in messages[-1].content
+                value = {"edits": [
+                    {"op": "remove_indices", "path": "/claim_groups/0/claims/0/evidence_links", "value": [1]},
+                    {"op": "remove_indices", "path": "/claim_groups/1/claims/0/evidence_links", "value": [1]},
+                ]}
+            else:
+                value = integration_generation_payload(bundle, payload)
+            return LLMResponse(
+                content=json.dumps(value, ensure_ascii=False),
+                raw={"choices": [{"finish_reason": "stop"}]},
+            )
+
+    llm = FakeLLM()
+    result, trace = MDTChairAgent(
+        llm,
+        ledger_prompt_path="src/prompts/mdt_chair/semantic_ledger.md",
+        prompt_path="src/prompts/mdt_chair/initial_synthesis.md",
+        max_attempts=2,
+    ).integrate(bundle)
+
+    assert result.integrated_conclusions
+    assert llm.formats == ["json_schema", "json_object", "json_schema"]
+    assert trace["ledger_generation"]["attempts"][0]["validated"] is False
+    assert trace["ledger_generation"]["attempts"][1]["validated"] is True
+
+
+def test_integration_schema_forbids_sections_without_ledger_basis():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    for route in payload["question_routes"]:
+        route["route"] = "evidence_need"
+        route["answer_links"] = []
+    for group in payload["evidence_need_groups"]:
+        group["decision_role"] = "blocking_boundary"
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    schema = json_schema_response_format(
+        _integration_generation_model(ledger), "mdt_chair_integration"
+    )["json_schema"]["schema"]
+
+    assert schema["properties"]["questions"]["maxItems"] == 0
+    assert schema["properties"]["evidence_needs"]["maxItems"] == 0
+
+
+def test_integration_schema_forbids_uncited_answers():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    for route in payload["question_routes"]:
+        route["answer_links"] = []
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+
+    schema = json_schema_response_format(
+        _integration_generation_model(ledger), "mdt_chair_integration",
+        string_field_constraints=_source_ref_schema_constraints(
+            bundle, semantic_ledger=ledger
+        ),
+    )["json_schema"]["schema"]
+
+    question = schema["$defs"]["ChairQuestionWithoutAnswers"]
+    assert question["properties"]["answers"]["maxItems"] == 0
+    assert question["properties"]["source_refs"]["items"]["enum"] == [
+        source_ref(bundle, "pulmonology", "native_question")
+    ]
 
 
 def test_semantic_ledger_rejects_evidence_from_another_assessment():
@@ -615,7 +1250,7 @@ def test_discussion_program_rebuilds_question_answer_and_evidence_need_refs():
     )
     assert question.answers[-1].answer == answer.answer
     assert {item.source_type for item in question.answers[-1].source_citations} == {
-        "specialty_assessment"
+        "discussion_answer"
     }
     assert all(
         citation.source_type
@@ -659,7 +1294,10 @@ def test_discussion_bundle_does_not_reclassify_initial_questions():
         specialty["interspecialty_questions"] == []
         for specialty in discussion_bundle.prompt_input["specialties"]
     )
-    resolve_semantic_ledger(ChairSemanticLedger(), discussion_bundle)
+    payload = ledger_payload(discussion_bundle)
+    payload["question_routes"] = []
+    payload["evidence_need_groups"] = []
+    resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), discussion_bundle)
 
 
 def test_discussion_source_refs_are_append_only_across_rounds():
@@ -857,7 +1495,11 @@ def test_discussion_agent_updates_previous_issues_without_reclassifying_them():
 
         def complete(self, messages, **kwargs):
             self.calls += 1
-            payload = ledger_value if self.calls == 1 else integration_payload(bundle)
+            payload = (
+                ledger_generation_payload(ledger_value)
+                if self.calls == 1
+                else integration_generation_payload(bundle, ledger_value)
+            )
             return LLMResponse(
                 content=json.dumps(payload, ensure_ascii=False),
                 raw={"usage": {}},
@@ -926,7 +1568,7 @@ def test_discussion_accept_boundary_moves_stable_question_to_boundary():
     ledger_value = ledger_payload(bundle)
     ledger_value["question_routes"] = []
     ledger_value["evidence_need_groups"] = []
-    integration_value = integration_payload(bundle)
+    integration_value = integration_generation_payload(bundle, ledger_value)
 
     class FakeLLM:
         supports_json_schema = True
@@ -936,7 +1578,11 @@ def test_discussion_accept_boundary_moves_stable_question_to_boundary():
 
         def complete(self, messages, **kwargs):
             self.calls += 1
-            value = ledger_value if self.calls == 1 else integration_value
+            value = (
+                ledger_generation_payload(ledger_value)
+                if self.calls == 1
+                else integration_value
+            )
             return LLMResponse(content=json.dumps(value, ensure_ascii=False), raw={})
 
     result, _ = MDTChairAgent(
@@ -1048,9 +1694,9 @@ def test_discussion_projects_only_requester_approved_evidence_need():
         def complete(self, messages, **kwargs):
             self.calls += 1
             value = (
-                ledger_value
+                ledger_generation_payload(ledger_value)
                 if self.calls == 1
-                else integration_payload(current_bundle)
+                else integration_generation_payload(current_bundle, ledger_value)
             )
             return LLMResponse(content=json.dumps(value, ensure_ascii=False), raw={})
 
@@ -1441,7 +2087,10 @@ def test_semantic_ledger_drops_known_gap_refs_from_answer_and_coverage_links():
         {
             "context": "question_routes[0].answer_links[0].source_refs",
             "action": "dropped_incompatible_known_source_refs",
-            "allowed_source_types": ["specialty_assessment"],
+                "allowed_source_types": [
+                    "discussion_answer",
+                    "specialty_assessment",
+                ],
             "dropped": [
                 {"source_ref": gap_ref, "source_type": "assessment_evidence_need"}
             ],
@@ -1542,7 +2191,11 @@ def test_agent_uses_ledger_then_integration_structured_calls():
 
         def complete(self, messages, **kwargs):
             self.calls.append((messages, kwargs))
-            payload = ledger_payload(bundle) if len(self.calls) % 2 else integration_payload(bundle)
+            payload = (
+                ledger_generation_payload(ledger_payload(bundle))
+                if len(self.calls) % 2
+                else integration_generation_payload(bundle, ledger_payload(bundle))
+            )
             return LLMResponse(
                 content=json.dumps(payload, ensure_ascii=False),
                 raw={"usage": {"prompt_tokens": 100, "completion_tokens": 50}},
@@ -1567,7 +2220,7 @@ def test_agent_uses_ledger_then_integration_structured_calls():
     pulmonary = source_ref(bundle, "pulmonology", "native_conclusion")
     pulmonary_claim_schema = next(
         choice
-        for choice in ledger_schema["$defs"]["LedgerAtomicClaim"]["anyOf"]
+        for choice in ledger_schema["$defs"]["IntegratedLedgerAtomicClaim"]["anyOf"]
         if choice["properties"]["source_ref"]["enum"] == [pulmonary]
     )
     allowed_pulmonary_evidence = sorted(
@@ -1575,15 +2228,29 @@ def test_agent_uses_ledger_then_integration_structured_calls():
         for values in bundle.source_evidence[pulmonary].values()
         for evidence_ref in values
     )
-    assert pulmonary_claim_schema["properties"]["evidence_links"]["items"][
+    assert all(
+        evidence_schema["properties"]["evidence_ref"]["enum"]
+        == allowed_pulmonary_evidence
+        for evidence_schema in pulmonary_claim_schema["properties"]["evidence_links"][
+            "items"
+        ]["anyOf"]
+    )
+    assert ledger_schema["$defs"]["BoundaryLedgerAtomicClaim"]["anyOf"][0][
         "properties"
-    ]["evidence_ref"]["enum"] == allowed_pulmonary_evidence
-    assert ledger_schema["$defs"]["LedgerQuestionRoute"]["properties"][
-        "source_refs"
-    ]["items"]["enum"] == [
+    ]["epistemic_status"]["enum"] == [
+        "indeterminate", "not_assessable", "not_applicable"
+    ]
+    assert ledger_schema["$defs"]["DiscriminatingLedgerEvidenceLink"][
+        "properties"
+    ]["comparison_target"]["minLength"] == 1
+    route_schema = ledger_schema["$defs"]["ChairQuestionRoutes"]
+    assert route_schema["required"] == [
         source_ref(bundle, "pulmonology", "native_question"),
         source_ref(bundle, "pathology", "native_question"),
     ]
+    assert set(route_schema["properties"]) == set(route_schema["required"])
+    assert route_schema["additionalProperties"] is False
+    assert "source_refs" not in ledger_schema["$defs"]["LedgerQuestionRouteSlot"]["properties"]
     assert integration_schema["$defs"]["IntegratedQuestion"]["properties"][
         "source_refs"
     ]["items"]["enum"] == [
@@ -1594,6 +2261,15 @@ def test_agent_uses_ledger_then_integration_structured_calls():
     ]["items"]["enum"] == [
         source_ref(bundle, "thoracic_radiology", "native_conclusion")
     ]
+    for name in (
+        "IntegratedConclusionDraft",
+        "AssessmentBoundaryDraft",
+        "ConflictPositionDraft",
+    ):
+        assert "source_refs" not in integration_schema["$defs"][name]["properties"]
+    assert integration_schema["$defs"]["AssessmentBoundaryDraft"]["properties"][
+        "atomic_claim_ids"
+    ]["items"]["enum"] == ["T002-A001", "T002-A002", "T002-A003"]
 
     alias_result, _ = agent.synthesize(bundle)
     assert len(llm.calls) == 4

@@ -8,10 +8,11 @@
    - `relation` 严格区分：`supports` 直接支持当前原子判断；`contradicts` 与当前原子判断直接冲突；`discriminates` 用于区分明确候选解释并填写 `comparison_target`；`qualifies` 只限定判断强度、范围或分型能力；`background` 只提供语境。
    - 同一 `evidence_ref` 对同一原子判断只能承担一个主要关系。证据不足以推出更具体结论不等于反证；缺失资料不是患者阴性证据，必须进入判断边界或证据需求。
    - Evidence ID、命题和图节点只是同一患者证据图中的定位层级，不得作为多份独立证据重复列入。
-   - 分别写清判断对象 `subject`、判断维度 `dimension`、时间范围 `timeframe`、证据条件 `evidence_scope`。
-   - `professional_level` 必须区分：病例观察 `observation`、形态模式 `morphologic_pattern`、疾病诊断 `disease_diagnosis`、病因归属 `etiologic_attribution`、严重度或病程 `severity_or_trajectory`、可评价性 `assessability`。模式不能直接等同疾病诊断。
+   - 分别写清每个原子判断的对象 `subject`、维度 `dimension`、专业层级、立场和认识状态。它们属于原子判断，不能直接复制整个 assessment 的 `status`、`role` 或 `assessment_type`；例如一条总体不可评价的 assessment 仍可能包含可肯定的病例观察。无需输出 `timeframe` 和 `evidence_scope`，程序会从来源 assessment 的条件回填。
+   - `professional_level` 必须区分：病例观察 `observation`、形态模式 `morphologic_pattern`、疾病诊断 `disease_diagnosis`、病因归属 `etiologic_attribution`、严重度或病程 `severity_or_trajectory`、可评价性 `assessability`。模式不能直接等同疾病诊断。存在专科版本条件时必须沿用其中的层级。
    - `position_role` 必须区分：当前首选 `preferred`、重要替代解释 `alternative`、暂定可能 `tentative`、判断边界 `boundary`。只有正式输出中作为当前主要判断且 `status=supported/favored` 的结论才能标为 `preferred`；`possible` 不能仅因措辞积极而升级为首选。
    - `epistemic_status` 必须区分：直接肯定 `affirms`、直接否定 `denies`、可能 `possible`、仍不确定 `indeterminate`、资料不足而不可评价 `not_assessable`、不适用 `not_applicable`。
+   - 一个 `claim_group` 只能有一种去向。先按每条原子判断的认识状态分流，再按临床主题聚合；不得仅按专科或来源 assessment 分组。即使讨论同一临床主题，也必须把 `indeterminate / not_assessable / not_applicable` 原子判断单独放入 `boundary` 组，不得与肯定、否定或可能判断放在同一组。`integrated` 组只能含 `affirms / possible`。每条 `specialty_assessment` 至少要有一条原子判断进入台账。
    - 只有实质相近、对象和层级一致的肯定或可能判断进入 `integrated`。
    - `indeterminate / not_assessable / not_applicable` 进入 `boundary`，不能当作支持结论，也不能当作冲突立场。
    - `conflict` 只允许以下两类，并填写 `conflict_nature`、`comparison_target`、`comparison_conditions`、`why_incompatible` 和 `decision_impact`：
@@ -22,10 +23,11 @@
 
 2. 需其他专科回答的问题路由 `question_routes`
    - 对每条 `interspecialty_questions` 先判断它是在请现有专科观点作解释，还是在索取新的影像、报告、标本、检查、病史或其他病例资料。
-   - 前者为 `question`，后者为 `evidence_need`，两者兼有为 `mixed`；语义相同者可以合并，必须保留全部来源 `source_ref`。
-   - 仅用问题所声明目标专科的现有 `specialty_assessments` 判断是否已有回应。非目标专科和提问专科自己的判断只能作为上下文，绝不能关闭问题。`direct_answer` 表示目标专科现有判断直接回答，`partial_answer` 表示只回答一部分，`evidence_boundary` 表示目标专科已回应但明确因资料边界无法回答实体内容。
+   - `question_routes` 是以每条原始问题的 `source_ref` 为键的对象，schema 已固定全部键；每个键只填写一条判断，不在值中重复填写 `source_ref`。前者为 `question`，后者为 `evidence_need`，两者兼有为 `mixed`。语义相近的问题仍分别填写各自的键。
+   - 一个问题同时涉及解释和资料时，在该键下填写一条 `mixed` 路由；独立的 `assessment_evidence_need` 应进入 `evidence_need_groups`，不能借用问题的键再造路由。
+   - 仅用问题所声明目标专科的现有 `specialty_assessments` 或 `discussion_answers` 判断是否已有回应。非目标专科和提问专科自己的内容只能作为上下文，绝不能关闭问题。`direct_answer` 表示目标专科已直接回答，`partial_answer` 表示只回答一部分，`evidence_boundary` 表示目标专科已回应但明确因资料边界无法回答实体内容。
    - “有专科回应”不等于“问题已解决”。本阶段只建立回应链接，不虚构答案。
-   - 会中专科回答已经在当前输入中投影为新的 `specialty_assessment`；它必须被视为对原问题的正式回答，而不是新的病例事实。
+   - `discussion_answers` 是会中针对原问题的正式回答，只能进入 `answer_links`，不能进入 `claim_groups`，也不能当作新的病例事实。如果该回答确实改变了专科正式判断，只使用已写入 `specialty_assessments` 的当前有效新版本参与整合。
    - 会中是否继续追问由 `programmatic_review_dispositions` 决定，沿用原稳定问题；回答专科自行提出的新问题不得进入路由。
    - 不得把结论中的限制、缺失材料或“仍需某项检查”改写为新问题。
 
@@ -36,12 +38,15 @@
    - “专科说资料不足”不是资料已经提供；缺少资料也不是阴性结果。
    - 会中只有 `programmatic_review_dispositions` 明确为 `evidence_need` 的资料需求才在这里与既有需求去重合并；它表示已有判断成立、资料仅增加明确度，不得回流到问题路由。缺少关键证据而不能判断的内容属于判断边界。
 
-输入的每条项目都有 `source_type`，必须按其类型引用：`specialty_assessment` 是专科初步判断，`interspecialty_question` 是需其他专科回答的问题，`assessment_evidence_need` 是初步判断产生的资料缺口。`answer_links.source_refs` 和 `coverage_source_refs` 只能放 `specialty_assessment`；`assessment_evidence_need` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
+输入的每条项目都有 `source_type`，必须按其类型引用：`specialty_assessment` 是专科当前有效的正式判断，`discussion_answer` 是会中对某个原问题的回答，`interspecialty_question` 是需其他专科回答的问题，`assessment_evidence_need` 是判断产生的资料缺口。`claim_groups` 和 `coverage_source_refs` 只能放 `specialty_assessment`；`answer_links.source_refs` 可以放目标专科的 `specialty_assessment` 或 `discussion_answer`；`assessment_evidence_need` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
 
 不要生成任何 ID；程序会统一回填。不要查询或引用指南，不使用专科内部 `clinical_reasoning`。只使用输入中存在的 `source_ref` 和 `evidence_ref`，只返回符合 schema 的 JSON。
 
 冲突检测范围：
 {{ conflict_detection_scope }}
+
+待分类原始问题索引（`question_routes` 的全部固定键；逐键依据对应问题文本填写，不要借用其他资料需求的内容）：
+{{ question_index }}
 
 会中重整规则：`discussion_context` 非空时，上一轮五板块是当前状态基线，本轮回答与复核是状态变化信号。`programmatic_review_dispositions` 是程序确定的唯一去向，不得重新分类。上一轮及更早的问题不得重新放入 `question_routes`；只有本轮投影中由 `evidence_need` 处置产生的资料需求进入 `evidence_need_groups`。`assessment_boundary` 是缺少关键证据便不能判断的底线；`evidence_need` 是不阻断当前判断、只增加明确度的补充资料；`continue_clarification / continue_corroboration` 沿用原问题；`conflict_assessment` 只触发重新比较，不直接证明存在正式冲突。
 

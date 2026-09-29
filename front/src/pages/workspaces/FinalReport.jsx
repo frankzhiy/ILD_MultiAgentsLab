@@ -64,6 +64,15 @@ const CONFLICT_OUTCOME = {
   not_confirmed_as_formal_conflict: '未被主持人确认为正式冲突',
 }
 
+const JUDGMENT_CHANGE = {
+  maintain: ['保持原判断', 'default'],
+  supplement: ['补充依据', 'blue'],
+  qualify: ['收紧边界', 'gold'],
+  revise: ['修正判断', 'orange'],
+  withdraw: ['撤回判断', 'red'],
+  create: ['新增判断', 'green'],
+}
+
 function LabeledTag({ label, value, labels }) {
   const [text, color] = labels[value] || [value || '未标记', 'default']
   return <Tag color={color}>{label ? `${label}：` : ''}{text}</Tag>
@@ -177,6 +186,7 @@ function ReasoningLayer({ report }) {
 function AuditLayer({ report }) {
   const audit = report.discussion_audit || {}
   const metrics = report.research_metrics || {}
+  const judgmentChanges = report.judgment_changes || []
   return <Space orientation="vertical" size="large" style={{ width: '100%' }}>
     <div>
       <Title level={5}>证据与讨论客观计数</Title>
@@ -189,6 +199,31 @@ function AuditLayer({ report }) {
         { key: 'boundaries', label: '明确判断边界', children: metrics.assessment_boundaries || 0 },
       ]} />
       <Paragraph type="secondary">这些是程序统计的覆盖与闭环数量，不代表诊断正确性或系统自评分。</Paragraph>
+    </div>
+    <div>
+      <Title level={5}>专科判断变更记录</Title>
+      {judgmentChanges.length ? <Timeline items={judgmentChanges.map((item) => {
+        const [label, color] = JUDGMENT_CHANGE[item.change_type] || [item.change_type, 'default']
+        return {
+          color: item.change_type === 'withdraw' ? 'red' : item.change_type === 'maintain' ? 'gray' : 'blue',
+          children: <div className="discussion-audit-round">
+            <Space size={[6, 6]} wrap>
+              <Tag>第 {item.round_number} 轮</Tag>
+              <Tag>{SPECIALTIES[item.specialty] || item.specialty}</Tag>
+              <Tag color={color}>{label}</Tag>
+              <Text code>{item.judgment_id}</Text>
+              {item.trigger_issue_ids?.map((issueId) => <Tag key={issueId}>{issueId}</Tag>)}
+            </Space>
+            <Paragraph>{item.rationale}</Paragraph>
+            <Space size={[6, 6]} wrap>
+              {item.before_version_id && <Text type="secondary">原版本：{item.before_version_id}</Text>}
+              {item.after_version_id && <Text type="secondary">当前版本：{item.after_version_id}</Text>}
+            </Space>
+            {item.changed_fields?.length > 0 && <Paragraph type="secondary">变更内容：{item.changed_fields.join('、')}</Paragraph>}
+            {item.considered_source_refs?.length > 0 && <Paragraph type="secondary">参考的专科意见：{item.considered_source_refs.join('、')}</Paragraph>}
+          </div>,
+        }
+      })} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="讨论中没有发生专科判断变更" />}
     </div>
     <div>
       <Title level={5}>议题级决策记录</Title>

@@ -222,6 +222,13 @@ a { color: inherit; }
 .discussion-chair-tabs > .ant-card-head { border-bottom-color: #dfe6ef; }
 .discussion-chair-tabs > .ant-card-body { padding: 0 16px 16px; }
 .discussion-change-summary { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 12px 0 2px; }
+.decision-state-card { border-top: 3px solid #2f6fed; }
+.decision-state-card > .ant-card-body { display: grid; gap: 14px; }
+.decision-state-table .ant-table-cell { vertical-align: top; }
+.judgment-main, .judgment-conditions { display: grid; gap: 6px; }
+.judgment-main > .ant-typography-secondary, .judgment-conditions > .ant-typography-secondary { line-height: 1.55; }
+.judgment-history { margin: 8px 12px 0; }
+.judgment-history .ant-typography { margin: 6px 0 2px; }
 .chair-result-tabs > .ant-tabs-nav { margin-bottom: 12px; }
 .chair-result-tabs .chair-board { box-shadow: none; }
 .chair-result-tabs .chair-board > .ant-card-head { display: none; }

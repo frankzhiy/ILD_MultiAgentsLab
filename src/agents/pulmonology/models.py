@@ -313,8 +313,9 @@ class DiagnosticFormulation(BaseModel):
         ranks = [item.rank for item in self.differential_diagnoses]
         if len(ranks) != len(set(ranks)):
             raise ValueError("Differential diagnosis ranks must be unique")
-        if ranks and sorted(ranks) != list(range(1, len(ranks) + 1)):
-            raise ValueError("Differential diagnosis ranks must be consecutive from 1")
+        self.differential_diagnoses.sort(key=lambda item: item.rank)
+        for rank, item in enumerate(self.differential_diagnoses, start=1):
+            item.rank = rank
         if self.classification_status != "insufficient_data" and not self.leading_diagnosis:
             raise ValueError("A non-insufficient diagnostic formulation needs a leading diagnosis")
         return self

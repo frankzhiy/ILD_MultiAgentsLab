@@ -1,6 +1,6 @@
 """Structured cross-specialty integration produced by the MDT chair."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -16,6 +16,7 @@ Specialty = Literal[
 ]
 SourceType = Literal[
     "specialty_assessment",
+    "discussion_answer",
     "interspecialty_question",
     "assessment_evidence_need",
     # Read-only compatibility for existing run artifacts.
@@ -82,15 +83,18 @@ class LedgerEvidenceLink(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     evidence_ref: str = Field(min_length=1)
-    relation: EvidenceRelation
+    relation: Literal["supports", "contradicts", "qualifies", "background"]
     rationale: str = Field(min_length=1)
     comparison_target: str = ""
 
-    @model_validator(mode="after")
-    def require_discrimination_target(self):
-        if self.relation == "discriminates" and not self.comparison_target.strip():
-            raise ValueError("discriminates evidence requires comparison_target")
-        return self
+
+class DiscriminatingLedgerEvidenceLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_ref: str = Field(min_length=1)
+    relation: Literal["discriminates"]
+    rationale: str = Field(min_length=1)
+    comparison_target: str = Field(min_length=1)
 
 
 class ClaimEvidenceLink(CaseEvidenceCitation):
@@ -136,12 +140,30 @@ class LedgerAtomicClaim(BaseModel):
     statement: str = Field(min_length=1)
     subject: str = Field(min_length=1)
     dimension: str = Field(min_length=1)
-    timeframe: str = Field(min_length=1)
-    evidence_scope: str = Field(min_length=1)
+    timeframe: SkipJsonSchema[str] = ""
+    evidence_scope: SkipJsonSchema[str] = ""
     professional_level: ProfessionalLevel
     position_role: PositionRole
     epistemic_status: EpistemicStatus
-    evidence_links: list[LedgerEvidenceLink] = Field(default_factory=list)
+    evidence_links: list[Annotated[
+        LedgerEvidenceLink | DiscriminatingLedgerEvidenceLink,
+        Field(discriminator="relation"),
+    ]] = Field(default_factory=list)
+
+
+class IntegratedLedgerAtomicClaim(LedgerAtomicClaim):
+    epistemic_status: Literal["affirms", "possible"]
+    position_role: Literal["preferred", "alternative", "tentative"]
+
+
+class BoundaryLedgerAtomicClaim(LedgerAtomicClaim):
+    epistemic_status: Literal["indeterminate", "not_assessable", "not_applicable"]
+    position_role: Literal["boundary"]
+
+
+class NonBoundaryLedgerAtomicClaim(LedgerAtomicClaim):
+    epistemic_status: Literal["affirms", "denies", "possible"]
+    position_role: Literal["preferred", "alternative", "tentative"]
 
 
 class LedgerClaimGroup(BaseModel):
@@ -158,6 +180,43 @@ class LedgerClaimGroup(BaseModel):
     why_incompatible: str = ""
     decision_impact: str = ""
     claims: list[LedgerAtomicClaim] = Field(min_length=1)
+
+
+class IntegratedLedgerClaimGroup(LedgerClaimGroup):
+    disposition: Literal["integrated"]
+    conflict_nature: None = None
+    comparison_target: Literal[""] = ""
+    comparison_conditions: Literal[""] = ""
+    why_incompatible: Literal[""] = ""
+    claims: list[IntegratedLedgerAtomicClaim] = Field(min_length=1)
+
+
+class BoundaryLedgerClaimGroup(LedgerClaimGroup):
+    disposition: Literal["boundary"]
+    conflict_nature: None = None
+    comparison_target: Literal[""] = ""
+    comparison_conditions: Literal[""] = ""
+    why_incompatible: Literal[""] = ""
+    claims: list[BoundaryLedgerAtomicClaim] = Field(min_length=1)
+
+
+class ConflictLedgerClaimGroup(LedgerClaimGroup):
+    disposition: Literal["conflict"]
+    conflict_nature: ConflictNature
+    comparison_target: str = Field(min_length=1)
+    comparison_conditions: str = Field(min_length=1)
+    why_incompatible: str = Field(min_length=1)
+    decision_impact: str = Field(min_length=1)
+    claims: list[NonBoundaryLedgerAtomicClaim] = Field(min_length=1)
+
+
+class FollowUpLedgerClaimGroup(LedgerClaimGroup):
+    disposition: Literal["follow_up"]
+    conflict_nature: None = None
+    comparison_target: Literal[""] = ""
+    comparison_conditions: Literal[""] = ""
+    why_incompatible: Literal[""] = ""
+    claims: list[NonBoundaryLedgerAtomicClaim] = Field(min_length=1)
 
 
 class LedgerAnswerLink(BaseModel):
@@ -177,6 +236,17 @@ class LedgerQuestionRoute(BaseModel):
     normalized_question: str = ""
     evidence_requirement: str = ""
     target_specialties: SkipJsonSchema[list[Specialty]] = Field(default_factory=list)
+    answer_links: list[LedgerAnswerLink] = Field(default_factory=list)
+
+
+class LedgerQuestionRouteSlot(BaseModel):
+    """One route decision for a source question fixed by the schema key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: Literal["question", "evidence_need", "mixed"]
+    normalized_question: str = ""
+    evidence_requirement: str = ""
     answer_links: list[LedgerAnswerLink] = Field(default_factory=list)
 
 
@@ -459,6 +529,66 @@ class MDTChairIntegration(BaseModel):
     conflicts: list[CrossSpecialtyConflict] = Field(default_factory=list)
     questions: list[IntegratedQuestion] = Field(default_factory=list)
     evidence_needs: list[EvidenceNeed] = Field(default_factory=list)
+
+
+class IntegratedConclusionDraft(IntegratedConclusion):
+    """The chair selects claims; their provenance is resolved from the ledger."""
+
+    source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list, exclude=True)
+    atomic_claim_ids: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_supplied_sources(cls, value):
+        if isinstance(value, dict) and value.get("source_refs"):
+            raise ValueError("source_refs are derived from atomic_claim_ids")
+        return value
+
+
+class AssessmentBoundaryDraft(AssessmentBoundary):
+    source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list, exclude=True)
+    question_source_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_supplied_sources(cls, value):
+        if isinstance(value, dict) and value.get("source_refs"):
+            raise ValueError("source_refs are derived from boundary bases")
+        return value
+
+    @model_validator(mode="after")
+    def require_basis(self):
+        if not (
+            self.atomic_claim_ids
+            or self.question_source_refs
+            or self.related_evidence_need_source_refs
+        ):
+            raise ValueError("Assessment boundary requires a ledger basis")
+        return self
+
+
+class ConflictPositionDraft(ConflictPosition):
+    source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list, exclude=True)
+    atomic_claim_ids: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_supplied_sources(cls, value):
+        if isinstance(value, dict) and value.get("source_refs"):
+            raise ValueError("source_refs are derived from atomic_claim_ids")
+        return value
+
+
+class CrossSpecialtyConflictDraft(CrossSpecialtyConflict):
+    positions: list[ConflictPositionDraft] = Field(min_length=2)
+
+
+class MDTChairIntegrationDraft(MDTChairIntegration):
+    """Generation contract without duplicate claim-to-source selections."""
+
+    integrated_conclusions: list[IntegratedConclusionDraft] = Field(default_factory=list)
+    assessment_boundaries: list[AssessmentBoundaryDraft] = Field(default_factory=list)
+    conflicts: list[CrossSpecialtyConflictDraft] = Field(default_factory=list)
 
 
 # Compatibility for callers importing the former class name.

@@ -1,7 +1,10 @@
 import json
+import ssl
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel
 
 from src.agents.common.initial_output import (
     EvidenceBundle,
@@ -23,11 +26,191 @@ from src.agents.thoracic_radiology.models import EvidencePointer as RadiologyPoi
 from src.agents.thoracic_radiology.models import SpecialistQuestion as RadiologyQuestion
 from src.guidelines.models import GuidelineEvidencePointer
 from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.base import LLMResponse
 from src.llm.structured import (
     StructuredGenerationError,
     StructuredLLMGenerator,
     json_schema_response_format,
 )
+
+
+def test_semantic_retry_repairs_only_invalid_fields_and_preserves_other_sections():
+    class Ledger(BaseModel):
+        claim_groups: list[dict]
+        question_routes: list[dict]
+        evidence_need_groups: list[dict]
+
+    original = {
+        "claim_groups": [{"disposition": "conflict", "conflict_nature": "decision_relevant_discordance"}],
+        "question_routes": [{"source_refs": ["S003", "S004"]}],
+        "evidence_need_groups": [{"source_refs": ["S013"]}],
+    }
+    patch = {"edits": [
+        {"op": "replace", "path": "/claim_groups/0/disposition", "value": "boundary"},
+        {"op": "replace", "path": "/claim_groups/0/conflict_nature", "value": None},
+    ]}
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            self.calls.append((messages, response_format))
+            value = original if len(self.calls) == 1 else patch
+            return LLMResponse(
+                content=json.dumps(value),
+                raw={"choices": [{"finish_reason": "stop"}]},
+            )
+
+    def validate(ledger):
+        if ledger.claim_groups[0]["disposition"] == "conflict":
+            raise ValueError("boundary assessments cannot be a conflict")
+        return ledger
+
+    llm = FakeLLM()
+    generator = StructuredLLMGenerator(
+        llm, temperature=0, max_tokens=24000, max_attempts=2,
+        response_format_mode="json_schema",
+    )
+    result, trace = generator.generate(
+        schema_model=Ledger,
+        schema_name="ledger",
+        system_prompt="system",
+        user_prompt="user",
+        extra_validation=validate,
+        repair_on_validation_error=True,
+    )
+
+    assert result.claim_groups[0] == {"disposition": "boundary", "conflict_nature": None}
+    assert result.question_routes == original["question_routes"]
+    assert result.evidence_need_groups == original["evidence_need_groups"]
+    assert trace["attempts"][0]["validated"] is False
+    assert trace["attempts"][1]["validated"] is True
+    assert llm.calls[0][1]["type"] == "json_schema"
+    assert llm.calls[1][1] == {"type": "json_object"}
+    assert "edits" in llm.calls[1][0][-1].content
+
+
+def test_semantic_retry_cannot_replace_an_entire_section():
+    from src.llm.structured import _apply_repair_edits
+
+    with pytest.raises(ValueError, match="edits array"):
+        _apply_repair_edits(
+            {"question_routes": [{"source_refs": ["S003"]}]},
+            {"claim_groups": [], "question_routes": [], "evidence_need_groups": []},
+        )
+    with pytest.raises(ValueError, match="scalar field"):
+        _apply_repair_edits(
+            {"question_routes": [{"source_refs": ["S003"]}]},
+            {"edits": [{"op": "replace", "path": "/question_routes", "value": []}]},
+        )
+
+
+def test_semantic_retry_can_replace_atomic_claim_selection():
+    from src.llm.structured import _apply_repair_edits
+
+    original = {"assessment_boundaries": [{"atomic_claim_ids": ["T002-A001"]}]}
+    repaired = _apply_repair_edits(original, {"edits": [{
+        "op": "replace",
+        "path": "/assessment_boundaries/0/atomic_claim_ids",
+        "value": ["T002-A002"],
+    }]})
+
+    assert repaired["assessment_boundaries"][0]["atomic_claim_ids"] == ["T002-A002"]
+    assert original["assessment_boundaries"][0]["atomic_claim_ids"] == ["T002-A001"]
+
+
+def test_semantic_retry_can_clear_nullable_content_when_change_is_maintain():
+    from src.llm.structured import _apply_repair_edits
+
+    original = {"proposals": [{"change_type": "qualify", "proposed_content": {"statement": "旧判断"}}]}
+    repaired = _apply_repair_edits(original, {"edits": [
+        {"op": "replace", "path": "/proposals/0/change_type", "value": "maintain"},
+        {"op": "replace", "path": "/proposals/0/proposed_content", "value": None},
+    ]})
+
+    assert repaired["proposals"][0] == {"change_type": "maintain", "proposed_content": None}
+    assert original["proposals"][0]["proposed_content"] is not None
+
+
+def test_semantic_retry_can_append_a_missing_route_without_changing_existing_routes():
+    from src.llm.structured import _apply_repair_edits
+
+    base = {"question_routes": [{"source_refs": ["S003"]}]}
+    repaired = _apply_repair_edits(
+        base,
+        {"edits": [{
+            "op": "append",
+            "path": "/question_routes",
+            "value": {"source_refs": ["S004"]},
+        }]},
+    )
+
+    assert base["question_routes"] == [{"source_refs": ["S003"]}]
+    assert repaired["question_routes"] == [
+        {"source_refs": ["S003"]},
+        {"source_refs": ["S004"]},
+    ]
+
+
+def test_semantic_retry_removes_duplicate_routes_without_losing_unique_questions():
+    class Ledger(BaseModel):
+        question_routes: list[dict]
+
+    original = {"question_routes": [
+        {"source_refs": ["S003"], "route": "mixed"},
+        {"source_refs": ["S003"], "route": "evidence_need"},
+        {"source_refs": ["S024"], "route": "question"},
+        {"source_refs": ["S003"], "route": "evidence_need"},
+        {"source_refs": ["S024"], "route": "evidence_need"},
+    ]}
+    patch = {"edits": [{
+        "op": "remove_indices", "path": "/question_routes", "value": [1, 3, 4],
+    }]}
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
+            self.messages = []
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            self.calls += 1
+            self.messages.append(messages)
+            value = (
+                original if self.calls == 1 else
+                {"edits": [{"op": "replace", "path": "/question_routes/1/route", "value": "evidence_need"}]}
+                if self.calls == 2 else patch
+            )
+            return LLMResponse(
+                content=json.dumps(value),
+                raw={"choices": [{"finish_reason": "stop"}]},
+            )
+
+    def validate(ledger):
+        refs = [ref for route in ledger.question_routes for ref in route["source_refs"]]
+        if len(refs) != len(set(refs)):
+            raise ValueError("Every in-scope question must be classified exactly once; duplicates")
+        return ledger
+
+    llm = FakeLLM()
+    result, trace = StructuredLLMGenerator(
+        llm, temperature=0, max_tokens=24000, max_attempts=3,
+    ).generate(
+        schema_model=Ledger,
+        schema_name="ledger",
+        system_prompt="system",
+        user_prompt="user",
+        extra_validation=validate,
+        repair_on_validation_error=True,
+    )
+
+    assert [route["source_refs"] for route in result.question_routes] == [
+        ["S003"], ["S024"],
+    ]
+    assert len(original["question_routes"]) == 5
+    assert trace["attempts"][1]["validated"] is False
+    assert trace["attempts"][2]["validated"] is True
+    assert "上一轮 edits 未消除错误" in llm.messages[2][-1].content
 
 
 def test_prompt_json_removes_program_filled_fields_recursively():
@@ -325,3 +508,31 @@ def test_declared_json_schema_support_does_not_silently_downgrade():
 
     assert len(llm.formats) == 1
     assert llm.formats[0]["type"] == "json_schema"
+
+
+def test_ssl_eof_retries_the_same_structured_request():
+    class Answer(BaseModel):
+        value: str
+
+    class FlakyLLM:
+        calls = 0
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            self.calls += 1
+            if self.calls == 1:
+                cause = urllib.error.URLError(ssl.SSLEOFError("unexpected EOF"))
+                raise RuntimeError(f"APIYI request failed: {cause}") from cause
+            return LLMResponse(
+                content='{"value":"ok"}',
+                raw={"choices": [{"finish_reason": "stop"}]},
+            )
+
+    llm = FlakyLLM()
+    result, trace = StructuredLLMGenerator(
+        llm, temperature=0, max_tokens=100, max_attempts=2,
+    ).generate(
+        schema_model=Answer, schema_name="answer", system_prompt="system", user_prompt="user",
+    )
+
+    assert result.value == "ok"
+    assert llm.calls == len(trace["attempts"]) == 2

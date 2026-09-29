@@ -170,6 +170,7 @@ const completedV2 = {
       stop_reason: '当前仅剩判断边界。',
     },
     research_metrics: { diagnostic_claims: 7, claims_with_specialty_citations: 1, claims_with_patient_evidence: 1, claims_with_guideline_citations: 0, discussion_issues: 1, closed_issues: 1, formal_conflicts: 0, resolved_formal_conflicts: 0, unresolved_formal_conflicts: 0, assessment_boundaries: 0 },
+    judgment_changes: [{ transaction_id: 'R01-pulmonology-judgment-update', specialty: 'pulmonology', judgment_id: 'pulmonology_001', change_type: 'qualify', before_version_id: 'pulmonology_001@v001', after_version_id: 'pulmonology_001@v002', round_number: 1, trigger_issue_ids: ['Q001'], considered_source_refs: ['R01-Q001-thoracic_radiology-A'], rationale: '影像科意见要求收紧判断边界。', changed_fields: ['statement', 'limitations'] }],
   },
 }
 
@@ -208,10 +209,17 @@ afterEach(() => {
 
 describe('DiscussionWorkspace', () => {
   it('starts only the discussion stage from existing outputs', async () => {
-    api.discussion.mockResolvedValue({ status: 'pending', runnable: true, rounds: [] })
+    api.discussion.mockResolvedValue({
+      status: 'pending', runnable: true, rounds: [],
+      decision_state: {
+        judgments: [{ judgment_id: 'pulmonology_001', active_version_id: 'v1', versions: [{ version_id: 'v1', assessment: { statement: '首轮专科判断。' } }] }],
+      },
+    })
     api.runDiscussion.mockResolvedValue({ status: 'running', runnable: true, rounds: [] })
     renderWorkspace()
 
+    expect(await screen.findByText('尚未产生团队讨论轮次；点击“运行团队讨论”后，这里会实时出现任务与处理进度。')).toBeInTheDocument()
+    expect(screen.queryByText('首轮专科判断。')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: '运行团队讨论' }))
 
     await waitFor(() => expect(api.runDiscussion).toHaveBeenCalledWith('run-1'))
@@ -281,9 +289,41 @@ describe('DiscussionWorkspace', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '讨论与研究审计' }))
     expect(await screen.findByText('证据与讨论客观计数')).toBeInTheDocument()
+    expect(screen.getByText('专科判断变更记录')).toBeInTheDocument()
+    expect(screen.getByText('影像科意见要求收紧判断边界。')).toBeInTheDocument()
+    expect(screen.getByText(/R01-Q001-thoracic_radiology-A/)).toBeInTheDocument()
     expect(await screen.findByText('议题级决策记录')).toBeInTheDocument()
     expect(screen.getByText('冲突历史')).toBeInTheDocument()
     expect(screen.getByText('当前仅剩判断边界。')).toBeInTheDocument()
+  })
+
+  it('shows the current specialty judgment and preserves its version history', async () => {
+    api.discussion.mockResolvedValue({
+      ...completed,
+      decision_state: {
+        revision: 2,
+        judgments: [{
+          judgment_id: 'pulmonology_001',
+          specialty: 'pulmonology',
+          active_version_id: 'pulmonology_001@v002',
+          versions: [
+            { version_id: 'pulmonology_001@v001', change_type: 'initial', lifecycle_status: 'superseded', created_in_round: 0, rationale: '首轮专科判断。', changed_fields: [], assessment: { statement: '现有资料支持纤维化性间质性肺病。', medical_basis: '根据病例文字。', conditions: { subject: '纤维化性间质性肺病', professional_level: 'disease_diagnosis', timeframe: { description: '当前评估时点。' }, evidence_scope: { evidence_ids: ['ev_001'], scope_limitations: [] } } } },
+            { version_id: 'pulmonology_001@v002', change_type: 'qualify', lifecycle_status: 'active', created_in_round: 1, considered_source_refs: ['R01-Q001-thoracic_radiology-A'], rationale: '缺少原始 HRCT，需要收紧分型边界。', changed_fields: ['statement', 'limitations'], assessment: { statement: '现有资料仅支持未分类间质性肺病。', medical_basis: '已纳入影像科的可评价性意见。', conditions: { subject: '未分类间质性肺病', professional_level: 'disease_diagnosis', timeframe: { description: '当前评估时点。' }, evidence_scope: { evidence_ids: ['ev_001'], scope_limitations: ['缺少原始 HRCT。'] } } } },
+          ],
+        }],
+        change_events: [{ judgment_id: 'pulmonology_001', after_version_id: 'pulmonology_001@v002', rationale: '缺少原始 HRCT，需要收紧分型边界。' }],
+      },
+    })
+    renderWorkspace()
+
+    expect(await screen.findByText('当前多专科判断')).toBeInTheDocument()
+    expect(screen.getByText('现有资料仅支持未分类间质性肺病。')).toBeInTheDocument()
+    expect(screen.getByText('主持人只读取当前有效版本')).toBeInTheDocument()
+    expect(screen.getByText('2 个版本')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand row' }))
+    expect(await screen.findByText('现有资料支持纤维化性间质性肺病。')).toBeInTheDocument()
+    expect(screen.getByText('缺少原始 HRCT，需要收紧分型边界。')).toBeInTheDocument()
   })
 
   it('summarizes structural changes between chair rounds', () => {

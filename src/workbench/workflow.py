@@ -216,6 +216,10 @@ class WorkbenchWorkflow:
             build_chair_prompt_bundle,
             build_semantic_evidence_catalog,
         )
+        from src.agents.common.decision_state import (
+            initialize_decision_state,
+            project_active_specialty_outputs,
+        )
 
         def read(path: Path) -> Any:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -228,12 +232,19 @@ class WorkbenchWorkflow:
                 "pathology",
             )
         }
+        decision_state = initialize_decision_state(case_id, outputs)
+        self._write(
+            run_dir / f"{case_id}_mdt_decision_state.json",
+            decision_state,
+        )
         semantic_evidence = build_semantic_evidence_catalog(
             read(run_dir / f"{case_id}_clinical_propositions.json"),
             read(run_dir / f"{case_id}_local_graphs.json"),
         )
         bundle = build_chair_prompt_bundle(
-            case_id, outputs, semantic_evidence=semantic_evidence
+            case_id,
+            project_active_specialty_outputs(decision_state),
+            semantic_evidence=semantic_evidence,
         )
         self._write(
             run_dir / f"{case_id}_mdt_chair_prompt_input.json",
@@ -268,12 +279,13 @@ class WorkbenchWorkflow:
             MDTChairAgent,
             build_chair_prompt_bundle,
             build_semantic_evidence_catalog,
+            rebase_integration_to_active_judgments,
         )
         from src.agents.mdt_chair.models import MDTChairIntegration
         from src.agents.mdt_discussion.final_report import FinalReportAgent
         from src.agents.mdt_discussion.integration import (
             apply_review_outcomes,
-            append_round_responses,
+            build_judgment_update_inputs,
             build_review_dispositions,
             decide_discussion_continuation,
             stabilize_integration_ids,
@@ -289,6 +301,13 @@ class WorkbenchWorkflow:
             group_tasks_by_specialty,
         )
         from src.agents.mdt_discussion.specialty_agent import SpecialtyDiscussionAgent
+        from src.agents.common.decision_state import (
+            active_judgments,
+            apply_judgment_update,
+            initialize_decision_state,
+            project_active_specialty_outputs,
+            record_discussion_answers,
+        )
 
         def read(path: Path) -> Any:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -311,10 +330,12 @@ class WorkbenchWorkflow:
                 "pathology",
             )
         }
-        cumulative_outputs = initial_outputs
+        decision_state_path = run_dir / f"{case_id}_mdt_decision_state.json"
+        decision_state = initialize_decision_state(case_id, initial_outputs)
+        self._write(decision_state_path, decision_state)
         source_seed = build_chair_prompt_bundle(
             case_id,
-            initial_outputs,
+            project_active_specialty_outputs(decision_state),
             semantic_evidence=semantic_evidence,
         )
         state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
@@ -325,6 +346,7 @@ class WorkbenchWorkflow:
             status="running",
             max_rounds=max_rounds,
             latest_chair_result=baseline.model_dump(mode="json"),
+            decision_state=decision_state,
         )
         traces: dict[str, Any] = {"rounds": []}
         self._write(state_path, state)
@@ -337,12 +359,16 @@ class WorkbenchWorkflow:
         latest = baseline
         try:
             for round_number in range(1, max_rounds + 1):
+                round_specialty_outputs = project_active_specialty_outputs(
+                    state.decision_state
+                )
                 tasks = build_discussion_tasks(
                     chair_result=latest.model_dump(mode="json"),
                     clinical_propositions=clinical_propositions,
                     local_graphs=local_graphs,
                     round_number=round_number,
                     previous_rounds=state.rounds,
+                    decision_state=state.decision_state,
                 )
                 if not tasks:
                     state.stop_reason = (
@@ -369,6 +395,7 @@ class WorkbenchWorkflow:
                         for task in tasks
                     },
                     "review_progress": {},
+                    "judgment_update_progress": {},
                     "review_dispositions": {},
                     "chair_status": "waiting",
                     "chair_result": None,
@@ -429,7 +456,7 @@ class WorkbenchWorkflow:
                         )
                         answer, task_trace = agent.respond_to_task(
                             task=task,
-                            specialty_initial_output=cumulative_outputs[task.specialty],
+                            specialty_initial_output=round_specialty_outputs[task.specialty],
                             chair_result=latest.model_dump(mode="json"),
                         )
                     except Exception as error:
@@ -494,6 +521,7 @@ class WorkbenchWorkflow:
                         run_dir / f"{case_id}_{specialty}_round_{round_number:02d}_response.json",
                         response,
                     )
+
                 question_by_id = {
                     question.question_id: question for question in latest.questions
                 }
@@ -593,6 +621,120 @@ class WorkbenchWorkflow:
                                 review.review_id
                             ] = review_trace
 
+                response_by_specialty = {
+                    response.specialty: response for response in responses
+                }
+                update_inputs = build_judgment_update_inputs(
+                    tasks,
+                    responses,
+                    reviews,
+                )
+
+                for specialty in sorted(update_inputs):
+                    state.active_round["judgment_update_progress"][specialty] = {
+                        "status": "waiting",
+                        "started_at": "",
+                        "completed_at": "",
+                        "update": None,
+                        "error": "",
+                    }
+                self._write(state_path, state)
+
+                judgment_updates = []
+                changed_issues_by_specialty: dict[str, set[str]] = {}
+                for specialty in sorted(update_inputs):
+                    material = update_inputs[specialty]
+                    progress = state.active_round["judgment_update_progress"][specialty]
+                    progress["status"] = "running"
+                    progress["started_at"] = timestamp()
+                    self._write(state_path, state)
+                    self.events.append(
+                        run_id,
+                        "discussion_judgment_update_started",
+                        {"round_number": round_number, "specialty": specialty},
+                        agent_id=specialty,
+                        stage="mdt_discussion",
+                    )
+                    config_path = config_paths[specialty]
+                    update_agent = SpecialtyDiscussionAgent.from_config(
+                        config_path,
+                        build_llm_client(load_yaml(config_path)),
+                        specialty=specialty,
+                        event_callback=self._progress(run_id, specialty),
+                    )
+                    try:
+                        update, update_trace = update_agent.propose_judgment_update(
+                            round_number=round_number,
+                            tasks=[item[0] for item in material],
+                            answers=[item[1] for item in material],
+                            active_judgments=active_judgments(
+                                state.decision_state,
+                                specialty,
+                            ),
+                            reviews=[
+                                review
+                                for review in reviews
+                                if review.reviewer_specialty == specialty
+                            ],
+                        )
+                        state.decision_state = apply_judgment_update(
+                            state.decision_state,
+                            update,
+                            round_number=round_number,
+                        )
+                    except Exception as error:
+                        progress["status"] = "failed"
+                        progress["completed_at"] = timestamp()
+                        progress["error"] = str(error)
+                        self._write(state_path, state)
+                        raise
+                    judgment_updates.append(update)
+                    if specialty in response_by_specialty:
+                        response_by_specialty[specialty].judgment_update = update
+                    changed_issues_by_specialty[specialty] = {
+                        issue_id
+                        for proposal in update.proposals
+                        if proposal.change_type != "maintain"
+                        for issue_id in proposal.trigger_issue_ids
+                    }
+                    progress["status"] = "completed"
+                    progress["completed_at"] = timestamp()
+                    progress["update"] = update.model_dump(mode="json")
+                    round_trace.setdefault("judgment_updates", {})[specialty] = (
+                        update_trace
+                    )
+                    self._write(
+                        run_dir
+                        / (
+                            f"{case_id}_{specialty}_round_"
+                            f"{round_number:02d}_judgment_update.json"
+                        ),
+                        update,
+                    )
+                    self._write(decision_state_path, state.decision_state)
+                    self._write(state_path, state)
+                    self.events.append(
+                        run_id,
+                        "discussion_judgment_update_completed",
+                        {
+                            "round_number": round_number,
+                            "specialty": specialty,
+                            "change_count": sum(
+                                proposal.change_type != "maintain"
+                                for proposal in update.proposals
+                            ),
+                        },
+                        agent_id=specialty,
+                        stage="mdt_discussion",
+                    )
+
+                for response in responses:
+                    changed_issues = changed_issues_by_specialty.get(
+                        response.specialty, set()
+                    )
+                    for answer in response.answers:
+                        answer.changed_from_previous = answer.issue_id in changed_issues
+
                 task_order = {
                     task.task_id: index for index, task in enumerate(tasks)
                 }
@@ -614,17 +756,19 @@ class WorkbenchWorkflow:
                 )
                 self._write(
                     run_dir / f"{case_id}_mdt_round_{round_number:02d}_reviews.json",
-                    reviews,
+                    [review.model_dump(mode="json") for review in reviews],
                 )
                 state.active_round["review_dispositions"] = build_review_dispositions(
                     latest,
                     reviews,
                 )
-                cumulative_outputs = append_round_responses(
-                    cumulative_outputs,
+                state.decision_state = record_discussion_answers(
+                    state.decision_state,
                     responses,
                     reviews,
+                    round_number=round_number,
                 )
+                self._write(decision_state_path, state.decision_state)
                 state.active_round["chair_status"] = "running"
                 self._write(state_path, state)
                 self.events.append(
@@ -636,12 +780,16 @@ class WorkbenchWorkflow:
                 )
                 bundle = build_chair_prompt_bundle(
                     case_id,
-                    cumulative_outputs,
+                    project_active_specialty_outputs(state.decision_state),
                     semantic_evidence=semantic_evidence,
                     discussion_round=round_number,
                     source_seed=source_seed,
                 )
                 source_seed = bundle
+                rebased_previous = rebase_integration_to_active_judgments(
+                    latest,
+                    bundle,
+                )
                 chair_config = load_yaml(config_paths["mdt_chair"])
                 chair_llm = build_llm_client(chair_config)
                 chair = MDTChairAgent.from_config(
@@ -651,13 +799,13 @@ class WorkbenchWorkflow:
                 )
                 updated, chair_trace = chair.integrate(
                     bundle,
-                    discussion_previous=latest,
+                    discussion_previous=rebased_previous,
                     discussion_responses=responses,
                     discussion_reviews=reviews,
                 )
-                updated = stabilize_integration_ids(updated, latest)
+                updated = stabilize_integration_ids(updated, rebased_previous)
                 updated = apply_review_outcomes(updated, reviews)
-                updated = stabilize_integration_ids(updated, latest)
+                updated = stabilize_integration_ids(updated, rebased_previous)
                 round_decision = decide_discussion_continuation(
                     previous=latest,
                     current=updated,
@@ -665,6 +813,7 @@ class WorkbenchWorkflow:
                     max_rounds=max_rounds,
                     responses=responses,
                     reviews=reviews,
+                    judgment_updates=judgment_updates,
                 )
                 latest = updated
                 discussion_round = DiscussionRound(
@@ -672,6 +821,7 @@ class WorkbenchWorkflow:
                     tasks=tasks,
                     specialty_responses=responses,
                     answer_reviews=reviews,
+                    judgment_updates=judgment_updates,
                     chair_result=latest.model_dump(mode="json"),
                     round_decision=round_decision,
                 )
@@ -723,6 +873,7 @@ class WorkbenchWorkflow:
                 rounds=state.rounds,
                 stop_reason=state.stop_reason,
                 baseline_chair_result=baseline.model_dump(mode="json"),
+                decision_state=state.decision_state,
             )
             state.final_report = report
             state.status = "completed"

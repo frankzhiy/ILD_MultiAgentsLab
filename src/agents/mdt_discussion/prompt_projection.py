@@ -47,18 +47,27 @@ def build_specialty_discussion_prompt_view(
 
     formal = build_specialty_initial_prompt_view(initial_output)
     assessments = formal["specialty_assessments"]
-    items = assessments.get("assessments") or assessments.get("conclusions") or []
+    items = [
+        item
+        for item in (
+            assessments.get("assessments") or assessments.get("conclusions") or []
+        )
+        if item.get("origin") != "discussion_answer"
+    ]
     return {
         "specialty_assessments": [
             _select(
                 assessment,
                 "assessment_id",
                 "conclusion_id",
+                "judgment_id",
+                "version_id",
                 "statement",
                 "status",
                 "certainty",
                 "medical_basis",
                 "limitations",
+                "conditions",
             )
             for assessment in items
         ],

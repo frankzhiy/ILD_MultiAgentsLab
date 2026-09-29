@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from src.agents.common.decision_state import (
+    MultiSpecialtyDecisionState,
+    active_judgments,
+)
 from src.agents.mdt_discussion.models import (
     DiscussionEvidenceCandidate,
     DiscussionProposition,
@@ -26,6 +30,7 @@ def build_discussion_tasks(
     local_graphs: dict[str, Any],
     round_number: int,
     previous_rounds: list[DiscussionRound],
+    decision_state: MultiSpecialtyDecisionState | None = None,
 ) -> list[DiscussionTask]:
     """Route open chair issues directly to their declared specialties."""
 
@@ -78,6 +83,7 @@ def build_discussion_tasks(
                     propositions=proposition_index,
                     graphs=graph_index,
                     prior_answers=prior_answers.get(issue_id, []),
+                    active_judgments=_active_judgment_view(decision_state, specialty),
                 )
             )
 
@@ -118,6 +124,7 @@ def build_discussion_tasks(
                     propositions=proposition_index,
                     graphs=graph_index,
                     prior_answers=prior_answers.get(issue_id, []),
+                    active_judgments=_active_judgment_view(decision_state, specialty),
                 )
             )
     return tasks
@@ -146,6 +153,7 @@ def _task(
     propositions: dict[str, list[DiscussionProposition]],
     graphs: dict[str, dict[str, Any]],
     prior_answers: list[dict[str, Any]],
+    active_judgments: list[dict[str, Any]],
 ) -> DiscussionTask:
     evidence = _evidence_candidates(issue, propositions, graphs)
     task_id = f"R{round_number:02d}-{issue_id}-{specialty}"
@@ -162,7 +170,28 @@ def _task(
         prior_answers=prior_answers,
         specialty_context=_specialty_context(issue),
         evidence_candidates=evidence,
+        active_judgments=active_judgments,
     )
+
+
+def _active_judgment_view(
+    state: MultiSpecialtyDecisionState | None,
+    specialty: str,
+) -> list[dict[str, Any]]:
+    if state is None:
+        return []
+    return [
+        {
+            "judgment_id": item.judgment_id,
+            "version_id": item.version_id,
+            "statement": item.assessment.statement,
+            "status": item.assessment.status,
+            "medical_basis": item.assessment.medical_basis,
+            "limitations": item.assessment.limitations,
+            "conditions": item.assessment.conditions.model_dump(mode="json"),
+        }
+        for item in active_judgments(state, specialty)
+    ]
 
 
 def _evidence_candidates(

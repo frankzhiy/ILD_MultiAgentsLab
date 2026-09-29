@@ -1,4 +1,7 @@
+import json
+import ssl
 import time
+import urllib.error
 from copy import deepcopy
 from typing import Any, Callable, TypeVar
 
@@ -88,7 +91,12 @@ class StructuredLLMGenerator:
         ) = None,
         pointer_field_constraints: dict[str, list[dict[str, set[str]]]] | None = None,
         string_field_constraints: dict[str, dict[str, set[str]]] | None = None,
+        repair_on_validation_error: bool = False,
+        max_attempts_override: int | None = None,
     ) -> tuple[T, dict]:
+        attempt_limit = self.max_attempts if max_attempts_override is None else max_attempts_override
+        if attempt_limit < 1:
+            raise ValueError("max_attempts_override must be at least 1")
         stage_started = time.perf_counter()
         self._emit("stage_started", {"stage": schema_name})
         messages = [
@@ -96,16 +104,18 @@ class StructuredLLMGenerator:
             LLMMessage(role="user", content=user_prompt),
         ]
         attempts: list[dict] = []
-        response_format = self._initial_response_format(
+        initial_response_format = self._initial_response_format(
             schema_model,
             schema_name,
             dependent_field_constraints,
             pointer_field_constraints,
             string_field_constraints,
         )
+        response_format = initial_response_format
+        repair_base: dict[str, Any] | None = None
 
         last_error = None
-        for attempt_index in range(1, self.max_attempts + 1):
+        for attempt_index in range(1, attempt_limit + 1):
             attempt_started = time.perf_counter()
             format_name = response_format.get("type") if response_format else None
             self._emit(
@@ -147,7 +157,7 @@ class StructuredLLMGenerator:
                         "duration_seconds": round(llm_duration, 3),
                     }
                 )
-                if _is_retryable_transport_error(exc) and attempt_index < self.max_attempts:
+                if _is_retryable_transport_error(exc) and attempt_index < attempt_limit:
                     time.sleep(self.retry_backoff_seconds * attempt_index)
                     continue
                 self._emit(
@@ -208,9 +218,19 @@ class StructuredLLMGenerator:
                     stage=schema_name,
                 )
             validation_started = time.perf_counter()
+            candidate = None
+            schema_validated = False
             try:
                 parsed = parse_llm_json(response.content)
-                validated = schema_model.model_validate(parsed)
+                candidate = (
+                    _apply_repair_edits(repair_base, parsed)
+                    if repair_base is not None
+                    else parsed
+                )
+                validated = schema_model.model_validate(candidate)
+                if repair_on_validation_error:
+                    candidate = validated.model_dump(mode="json")
+                schema_validated = True
                 if extra_validation:
                     validated = extra_validation(validated)
                 validation_duration = time.perf_counter() - validation_started
@@ -255,30 +275,95 @@ class StructuredLLMGenerator:
                         "stage": schema_name,
                         "attempt": attempt_index,
                         "duration_seconds": round(validation_duration, 3),
-                        "will_retry": attempt_index < self.max_attempts,
+                        "will_retry": attempt_index < attempt_limit,
                     },
                 )
-                messages = [
-                    LLMMessage(
-                        role="system",
-                        content=system_prompt,
-                    ),
-                    LLMMessage(
-                        role="user",
-                        content=(
-                            f"{user_prompt}\n\n"
-                            "上一次输出没有通过程序校验。请只返回修正后的 JSON，"
-                            "不要解释，不要使用 Markdown。\n\n"
-                            f"校验错误：\n{exc}\n\n"
-                            f"上一次输出：\n{response.content}"
+                if (
+                    repair_on_validation_error
+                    and _finish_reason(response.raw) != "length"
+                    and (
+                        (schema_validated and isinstance(candidate, dict))
+                        or repair_base is not None
+                    )
+                ):
+                    repair_feedback = (
+                        "上一轮 edits 未消除错误，请勿重复无效修改："
+                        f"{response.content[:2000]}\n"
+                        if repair_base is not None
+                        else ""
+                    )
+                    if schema_validated and isinstance(candidate, dict):
+                        repair_base = candidate
+                    response_format = {"type": "json_object"}
+                    messages = [
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "你是结构化 JSON 局部修复器。依据原始任务和校验错误，"
+                                "只返回 edits JSON，不要重新生成完整结果。"
+                            ),
                         ),
-                    ),
-                ]
+                        LLMMessage(role="user", content=user_prompt),
+                        LLMMessage(
+                            role="assistant",
+                            content=json.dumps(repair_base, ensure_ascii=False),
+                        ),
+                        LLMMessage(
+                            role="user",
+                            content=(
+                                "上面的 JSON 已生成完整；只修复程序指出的错误，"
+                                "保留其他所有字段及数组成员。返回一个 JSON 对象，格式为 "
+                                '{"edits":[{"op":"replace","path":"/items/0/status",'
+                                '"value":"boundary"}]}。'
+                                "path 是从 0 开始的 JSON Pointer；replace 可替换已存在的标量字段"
+                                "或标量数组（例如 atomic_claim_ids），也可把可空对象改为 null；"
+                                "不能替换为新的对象或对象数组。若把判断改为 maintain，"
+                                "必须同时将 proposed_content 改为 null；"
+                                "append 只能向已存在的数组追加一个新元素；"
+                                'remove_indices 可从数组删除指定位置，格式为 '
+                                '{"op":"remove_indices","path":"/items","value":[2,3]}。'
+                                "如一个字段的修正影响其他字段，也要一并修正相关标量字段；"
+                                "若错误包含 duplicates，必须减少重复的 source_ref 出现次数；"
+                                "只修改 route 等分类字段不能消除重复。删除冗余项前，"
+                                "先确认需保留的信息已存在于其他项目。"
+                                "若同一原子判断的 evidence_links 对同一 evidence_ref "
+                                "给出多个 relation，按该判断和证据内容保留一个主要关系；"
+                                "可以用 remove_indices 删除多余链接，并将必要的限定信息"
+                                "写入保留链接的 rationale。不要按固定关系优先级取舍。"
+                                "若遗漏 specialty_assessment，新增原子判断时须放入与其"
+                                "认识状态相符的组：not_assessable、indeterminate、"
+                                "not_applicable 属于 boundary，不得追加到 follow_up "
+                                "或 integrated 的 claims。新增项目须满足原 JSON Schema。"
+                                "若 supplement 改动了核心判断字段，依据真实变化选择："
+                                "仅收紧确定度或适用范围用 qualify，实质修正判断用 revise；"
+                                "若只是补充依据，则恢复原核心字段。不要为通过校验丢弃新信息。"
+                                "不要返回完整台账，不要替换数组或对象，不要解释。\n"
+                                f"{repair_feedback}"
+                                f"校验错误：{exc}"
+                            ),
+                        ),
+                    ]
+                else:
+                    repair_base = None
+                    response_format = initial_response_format
+                    messages = [
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(
+                            role="user",
+                            content=(
+                                f"{user_prompt}\n\n"
+                                "上一次输出没有通过程序校验。请只返回修正后的 JSON，"
+                                "不要解释，不要使用 Markdown。\n\n"
+                                f"校验错误：\n{exc}\n\n"
+                                f"上一次输出：\n{response.content}"
+                            ),
+                        ),
+                    ]
 
         summaries = "; ".join(_summarize_attempt(item) for item in attempts)
         self._emit("stage_failed", {"stage": schema_name, **_timing(stage_started, attempts)})
         raise StructuredGenerationError(
-            f"Structured LLM generation failed after {self.max_attempts} attempts: "
+            f"Structured LLM generation failed after {attempt_limit} attempts: "
             f"{last_error}. Attempts: {summaries}",
             attempts=attempts,
             stage=schema_name,
@@ -325,6 +410,79 @@ def _summarize_attempt(attempt: dict[str, Any]) -> str:
     )
 
 
+def _apply_repair_edits(base: dict[str, Any], patch: Any) -> dict[str, Any]:
+    if not isinstance(patch, dict) or set(patch) != {"edits"}:
+        raise ValueError("Repair response must contain only an edits array")
+    edits = patch["edits"]
+    if not isinstance(edits, list) or not edits:
+        raise ValueError("Repair response must contain at least one edit")
+    result = deepcopy(base)
+    operations = {"replace": [], "remove_indices": [], "append": []}
+    for edit in edits:
+        if not isinstance(edit, dict) or set(edit) != {"op", "path", "value"}:
+            raise ValueError("Each repair edit must contain op, path, and value")
+        if edit["op"] not in operations:
+            raise ValueError("Repair edit op must be replace, remove_indices, or append")
+        if not isinstance(edit["path"], str) or not edit["path"].startswith("/"):
+            raise ValueError("Repair edit path must be a JSON Pointer")
+        operations[edit["op"]].append(edit)
+    remove_paths = [edit["path"] for edit in operations["remove_indices"]]
+    if len(remove_paths) != len(set(remove_paths)):
+        raise ValueError("Use one remove_indices edit per array")
+    for edit in (
+        operations["replace"] + operations["remove_indices"] + operations["append"]
+    ):
+        path = edit["path"]
+        current: Any = result
+        for part in path[1:].split("/"):
+            key = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, list):
+                if not key.isdigit() or int(key) >= len(current):
+                    raise ValueError(f"Repair edit path does not exist: {path}")
+                parent, index = current, int(key)
+            elif isinstance(current, dict) and key in current:
+                parent, index = current, key
+            else:
+                raise ValueError(f"Repair edit path does not exist: {path}")
+            current = parent[index]
+        if edit["op"] == "remove_indices":
+            indices = edit["value"]
+            if (
+                not isinstance(current, list)
+                or not isinstance(indices, list)
+                or not indices
+                or any(type(index) is not int or index < 0 or index >= len(current) for index in indices)
+                or len(indices) != len(set(indices))
+            ):
+                raise ValueError(f"Repair remove_indices requires valid array indices: {path}")
+            for index_to_remove in sorted(indices, reverse=True):
+                current.pop(index_to_remove)
+        elif edit["op"] == "append":
+            if not isinstance(current, list):
+                raise ValueError(f"Repair append path must be an array: {path}")
+            if isinstance(edit["value"], list):
+                raise ValueError(f"Repair append must add one array element: {path}")
+            current.append(edit["value"])
+        else:
+            value = edit["value"]
+            scalar_array = (
+                isinstance(current, list)
+                and isinstance(value, list)
+                and all(not isinstance(item, (dict, list)) for item in current)
+                and all(not isinstance(item, (dict, list)) for item in value)
+            )
+            nullable_object = isinstance(current, dict) and value is None
+            if not scalar_array and not nullable_object and (
+                isinstance(current, (dict, list))
+                or isinstance(value, (dict, list))
+            ):
+                raise ValueError(
+                    f"Repair edit must replace a scalar field or scalar array: {path}"
+                )
+            parent[index] = value
+    return result
+
+
 def _usage(raw: dict[str, Any]) -> dict[str, int]:
     usage = raw.get("usage") or {}
     cached_tokens = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
@@ -357,6 +515,11 @@ def _finish_reason(raw: dict[str, Any]) -> str | None:
 
 
 def _is_retryable_transport_error(exc: RuntimeError) -> bool:
+    cause = exc.__cause__
+    if isinstance(cause, urllib.error.URLError) and isinstance(
+        cause.reason, (ssl.SSLEOFError, ConnectionResetError, BrokenPipeError)
+    ):
+        return True
     message = str(exc).lower()
     return any(
         marker in message
@@ -391,6 +554,11 @@ def _prepare_strict_schema(
     if isinstance(value, dict):
         if definitions is None:
             definitions = value.get("$defs", {})
+        if "oneOf" in value and "discriminator" in value:
+            value["anyOf"] = value.pop("oneOf")
+            value.pop("discriminator")
+        if "const" in value:
+            value["enum"] = [value.pop("const")]
         reference = value.get("$ref")
         if isinstance(reference, str) and len(value) > 1 and reference.startswith("#/$defs/"):
             referenced = definitions.get(reference.removeprefix("#/$defs/"))
@@ -488,7 +656,11 @@ def _apply_string_field_constraints(
         properties = schema.get("$defs", {}).get(model_name, {}).get("properties", {})
         for field_name, allowed in fields.items():
             field_schema = properties.get(field_name)
-            if not allowed or not isinstance(field_schema, dict):
+            if not isinstance(field_schema, dict):
+                continue
+            if not allowed and field_schema.get("type") == "array":
+                field_schema.pop("minItems", None)
+                field_schema["maxItems"] = 0
                 continue
             target = field_schema.get("items", field_schema)
             if isinstance(target, dict):
@@ -514,6 +686,11 @@ def _apply_dependent_field_constraints(
         path: list[str],
         allowed: set[str],
     ) -> None:
+        if "anyOf" in value:
+            value["anyOf"] = [inline(choice) for choice in value["anyOf"]]
+            for choice in value["anyOf"]:
+                restrict(choice, path, allowed)
+            return
         field = value["properties"][path[0]]
         if len(path) == 1:
             target = field.get("items", field)

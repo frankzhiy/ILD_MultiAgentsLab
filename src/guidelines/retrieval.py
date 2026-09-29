@@ -37,7 +37,7 @@ class GuidelineRetriever:
         if not model_path.is_absolute():
             local_model = self.guideline_dir.parents[1] / model_path
             model_name = str(local_model) if local_model.exists() else model_name
-        self.encoder = SentenceTransformer(model_name)
+        self.encoder = SentenceTransformer(model_name, device="cpu")
         self.client = QdrantClient(path=str(qdrant_path))
 
     def search(

@@ -130,6 +130,23 @@ def formulation_for(pointer, *, opinion_id=None):
     )
 
 
+def test_differential_ranks_follow_model_order_with_consecutive_display_numbers():
+    formulation = DiagnosticFormulation(
+        classification_status="provisional_diagnosis",
+        leading_diagnosis="主导诊断",
+        confidence="low",
+        reasoning_summary="按模型给出的相对顺序排列。",
+        differential_diagnoses=[
+            DifferentialDiagnosis(rank=3, diagnosis="第三", confidence="low", reasoning_summary="待核实"),
+            DifferentialDiagnosis(rank=2, diagnosis="第二", confidence="low", reasoning_summary="待核实"),
+        ],
+    )
+
+    assert [(item.rank, item.diagnosis) for item in formulation.differential_diagnoses] == [
+        (1, "第二"), (2, "第三")
+    ]
+
+
 def assessment_for(case, pointer=None) -> PulmonologyInitialAssessment:
     pointer = pointer or pointer_for(unit_with_role(case, EvidenceRole.OWNED))
     item = clinical_item(pointer)
@@ -176,7 +193,7 @@ def test_pulmonology_yaml_builds_apiyi_client(monkeypatch):
     client = build_llm_client(load_yaml(CONFIG))
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-5.6-luna"
+    assert client.model == "gpt-6-luna"
     assert client.base_url == "https://api.apiyi.com/v1"
     assert client.supports_json_schema is True
 

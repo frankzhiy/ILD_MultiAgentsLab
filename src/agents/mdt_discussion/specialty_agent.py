@@ -3,6 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from src.agents.common.decision_state import (
+    SpecialtyJudgmentUpdate,
+    SpecialtyJudgmentUpdateDraft,
+    SpecialtyJudgmentVersion,
+    prepare_judgment_change,
+)
 from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaim,
     DiscussionEvidenceUse,
@@ -30,6 +36,9 @@ from src.utils.config import load_text, load_yaml, render_template
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/specialty_response.md"
 REVIEW_PROMPT_PATH = (
     Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/answer_review.md"
+)
+JUDGMENT_UPDATE_PROMPT_PATH = (
+    Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/judgment_update.md"
 )
 SPECIALTY_LABELS = {
     "pulmonology": "呼吸科",
@@ -60,6 +69,7 @@ class SpecialtyDiscussionAgent:
         self.config = config
         self.prompt = load_text(PROMPT_PATH)
         self.review_prompt = load_text(REVIEW_PROMPT_PATH)
+        self.judgment_update_prompt = load_text(JUDGMENT_UPDATE_PROMPT_PATH)
         self.guideline_runtime = GuidelineRuntime.from_config(config)
         self.generator = StructuredLLMGenerator(
             llm,
@@ -309,6 +319,201 @@ class SpecialtyDiscussionAgent:
             answer_id=answer.answer_id,
             reviewer_specialty=self.specialty,
         ), trace
+
+    def propose_judgment_update(
+        self,
+        *,
+        round_number: int,
+        tasks: list[DiscussionTask],
+        answers: list[SpecialtyTaskAnswer],
+        active_judgments: list[SpecialtyJudgmentVersion],
+        reviews: list[SpecialtyAnswerReview] | None = None,
+    ) -> tuple[SpecialtyJudgmentUpdate, dict[str, Any]]:
+        """Produce one coherent, specialty-owned state update for the round."""
+
+        output_schema = (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if self.generator.response_format_mode == "json_schema"
+            else prompt_schema_json(SpecialtyJudgmentUpdateDraft)
+        )
+        task_ids = {task.issue_id for task in tasks}
+        source_refs = {
+            str(item.get("source_ref"))
+            for task in tasks
+            for item in task.specialty_context
+            if item.get("source_ref")
+        }
+        source_refs.update(answer.answer_id for answer in answers)
+        source_refs.update(
+            claim.claim_id
+            for answer in answers
+            for claim in answer.answer_claims
+        )
+        source_refs.update(review.review_id for review in (reviews or []))
+        current_by_id = {item.judgment_id: item for item in active_judgments}
+        evidence_sources: dict[str, Any] = {}
+        guideline_sources = {}
+        for item in active_judgments:
+            for relation in item.assessment.evidence.evidence_relations:
+                for evidence_id in relation.evidence_ids:
+                    evidence_sources.setdefault(evidence_id, relation)
+            for pointer in item.assessment.guideline_evidence:
+                guideline_sources[_guideline_pointer_key(pointer)] = pointer
+        for answer in answers:
+            for use in answer.evidence_uses:
+                for evidence_id in use.evidence_ids:
+                    evidence_sources[evidence_id] = use
+            for pointer in answer.guideline_evidence:
+                guideline_sources[_guideline_pointer_key(pointer)] = pointer
+        allowed_evidence_ids = set(evidence_sources)
+        prompt = render_template(
+            self.judgment_update_prompt,
+            {
+                "specialty_label": SPECIALTY_LABELS[self.specialty],
+                "active_judgments": prompt_json([
+                    item.model_dump(mode="json") for item in active_judgments
+                ]),
+                "round_answers": prompt_json([
+                    {
+                        "task": task.model_dump(mode="json"),
+                        "answer": next(
+                            answer.model_dump(mode="json")
+                            for answer in answers
+                            if answer.task_id == task.task_id
+                        ),
+                    }
+                    for task in tasks
+                ]),
+                "review_context": prompt_json([
+                    item.model_dump(mode="json") for item in (reviews or [])
+                ]),
+                "output_schema": output_schema,
+            },
+        )
+
+        def validate(draft: SpecialtyJudgmentUpdateDraft) -> SpecialtyJudgmentUpdateDraft:
+            errors: list[str] = []
+            targeted = [
+                item.target_judgment_id
+                for item in draft.proposals
+                if item.target_judgment_id is not None
+            ]
+            if len(targeted) != len(set(targeted)):
+                errors.append("One update cannot target the same judgment twice")
+            for proposal_index, proposal in enumerate(draft.proposals):
+                if proposal.change_type != "maintain":
+                    if not proposal.trigger_issue_ids:
+                        errors.append(f"proposals[{proposal_index}] must identify its triggering issue")
+                    if not proposal.considered_source_refs:
+                        errors.append(f"proposals[{proposal_index}] must identify the material it considered")
+                unknown_issues = set(proposal.trigger_issue_ids) - task_ids
+                if unknown_issues:
+                    errors.append(f"proposals[{proposal_index}] unknown trigger issue IDs: {sorted(unknown_issues)}")
+                unknown_sources = set(proposal.considered_source_refs) - source_refs
+                if unknown_sources:
+                    proposal.considered_source_refs = [
+                        ref for ref in proposal.considered_source_refs if ref in source_refs
+                    ]
+                    if not proposal.considered_source_refs:
+                        errors.append(f"proposals[{proposal_index}] has no validated considered source refs")
+                if proposal.change_type != "create":
+                    current = current_by_id.get(proposal.target_judgment_id or "")
+                    if current is None:
+                        errors.append(f"proposals[{proposal_index}] unknown active judgment: {proposal.target_judgment_id}")
+                    elif proposal.base_version_id != current.version_id:
+                        errors.append(f"proposals[{proposal_index}] stale base version: {proposal.base_version_id}")
+                if proposal.proposed_content is None:
+                    continue
+                for relation in proposal.proposed_content.evidence.evidence_relations:
+                    unknown = set(relation.evidence_ids) - allowed_evidence_ids
+                    if unknown:
+                        errors.append(f"proposals[{proposal_index}] judgment update uses unknown evidence IDs: {sorted(unknown)}")
+                        continue
+                    source = evidence_sources[relation.evidence_ids[0]]
+                    relation.segment_id = getattr(source, "segment_id", "")
+                    relation.graph_unit_id = getattr(source, "graph_unit_id", "")
+                    relation.quote = getattr(source, "quote", "")
+                    graph_nodes = getattr(source, "graph_nodes", None)
+                    relation.node_ids = (
+                        [
+                            node.get("node_id")
+                            for node in graph_nodes
+                            if node.get("node_id")
+                        ]
+                        if graph_nodes is not None
+                        else list(getattr(source, "node_ids", []))
+                    )
+                for index, pointer in enumerate(
+                    proposal.proposed_content.guideline_evidence
+                ):
+                    source = guideline_sources.get(_guideline_pointer_key(pointer))
+                    if source is None:
+                        errors.append(
+                            f"proposals[{proposal_index}] judgment update uses a guideline passage that was not "
+                            "validated in the current judgment or round answer"
+                        )
+                        continue
+                    resolved = source.model_copy(deep=True)
+                    resolved.relevance = pointer.relevance
+                    resolved.application = pointer.application
+                    proposal.proposed_content.guideline_evidence[index] = resolved
+                if proposal.change_type != "create" and current is not None:
+                    try:
+                        prepare_judgment_change(current, proposal)
+                    except ValueError as exc:
+                        promote_to_revise = (
+                            proposal.change_type == "supplement"
+                            and str(exc).startswith((
+                                "supplement changed core judgment fields",
+                                "supplement cannot change judgment conditions",
+                            ))
+                        ) or (
+                            proposal.change_type == "qualify"
+                            and str(exc).startswith((
+                                "qualify cannot change assessment_type",
+                                "qualify cannot change the judgment subject",
+                                "qualify cannot change the professional level",
+                            ))
+                        )
+                        if promote_to_revise:
+                            proposal.change_type = "revise"
+                            try:
+                                prepare_judgment_change(current, proposal)
+                            except ValueError as revised_error:
+                                errors.append(f"proposals[{proposal_index}]: {revised_error}")
+                        else:
+                            errors.append(f"proposals[{proposal_index}]: {exc}")
+            if errors:
+                raise ValueError("; ".join(errors))
+            return draft
+
+        draft, trace = self.generator.generate(
+            schema_model=SpecialtyJudgmentUpdateDraft,
+            schema_name=f"{self.specialty}_judgment_update_r{round_number:02d}",
+            system_prompt=(
+                f"你是严谨的 ILD MDT {SPECIALTY_LABELS[self.specialty]}会诊医生。"
+                "你只更新本专科判断，不替其他专科或主持人作决定。只返回符合 schema 的 JSON。"
+            ),
+            user_prompt=prompt,
+            extra_validation=validate,
+            pointer_field_constraints={
+                "evidence_relations": [{"evidence_ids": allowed_evidence_ids}],
+            },
+            repair_on_validation_error=True,
+            max_attempts_override=(
+                max(4, self.generator.max_attempts)
+                if self.generator.max_attempts > 1 else 1
+            ),
+        )
+        return SpecialtyJudgmentUpdate(
+            specialty=self.specialty,
+            transaction_id=f"R{round_number:02d}-{self.specialty}-judgment-update",
+            proposals=draft.proposals,
+        ), trace
+
+
+def _guideline_pointer_key(pointer) -> tuple[str, tuple[str, ...]]:
+    return pointer.chunk_id, tuple(pointer.quote_unit_ids)
 
 
 def discussion_evidence_schema_constraints(

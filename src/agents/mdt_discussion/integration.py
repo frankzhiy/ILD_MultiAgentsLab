@@ -4,6 +4,7 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any
 
+from src.agents.common.decision_state import SpecialtyJudgmentUpdate
 from src.agents.common.initial_output import LEGACY_EVIDENCE_ROLE_RELATIONS
 from src.agents.mdt_chair.models import (
     ChairEvidenceBundle,
@@ -11,8 +12,10 @@ from src.agents.mdt_chair.models import (
     QuestionAnswer,
 )
 from src.agents.mdt_discussion.models import (
+    DiscussionTask,
     SpecialtyAnswerReview,
     SpecialtyRoundResponse,
+    SpecialtyTaskAnswer,
 )
 
 
@@ -114,6 +117,56 @@ def append_round_responses(
             gap["_discussion_disposition"] = review.outcome
             assessments["evidence_gaps"].append(gap)
     return updated
+
+
+def build_judgment_update_inputs(
+    tasks: list[DiscussionTask],
+    responses: list[SpecialtyRoundResponse],
+    reviews: list[SpecialtyAnswerReview],
+) -> dict[str, list[tuple[DiscussionTask, SpecialtyTaskAnswer]]]:
+    """Give both answerers and reviewers the information that may affect their state."""
+
+    task_order = {task.task_id: index for index, task in enumerate(tasks)}
+    task_by_id = {task.task_id: task for task in tasks}
+    answer_context = {
+        answer.answer_id: (task_by_id[answer.task_id], answer)
+        for response in responses
+        for answer in response.answers
+    }
+    result: dict[str, dict[str, tuple[DiscussionTask, SpecialtyTaskAnswer]]] = {}
+
+    def add(specialty, task, answer) -> None:
+        result.setdefault(specialty, {})[task.task_id] = (task, answer)
+
+    for response in responses:
+        for answer in response.answers:
+            add(response.specialty, task_by_id[answer.task_id], answer)
+    conflict_participants: dict[str, set[str]] = {}
+    for response in responses:
+        for answer in response.answers:
+            if task_by_id[answer.task_id].issue_type == "conflict":
+                conflict_participants.setdefault(answer.issue_id, set()).add(
+                    response.specialty
+                )
+    for task, answer in answer_context.values():
+        if task.issue_type != "conflict":
+            continue
+        for specialty in conflict_participants.get(answer.issue_id, set()):
+            add(specialty, task, answer)
+    for review in reviews:
+        if review.answer_id not in answer_context:
+            raise ValueError(
+                f"Review references an unknown round answer: {review.answer_id}"
+            )
+        task, answer = answer_context[review.answer_id]
+        add(review.reviewer_specialty, task, answer)
+    return {
+        specialty: sorted(
+            material.values(),
+            key=lambda item: task_order[item[0].task_id],
+        )
+        for specialty, material in result.items()
+    }
 
 
 def _current_specialty_output(output: dict[str, Any]) -> dict[str, Any]:
@@ -298,6 +351,7 @@ def decide_discussion_continuation(
     max_rounds: int,
     responses: list[SpecialtyRoundResponse],
     reviews: list[SpecialtyAnswerReview],
+    judgment_updates: list[SpecialtyJudgmentUpdate] | None = None,
 ) -> dict[str, Any]:
     """Decide round continuation from structured state; never reclassify medicine."""
 
@@ -312,10 +366,30 @@ def decide_discussion_continuation(
     summary = {
         "actionable_questions": len(actionable_questions),
         "actionable_conflicts": len(current.conflicts),
-        "changed_answers": sum(
-            answer.changed_from_previous
-            for response in responses
-            for answer in response.answers
+        "changed_judgments": (
+            sum(
+                proposal.change_type != "maintain"
+                for update in judgment_updates
+                for proposal in update.proposals
+            )
+            if judgment_updates is not None
+            else sum(
+                1
+                for response in responses
+                for _ in (
+                    [
+                        proposal
+                        for proposal in response.judgment_update.proposals
+                        if proposal.change_type != "maintain"
+                    ]
+                    if response.judgment_update is not None
+                    else [
+                        answer
+                        for answer in response.answers
+                        if answer.changed_from_previous
+                    ]
+                )
+            )
         ),
         "forward_reviews": sum(
             review.outcome
@@ -341,7 +415,7 @@ def decide_discussion_continuation(
             "stop_reason": f"已达到最多{max_rounds}轮团队讨论。",
         }
     if (
-        summary["changed_answers"] == 0
+        summary["changed_judgments"] == 0
         and summary["forward_reviews"] == 0
         and _open_issue_signature(previous) == _open_issue_signature(current)
     ):

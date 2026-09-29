@@ -2,17 +2,28 @@ import json
 
 import pytest
 
+from src.agents.common.decision_state import (
+    JudgmentChangeProposal,
+    JudgmentChangeEvent,
+    JudgmentContent,
+    MultiSpecialtyDecisionState,
+    SpecialtyJudgmentVersion,
+    SpecialtyJudgmentUpdate,
+)
+from src.agents.common.initial_output import SpecialtyAssessment
 from src.agents.mdt_chair.models import MDTChairIntegration
 from src.agents.mdt_discussion.final_report import FinalReportAgent, build_discussion_audit
 from src.agents.mdt_discussion.integration import (
     append_round_responses,
     apply_review_outcomes,
+    build_judgment_update_inputs,
     build_review_dispositions,
     decide_discussion_continuation,
     stabilize_integration_ids,
 )
 from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaimDraft,
+    DiscussionTask,
     DiscussionProposition,
     DiscussionRound,
     DiscussionEvidenceUseDraft,
@@ -35,7 +46,7 @@ from src.agents.mdt_discussion.specialty_agent import (
     discussion_evidence_schema_constraints,
 )
 from src.llm.base import LLMResponse
-from src.llm.structured import json_schema_response_format
+from src.llm.structured import StructuredGenerationError, json_schema_response_format
 
 
 DIAGNOSTIC_DIMENSIONS = [
@@ -544,6 +555,260 @@ def test_requester_review_uses_only_the_current_question_and_answer():
     assert "guideline_context" not in trace["prompt"]
 
 
+def test_requester_review_is_available_when_requester_updates_its_judgments():
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(
+                content='{"proposals":[]}',
+                raw={"choices": [{}]},
+            )
+
+    propositions, graphs = documents()
+    task = build_discussion_tasks(
+        chair_result=chair_question(),
+        clinical_propositions=propositions,
+        local_graphs=graphs,
+        round_number=1,
+        previous_rounds=[],
+    )[0]
+    answer = SpecialtyTaskAnswer(
+        answer_id=f"{task.task_id}-A",
+        task_id=task.task_id,
+        issue_type=task.issue_type,
+        issue_id=task.issue_id,
+        answerability="partially_answered",
+        answer="现有资料只能确认低氧，不能完成病因归因。",
+        confidence="moderate",
+        medical_basis="缺少肺血管资料。",
+        changed_from_previous=False,
+    )
+    review = SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-rheumatology",
+        issue_id=answer.issue_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="rheumatology",
+        outcome="accept_boundary",
+        rationale="接受当前证据边界，并重新限定本专科判断。",
+    )
+    agent = SpecialtyDiscussionAgent(
+        FakeLLM(),
+        specialty="rheumatology",
+        config={"guideline_retrieval": {"enabled": False}},
+    )
+
+    update, trace = agent.propose_judgment_update(
+        round_number=1,
+        tasks=[task],
+        answers=[answer],
+        active_judgments=[],
+        reviews=[review],
+    )
+
+    assert update.specialty == "rheumatology"
+    assert update.proposals == []
+    assert answer.answer in trace["prompt"]
+    assert review.rationale in trace["prompt"]
+
+
+def test_judgment_update_preserves_validated_patient_and_guideline_locations():
+    assessment = SpecialtyAssessment.model_validate({
+        "assessment_id": "pulmonology_001",
+        "role": "primary",
+        "assessment_type": "working_diagnosis",
+        "statement": "现有资料支持纤维化性间质性肺病。",
+        "status": "favored",
+        "medical_basis": "病例文字支持该判断。",
+        "decision_impact": "进入模式和病因层面的整合。",
+        "claims": [{"claim_id": "claim-1", "statement": "存在间质性肺病。"}],
+        "evidence": {"evidence_relations": [{
+            "evidence_ids": ["ev-1"],
+            "segment_id": "seg-1",
+            "graph_unit_id": "gu-1",
+            "node_ids": ["gu-1::prop-1"],
+            "quote": "双肺纤维化改变",
+            "direction": "supports",
+            "function": "foundational",
+        }]},
+        "guideline_evidence": [{
+            "chunk_id": "guide-chunk-1",
+            "quote_unit_ids": ["quote-1"],
+            "relevance": "定义当前诊断层级。",
+            "application": "用于限定本病例结论。",
+            "quote": "已核验的指南原文",
+            "guideline_id": "guide-1",
+            "title": "ILD guideline",
+        }],
+    })
+    current = SpecialtyJudgmentVersion(
+        judgment_id="pulmonology_001",
+        version_id="pulmonology_001@v001",
+        version_number=1,
+        specialty="pulmonology",
+        change_type="initial",
+        assessment=assessment,
+        content_hash="hash",
+    )
+    content = JudgmentContent.from_assessment(assessment)
+    content.medical_basis += " 本轮回答补充了同一判断的解释。"
+    proposal = JudgmentChangeProposal(
+        change_type="supplement",
+        target_judgment_id=current.judgment_id,
+        base_version_id=current.version_id,
+        proposed_content=content,
+        rationale="补充本轮讨论形成的解释。",
+        trigger_issue_ids=["Q001"],
+        considered_source_refs=["R01-Q001-pulmonology-A"],
+    )
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(
+                content=json.dumps({"proposals": [proposal.model_dump(mode="json")]}),
+                raw={"choices": [{}]},
+            )
+
+    task = DiscussionTask(
+        task_id="R01-Q001-pulmonology",
+        round_number=1,
+        issue_type="question",
+        issue_id="Q001",
+        specialty="pulmonology",
+        prompt="当前判断是否需要更新？",
+    )
+    answer = SpecialtyTaskAnswer(
+        answer_id=f"{task.task_id}-A",
+        task_id=task.task_id,
+        issue_type=task.issue_type,
+        issue_id=task.issue_id,
+        answerability="answered",
+        answer="补充解释，但核心判断不变。",
+        confidence="moderate",
+        medical_basis="沿用已核验资料。",
+        changed_from_previous=False,
+    )
+    agent = SpecialtyDiscussionAgent(
+        FakeLLM(),
+        specialty="pulmonology",
+        config={
+            "max_attempts": 1,
+            "guideline_retrieval": {"enabled": False},
+        },
+    )
+
+    update, _ = agent.propose_judgment_update(
+        round_number=1,
+        tasks=[task],
+        answers=[answer],
+        active_judgments=[current],
+    )
+    resolved = update.proposals[0].proposed_content
+
+    assert resolved.evidence.evidence_relations[0].node_ids == ["gu-1::prop-1"]
+    assert resolved.guideline_evidence[0].quote == "已核验的指南原文"
+    assert resolved.guideline_evidence[0].guideline_id == "guide-1"
+
+    proposal.proposed_content.guideline_evidence[0].chunk_id = "invented-chunk"
+    with pytest.raises(StructuredGenerationError, match="was not validated"):
+        agent.propose_judgment_update(
+            round_number=1,
+            tasks=[task],
+            answers=[answer],
+            active_judgments=[current],
+        )
+
+
+def test_judgment_update_repairs_change_type_before_committing_core_change():
+    assessment = SpecialtyAssessment.model_validate({
+        "assessment_id": "pathology_001",
+        "role": "primary",
+        "assessment_type": "working_diagnosis",
+        "statement": "现有切片支持纤维化。",
+        "status": "favored",
+        "medical_basis": "依据现有病理资料。",
+        "decision_impact": "参与综合判断。",
+    })
+    current = SpecialtyJudgmentVersion(
+        judgment_id="pathology_001",
+        version_id="pathology_001@v001",
+        version_number=1,
+        specialty="pathology",
+        change_type="initial",
+        assessment=assessment,
+        content_hash="hash",
+    )
+    content = JudgmentContent.from_assessment(assessment)
+    content.statement = "现有切片支持纤维化，但不足以判定特定病理模式。"
+    proposal = JudgmentChangeProposal(
+        change_type="supplement",
+        target_judgment_id=current.judgment_id,
+        base_version_id=current.version_id,
+        proposed_content=content,
+        rationale="结合本轮讨论修正病理结论。",
+        trigger_issue_ids=["Q001"],
+        considered_source_refs=["Q001"],
+    )
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            self.calls += 1
+            payload = (
+                {"proposals": [proposal.model_dump(mode="json")]}
+                if self.calls == 1
+                else {"edits": [
+                    {"op": "replace", "path": "/proposals/0/considered_source_refs", "value": ["R01-Q001-pathology-A"]},
+                ]}
+            )
+            return LLMResponse(content=json.dumps(payload), raw={"choices": [{}]})
+
+    llm = FakeLLM()
+    task = DiscussionTask(
+        task_id="R01-Q001-pathology",
+        round_number=1,
+        issue_type="question",
+        issue_id="Q001",
+        specialty="pathology",
+        prompt="本轮讨论是否改变病理判断？",
+    )
+    answer = SpecialtyTaskAnswer(
+        answer_id=f"{task.task_id}-A",
+        task_id=task.task_id,
+        issue_type=task.issue_type,
+        issue_id=task.issue_id,
+        answerability="answered",
+        answer="需要收窄病理模式结论。",
+        confidence="moderate",
+        medical_basis="现有切片不充分。",
+        changed_from_previous=True,
+    )
+    agent = SpecialtyDiscussionAgent(
+        llm,
+        specialty="pathology",
+        config={"max_attempts": 2, "guideline_retrieval": {"enabled": False}},
+    )
+
+    update, trace = agent.propose_judgment_update(
+        round_number=1,
+        tasks=[task],
+        answers=[answer],
+        active_judgments=[current],
+    )
+
+    assert llm.calls == 2
+    assert len(trace["attempts"]) == 2
+    assert "no validated considered source refs" in trace["attempts"][0]["validation_error"]
+    assert update.proposals[0].change_type == "revise"
+    assert update.proposals[0].proposed_content.statement == content.statement
+
+
 def test_review_outcome_closes_a_boundary_without_calling_it_resolved():
     payload = chair_question()
     payload["questions"][0].update({
@@ -716,7 +981,79 @@ def test_round_continues_when_an_open_issue_has_material_change():
     )
 
     assert decision["continue_discussion"] is True
-    assert decision["changed_answers"] == 1
+    assert decision["changed_judgments"] == 1
+
+
+def test_judgment_updates_include_both_answerer_and_question_requester():
+    propositions, graphs = documents()
+    task = build_discussion_tasks(
+        chair_result=chair_question(),
+        clinical_propositions=propositions,
+        local_graphs=graphs,
+        round_number=1,
+        previous_rounds=[],
+    )[0]
+    answer = SpecialtyTaskAnswer(
+        answer_id=f"{task.task_id}-A",
+        task_id=task.task_id,
+        issue_type=task.issue_type,
+        issue_id=task.issue_id,
+        answerability="partially_answered",
+        answer="现有资料只能形成边界性回答。",
+        confidence="moderate",
+        medical_basis="缺少可区分病因的资料。",
+        changed_from_previous=False,
+    )
+    response = SpecialtyRoundResponse(
+        case_id="case-1",
+        round_number=1,
+        specialty=task.specialty,
+        answers=[answer],
+    )
+    review = SpecialtyAnswerReview(
+        review_id=f"{answer.answer_id}-RV-thoracic_radiology",
+        issue_id=answer.issue_id,
+        answer_id=answer.answer_id,
+        reviewer_specialty="thoracic_radiology",
+        outcome="accept_boundary",
+        rationale="接受当前判断边界。",
+    )
+
+    inputs = build_judgment_update_inputs([task], [response], [review])
+
+    assert set(inputs) == {task.specialty, "thoracic_radiology"}
+    assert inputs[task.specialty][0][1].answer_id == answer.answer_id
+    assert inputs["thoracic_radiology"][0][1].answer_id == answer.answer_id
+
+
+def test_round_continuation_counts_requester_owned_judgment_changes():
+    previous = chair_question_model()
+    current = previous.model_copy(deep=True)
+    requester_update = SpecialtyJudgmentUpdate(
+        specialty="thoracic_radiology",
+        transaction_id="R01-thoracic_radiology-judgment-update",
+        proposals=[JudgmentChangeProposal(
+            change_type="withdraw",
+            target_judgment_id="thoracic_radiology_001",
+            base_version_id="thoracic_radiology_001@v001",
+            rationale="目标专科回答表明原判断不再成立。",
+            trigger_issue_ids=["Q001"],
+            considered_source_refs=["R01-Q001-pulmonology-A"],
+        )],
+    )
+
+    decision = decide_discussion_continuation(
+        previous=previous,
+        current=current,
+        round_number=1,
+        max_rounds=3,
+        responses=[],
+        reviews=[],
+        judgment_updates=[requester_update],
+    )
+
+    assert decision["continue_discussion"] is True
+    assert decision["changed_judgments"] == 1
 
 
 def test_unchanged_open_issue_stops_early_without_reclassification():
@@ -954,6 +1291,22 @@ def test_v3_report_restores_exact_provenance_from_selected_chair_items():
                 raw={"choices": [{}]},
             )
 
+    decision_state = MultiSpecialtyDecisionState(
+        case_id="case-1",
+        change_events=[JudgmentChangeEvent(
+            transaction_id="R01-pulmonology-judgment-update",
+            specialty="pulmonology",
+            judgment_id="pulmonology_001",
+            change_type="qualify",
+            before_version_id="pulmonology_001@v001",
+            after_version_id="pulmonology_001@v002",
+            round_number=1,
+            trigger_issue_ids=["Q001"],
+            considered_source_refs=["R01-Q001-thoracic_radiology-A"],
+            rationale="影像科意见要求收紧判断边界。",
+            changed_fields=["limitations"],
+        )],
+    )
     report, _ = FinalReportAgent(
         FakeLLM(),
         config={"max_attempts": 1},
@@ -962,6 +1315,7 @@ def test_v3_report_restores_exact_provenance_from_selected_chair_items():
         chair_result=expanded_chair_result(),
         rounds=[],
         stop_reason="讨论结束。",
+        decision_state=decision_state,
     )
 
     assert report.schema_version == "mdt_final_report.v3"
@@ -974,6 +1328,7 @@ def test_v3_report_restores_exact_provenance_from_selected_chair_items():
     assert trace.guideline_evidence[0].quote == "不应进入共享提示的完整指南原文"
     assert report.research_metrics.diagnostic_claims == 8
     assert report.research_metrics.claims_with_patient_evidence == 8
+    assert report.judgment_changes == decision_state.change_events
 
 
 def test_v2_report_rejects_unknown_chair_item_reference():

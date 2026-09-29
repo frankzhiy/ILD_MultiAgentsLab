@@ -6,6 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.agents.common.initial_output import EvidenceGap, InterspecialtyQuestion
+from src.agents.common.decision_state import (
+    JudgmentChangeEvent,
+    MultiSpecialtyDecisionState,
+    SpecialtyJudgmentUpdate,
+)
 from src.agents.mdt_chair.models import (
     AssessmentBoundary,
     ChairEvidenceBundle,
@@ -79,6 +84,7 @@ class DiscussionTask(BaseModel):
     prior_answers: list[dict[str, Any]] = Field(default_factory=list)
     specialty_context: list[dict[str, Any]] = Field(default_factory=list)
     evidence_candidates: list[DiscussionEvidenceCandidate] = Field(default_factory=list)
+    active_judgments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DiscussionEvidenceUseDraft(BaseModel):
@@ -128,7 +134,7 @@ class SpecialtyTaskAnswerDraft(BaseModel):
     answer_claims: list[DiscussionAnswerClaimDraft] = Field(min_length=1)
     evidence_uses: list[DiscussionEvidenceUseDraft] = Field(default_factory=list)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    changed_from_previous: bool
+    changed_from_previous: SkipJsonSchema[bool] = False
     remaining_limitation: str = ""
     new_questions: list[InterspecialtyQuestion] = Field(default_factory=list)
     evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
@@ -188,6 +194,7 @@ class SpecialtyRoundResponse(BaseModel):
     round_number: int = Field(ge=1, le=3)
     specialty: Specialty
     answers: list[SpecialtyTaskAnswer] = Field(default_factory=list)
+    judgment_update: SpecialtyJudgmentUpdate | None = None
 
 
 class DiscussionRound(BaseModel):
@@ -197,6 +204,7 @@ class DiscussionRound(BaseModel):
     tasks: list[DiscussionTask] = Field(default_factory=list)
     specialty_responses: list[SpecialtyRoundResponse] = Field(default_factory=list)
     answer_reviews: list[SpecialtyAnswerReview] = Field(default_factory=list)
+    judgment_updates: list[SpecialtyJudgmentUpdate] = Field(default_factory=list)
     chair_result: dict[str, Any]
     round_decision: dict[str, Any] = Field(default_factory=dict)
 
@@ -385,6 +393,7 @@ class MDTFinalReport(BaseModel):
     assessment_boundaries: SkipJsonSchema[list[AssessmentBoundary]] = Field(default_factory=list)
     unresolved_conflicts: SkipJsonSchema[list[CrossSpecialtyConflict]] = Field(default_factory=list)
     evidence_needs: SkipJsonSchema[list[EvidenceNeed]] = Field(default_factory=list)
+    judgment_changes: SkipJsonSchema[list[JudgmentChangeEvent]] = Field(default_factory=list)
     legacy_source: SkipJsonSchema[bool] = False
 
     @model_validator(mode="before")
@@ -448,7 +457,7 @@ class MDTFinalReport(BaseModel):
 class MDTDiscussionState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["mdt_discussion.v2"] = "mdt_discussion.v2"
+    schema_version: Literal["mdt_discussion.v3"] = "mdt_discussion.v3"
     case_id: str
     baseline_sha256: str
     status: Literal["running", "completed", "failed"]
@@ -457,6 +466,16 @@ class MDTDiscussionState(BaseModel):
     active_round: dict[str, Any] | None = None
     report_status: Literal["waiting", "running", "completed", "failed"] = "waiting"
     latest_chair_result: dict[str, Any]
+    decision_state: MultiSpecialtyDecisionState
     stop_reason: str = ""
     final_report: MDTFinalReport | None = None
     error: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unversioned_state(cls, value):
+        if isinstance(value, dict) and value.get("schema_version") == "mdt_discussion.v2":
+            raise ValueError(
+                "mdt_discussion.v2 has no versioned specialty decision state; rerun discussion"
+            )
+        return value

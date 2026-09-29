@@ -45,6 +45,25 @@ const REVIEW_OUTCOME = {
   convert_to_evidence_need: ['转为证据需求', 'warning'],
 }
 
+const JUDGMENT_CHANGE = {
+  initial: ['首轮判断', 'default'],
+  maintain: ['保持', 'default'],
+  supplement: ['补充', 'blue'],
+  qualify: ['限定', 'gold'],
+  revise: ['修正', 'purple'],
+  withdraw: ['撤回', 'red'],
+  create: ['新增', 'green'],
+}
+
+const PROFESSIONAL_LEVEL = {
+  observation: '病例观察',
+  morphologic_pattern: '形态模式',
+  disease_diagnosis: '疾病诊断',
+  etiologic_attribution: '病因归属',
+  severity_or_trajectory: '严重度或病程',
+  assessability: '可评价性',
+}
+
 const DISCUSSION_EVENTS = [
   'manual_stage_started',
   'discussion_started',
@@ -52,6 +71,8 @@ const DISCUSSION_EVENTS = [
   'discussion_task_started',
   'discussion_task_completed',
   'discussion_task_failed',
+  'discussion_judgment_update_started',
+  'discussion_judgment_update_completed',
   'discussion_review_started',
   'discussion_review_completed',
   'discussion_chair_started',
@@ -233,6 +254,19 @@ function DiscussionTrace({ round, selectedTaskId, onSelect, reportStatus }) {
   const answers = useMemo(() => taskAnswers(round), [round])
   const tasks = round?.tasks || []
   const chairProgress = chairStatus(round)
+  const updateEntries = Object.entries(round?.judgment_update_progress || {})
+  const updateStatuses = updateEntries.map(([, progress]) => progress.status)
+  const updateStatus = !updateStatuses.length
+    ? ((round?.judgment_updates || []).length || (round?.specialty_responses || []).some((item) => item.judgment_update) || round?.chair_result ? 'completed' : 'waiting')
+    : updateStatuses.some((status) => status === 'failed') ? 'failed'
+      : updateStatuses.every((status) => status === 'completed') ? 'completed'
+        : updateStatuses.some((status) => status === 'running') ? 'running' : 'waiting'
+  const reviewEntries = Object.values(round?.review_progress || {})
+  const reviewStatuses = reviewEntries.map((progress) => progress.status)
+  const reviewStatus = reviewStatuses.some((status) => status === 'failed') ? 'failed'
+    : reviewStatuses.some((status) => status === 'running') ? 'running'
+      : reviewStatuses.length && reviewStatuses.every((status) => status === 'completed') ? 'completed'
+        : round?.chair_result || updateEntries.length || (round?.judgment_updates || []).length ? 'completed' : 'waiting'
   const items = [
     {
       color: 'blue',
@@ -260,6 +294,21 @@ function DiscussionTrace({ round, selectedTaskId, onSelect, reportStatus }) {
               </button>
             )
           })}
+        </div>
+      ),
+    },
+    {
+      color: reviewStatus === 'failed' ? 'red' : reviewStatus === 'completed' ? 'green' : reviewStatus === 'running' ? 'blue' : 'gray',
+      icon: <StatusIcon status={reviewStatus} />,
+      content: <div className="discussion-trace-root"><Text strong>提问专科复核回答</Text><Text type="secondary">{reviewStatus === 'running' ? '正在判断回答是否解决原问题' : reviewStatus === 'completed' ? reviewEntries.length || (round?.answer_reviews || []).length ? '已记录接受、边界、澄清、佐证或不兼容结果' : '本轮无需提问专科复核' : reviewStatus === 'failed' ? '提问专科复核失败' : '等待专科回答完成'}</Text></div>,
+    },
+    {
+      color: updateStatus === 'failed' ? 'red' : updateStatus === 'completed' ? 'green' : updateStatus === 'running' ? 'blue' : 'gray',
+      icon: <StatusIcon status={updateStatus} />,
+      content: (
+        <div className="discussion-trace-root">
+          <Text strong>受影响的专科更新自己的正式判断</Text>
+          <Text type="secondary">{updateStatus === 'running' ? '正在结合专科回答与复核结果，比较当前有效版本' : updateStatus === 'completed' ? '已记录保持、补充、限定、修正、撤回或新增' : updateStatus === 'failed' ? '判断版本更新失败' : '等待回答与复核完成'}</Text>
         </div>
       ),
     },
@@ -389,6 +438,103 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
   )
 }
 
+function DecisionStatePanel({ state }) {
+  const [specialty, setSpecialty] = useState('pulmonology')
+  if (!state) return null
+  const histories = (state.judgments || []).filter((item) => item.specialty === specialty)
+  const eventsByJudgment = (state.change_events || []).reduce((result, event) => {
+    result[event.judgment_id] = [...(result[event.judgment_id] || []), event]
+    return result
+  }, {})
+  const rows = histories.map((history) => {
+    const current = history.versions.find((item) => item.version_id === history.active_version_id)
+    const latest = current || history.versions.at(-1)
+    return { ...history, current, latest }
+  })
+  const columns = [
+    {
+      title: '当前判断',
+      render: (_, row) => (
+        <div className="judgment-main">
+          <Space size={[5, 5]} wrap>
+            <Text code>{row.latest?.version_id}</Text>
+            {row.current ? <Tag color="green">当前有效</Tag> : <Tag color="red">已撤回</Tag>}
+            <Tag>{PROFESSIONAL_LEVEL[row.latest?.assessment?.conditions?.professional_level] || '未标记层级'}</Tag>
+          </Space>
+          <Text strong>{row.latest?.assessment?.statement}</Text>
+          <Text type="secondary">{row.latest?.assessment?.medical_basis}</Text>
+        </div>
+      ),
+    },
+    {
+      title: '成立条件', width: 330,
+      render: (_, row) => {
+        const conditions = row.latest?.assessment?.conditions || {}
+        const timeframe = conditions.timeframe || {}
+        const scope = conditions.evidence_scope || {}
+        return (
+          <div className="judgment-conditions">
+            <Text><Text strong>对象：</Text>{conditions.subject || '—'}</Text>
+            <Text><Text strong>时间：</Text>{timeframe.description || timeframe.kind || '—'}</Text>
+            <Text><Text strong>证据：</Text>{scope.evidence_ids?.length || 0} 条患者证据</Text>
+            {scope.scope_limitations?.length > 0 && <Text type="secondary">{scope.scope_limitations.join('；')}</Text>}
+            {conditions.applicability_conditions?.length > 0 && <Text type="secondary"><Text strong>适用前提：</Text>{conditions.applicability_conditions.join('；')}</Text>}
+          </div>
+        )
+      },
+    },
+    {
+      title: '版本', width: 84,
+      render: (_, row) => <Tag>{row.versions.length} 个版本</Tag>,
+    },
+  ]
+  return (
+    <Card
+      className="decision-state-card section-gap"
+      title="当前多专科判断"
+      extra={<Space><Tag color="blue">状态版本 {state.revision}</Tag><Text type="secondary">主持人只读取当前有效版本</Text></Space>}
+    >
+      <Segmented
+        value={specialty}
+        onChange={setSpecialty}
+        options={Object.entries(SPECIALTIES).map(([value, label]) => ({ value, label }))}
+      />
+      <Table
+        className="decision-state-table"
+        size="small"
+        rowKey="judgment_id"
+        columns={columns}
+        dataSource={rows}
+        pagination={false}
+        expandable={{
+          expandedRowRender: (row) => (
+            <Timeline
+              className="judgment-history"
+              items={row.versions.map((version) => {
+                const [label, color] = JUDGMENT_CHANGE[version.change_type] || [version.change_type, 'default']
+                const event = (eventsByJudgment[row.judgment_id] || []).find((item) => item.after_version_id === version.version_id)
+                return {
+                  color: version.lifecycle_status === 'active' ? 'green' : version.lifecycle_status === 'withdrawn' ? 'red' : 'gray',
+                  children: (
+                    <div>
+                      <Space size={[5, 5]} wrap><Text code>{version.version_id}</Text><Tag color={color}>{label}</Tag>{version.created_in_round > 0 && <Tag>第 {version.created_in_round} 轮</Tag>}{version.trigger_issue_ids?.map((issueId) => <Tag key={issueId}>{issueId}</Tag>)}</Space>
+                      <Paragraph>{version.assessment.statement}</Paragraph>
+                      <Text type="secondary">{event?.rationale || version.rationale}</Text>
+                      {version.changed_fields?.length > 0 && <div><Text type="secondary">变化内容：{version.changed_fields.join('、')}</Text></div>}
+                      {version.considered_source_refs?.length > 0 && <div><Text type="secondary">参考的专科意见：{version.considered_source_refs.join('、')}</Text></div>}
+                    </div>
+                  ),
+                }
+              })}
+            />
+          ),
+        }}
+        locale={{ emptyText: '该专科当前没有正式判断' }}
+      />
+    </Card>
+  )
+}
+
 export function DiscussionWorkspace({ runId }) {
   const queryClient = useQueryClient()
   const query = useQuery({
@@ -513,6 +659,8 @@ export function DiscussionWorkspace({ runId }) {
         <Space size={16}><span>病例并发 <InputNumber min={1} max={16} value={batchCaseConcurrency} onChange={(value) => setBatchCaseConcurrency(value || 1)} /></span><span>模型请求并发 <InputNumber min={1} max={64} value={batchRequestConcurrency} onChange={(value) => setBatchRequestConcurrency(value || 1)} /></span></Space>
         {batchMutation.isError && <Alert className="section-gap" type="error" showIcon title="无法创建讨论批次" description={batchMutation.error.message} />}
       </Modal>
+
+      {hasResult && <DecisionStatePanel state={value.decision_state} />}
 
       {rounds.length > 0 ? (
         <>

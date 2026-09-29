@@ -135,6 +135,55 @@ class SpecialtyAtomicClaim(BaseModel):
     statement: str = Field(min_length=1)
 
 
+ProfessionalLevel = Literal[
+    "observation",
+    "morphologic_pattern",
+    "disease_diagnosis",
+    "etiologic_attribution",
+    "severity_or_trajectory",
+    "assessability",
+]
+
+
+class JudgmentTimeframe(BaseModel):
+    """The time interval for which a specialty judgment is intended to hold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "current",
+        "historical",
+        "longitudinal",
+        "specified_period",
+        "unknown",
+    ] = "current"
+    start: str = ""
+    end: str = ""
+    description: str = "基于当前病例所提供的资料。"
+
+
+class JudgmentEvidenceScope(BaseModel):
+    """Program-resolved evidence scope; the model cannot invent evidence IDs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_ids: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    source_types: SkipJsonSchema[list[str]] = Field(default_factory=list)
+    scope_limitations: list[str] = Field(default_factory=list)
+
+
+class JudgmentConditions(BaseModel):
+    """Conditions that must travel with a specialty judgment across MDT rounds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = ""
+    professional_level: ProfessionalLevel = "observation"
+    timeframe: JudgmentTimeframe = Field(default_factory=JudgmentTimeframe)
+    evidence_scope: JudgmentEvidenceScope = Field(default_factory=JudgmentEvidenceScope)
+    applicability_conditions: list[str] = Field(default_factory=list)
+
+
 class SpecialtyAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -168,6 +217,57 @@ class SpecialtyAssessment(BaseModel):
     evidence: SkipJsonSchema[EvidenceBundle] = Field(default_factory=EvidenceBundle)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    conditions: JudgmentConditions = Field(default_factory=JudgmentConditions)
+
+
+_PROFESSIONAL_LEVEL_BY_ASSESSMENT_TYPE: dict[str, ProfessionalLevel] = {
+    "working_diagnosis": "disease_diagnosis",
+    "morphologic_pattern": "morphologic_pattern",
+    "etiologic_attribution": "etiologic_attribution",
+    "severity_or_risk": "severity_or_trajectory",
+    "material_evaluability": "assessability",
+    "imaging_interpretation": "morphologic_pattern",
+    "rheumatic_disease": "disease_diagnosis",
+    "ild_attribution": "etiologic_attribution",
+    "progression": "severity_or_trajectory",
+    "assessability": "assessability",
+    "etiologic_association": "etiologic_attribution",
+    "other": "observation",
+}
+
+
+def synchronize_judgment_conditions(assessment: SpecialtyAssessment) -> None:
+    """Bind a judgment's conditions to its validated content and evidence."""
+
+    conditions = assessment.conditions
+    conditions.subject = conditions.subject.strip() or assessment.statement
+    conditions.professional_level = _PROFESSIONAL_LEVEL_BY_ASSESSMENT_TYPE[
+        assessment.assessment_type
+    ]
+    if assessment.assessment_type == "progression" and conditions.timeframe.kind == "current":
+        conditions.timeframe.kind = "longitudinal"
+        if conditions.timeframe.description.strip() in {
+            "",
+            "基于当前病例所提供的资料。",
+        }:
+            conditions.timeframe.description = "基于当前病例提供的纵向病程资料。"
+    elif not conditions.timeframe.description.strip():
+        conditions.timeframe.description = "基于当前病例所提供的资料。"
+    evidence_ids = [
+        evidence_id
+        for relation in assessment.evidence.evidence_relations
+        for evidence_id in relation.evidence_ids
+    ]
+    conditions.evidence_scope.evidence_ids = list(dict.fromkeys(evidence_ids))
+    conditions.evidence_scope.source_types = ["case_evidence"] if evidence_ids else []
+    conditions.evidence_scope.scope_limitations = list(dict.fromkeys([
+        *conditions.evidence_scope.scope_limitations,
+        *assessment.limitations,
+    ]))
+    conditions.applicability_conditions = list(dict.fromkeys([
+        *conditions.applicability_conditions,
+        *assessment.limitations,
+    ]))
 
 
 class InterspecialtyQuestion(BaseModel):
