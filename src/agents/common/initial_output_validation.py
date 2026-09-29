@@ -380,15 +380,6 @@ def validate_specialty_initial_output(
                 raise ValueError(
                     "Pathology without assessable material must be not_assessable"
                 )
-            if not assessments.evidence_gaps:
-                raise ValueError(
-                    "Pathology without assessable material must specify what evidence to obtain"
-                )
-            if not questions:
-                raise ValueError(
-                    "Pathology without assessable material must assign a material-recovery question"
-                )
-
     for text in _iter_text(result):
         if _CROSS_SPECIALTY_CONFLICT.search(text):
             raise ValueError("Formal initial output must not detect cross-specialty conflict")

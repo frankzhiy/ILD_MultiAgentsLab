@@ -6,7 +6,7 @@
 3. `request_clarification`：回答中有一个可由原回答专科基于现有材料进一步解释的具体未覆盖点；必须提供 `follow_up_question`，目标为原回答专科。
 4. `request_corroboration`：需要另一专科基于现有材料佐证一个新的专业判断点；必须提供 `follow_up_question`。
 5. `flag_incompatibility`：回答与本专科对同一对象、时间、证据条件和专业层级的正式判断直接不兼容。这里只标记“提出方发现不兼容”，等待主持人重新整合时判断是否构成正式跨专科冲突。
-6. `convert_to_evidence_need`：现有材料已经足以形成当前判断，补充影像、报告、标本、检查或病史只会进一步提高明确度、置信度或精细程度；该问题关闭并转入非阻断性的“证据需求”，必须提供 `evidence_gap`。
+6. `convert_to_evidence_need`：现有材料足以形成当前判断，但补充资料仍可能实质改变重要决策，且获取负担合理；该问题关闭并转入非阻断性的“证据需求”，必须提供 `evidence_gap`。仅能增加记录细节时不选此项。
 
 整个病例只有一次资料输入。“本轮判断边界”和“证据需求”都不会等待新资料后重启讨论。只有存在一个可由现有材料继续回答的具体医学疑问时，才能使用 `request_clarification` 或 `request_corroboration`。
 

@@ -13,7 +13,7 @@
 10. 缺失信息不等于阴性信息；报告未描述不等于明确未见；模式不等于疾病诊断。
 11. 需要补充的影像、报告、标本、检查或病史只能写入 `evidence_gaps`，不能替代本轮医学回答；这些缺口只是供原提问专科复核，不能自行触发下一轮。
 12. `new_questions` 保持为空。是否基于现有材料继续追问，只能由原提问专科在复核时决定，并沿用原议题 ID。
-13. `remaining_limitation` 只描述本轮判断边界；具体缺失材料同时结构化写入 `evidence_gaps`。
+13. `remaining_limitation` 描述本轮判断边界；只有通过共同判断协议筛选的资料需求才写入 `evidence_gaps`。
 14. `evidence_gaps[].related_evidence[].evidence_ids` 只能逐字选择本轮 `evidence_candidates[].evidence_ids` 中的 Evidence ID；不得填写 `evidence_ref`、Graph Unit ID 或 proposition ID。
 
 `answer` 只用于概括；程序会以 `answer_claims` 作为最终可审计回答。主持人当前整合是供各专科共享的语义视图，其中证据编号只用于定位。事实核对和证据解释必须以本轮任务 `evidence_candidates` 中的原文片段、Evidence IDs、命题和图关系为准，不得用主持人摘要替代原文证据分析。

@@ -535,7 +535,7 @@ function DecisionStatePanel({ state }) {
   )
 }
 
-export function DiscussionWorkspace({ runId }) {
+export function DiscussionWorkspace({ runId, run }) {
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['discussion', runId],
@@ -642,14 +642,14 @@ export function DiscussionWorkspace({ runId }) {
           {elapsed && <Text type="secondary">已用时 {elapsed}</Text>}
           <div className="discussion-overall-progress"><Text type="secondary">总体进度</Text><Progress percent={progressPercent} size="small" /></div>
           <Button onClick={() => { setBatchRunIds([runId]); setBatchOpen(true) }}>批量运行团队讨论</Button>
-          <Button type="primary" aria-label={hasResult ? '重新运行团队讨论' : '运行团队讨论'} icon={hasResult ? <ReloadOutlined /> : <PlayCircleOutlined />} loading={running} disabled={!value.runnable || running} onClick={() => mutation.mutate()}>{hasResult ? '重新运行团队讨论' : '运行团队讨论'}</Button>
+          <Button type="primary" aria-label={hasResult ? '重新运行团队讨论' : '运行团队讨论'} icon={hasResult ? <ReloadOutlined /> : <PlayCircleOutlined />} loading={running} disabled={!value.runnable || running || run?.status === 'running'} onClick={() => mutation.mutate()}>{hasResult ? '重新运行团队讨论' : '运行团队讨论'}</Button>
         </div>
       </div>
 
       {connection === 'disconnected' && <Alert className="section-gap" type="warning" showIcon title="实时事件流已断开" description="页面会自动重连，并每 2 秒从服务端恢复一次讨论进度。" />}
       {running && <Alert className="section-gap" type="info" showIcon title="新一轮团队讨论已启动" description={hasResult ? '正在初始化任务；下方暂时保留上一次运行结果，新进度写入后会自动替换。' : '正在初始化任务与运行资源，新进度写入后会自动显示。'} />}
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="团队讨论尚不可运行" description={value.error} />}
-      {value.status === 'pending' && <Alert className="section-gap" type="info" showIcon title="现有输出已就绪" description="启动后将实时显示任务分配、专科处理、证据使用和主持人更新。" />}
+      {value.status === 'pending' && <Alert className="section-gap" type="info" showIcon title="现有输出已就绪" description={run?.status === 'running' ? '完整运行将自动进入团队讨论。' : '可单独启动或重新运行团队讨论，过程将实时显示。'} />}
       {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="主持人结果已更新" description="下方是基于旧主持人结果的讨论记录，请重新运行以匹配当前结果。" />}
       {value.status === 'failed' && <Alert className="section-gap" type="error" showIcon title="团队讨论失败；已保留完成的步骤" description={value.error} />}
       {mutation.isError && <Alert className="section-gap" type="error" showIcon title="无法启动团队讨论" description={mutation.error.message} />}
@@ -660,7 +660,7 @@ export function DiscussionWorkspace({ runId }) {
         {batchMutation.isError && <Alert className="section-gap" type="error" showIcon title="无法创建讨论批次" description={batchMutation.error.message} />}
       </Modal>
 
-      {hasResult && <DecisionStatePanel state={value.decision_state} />}
+      {value.decision_state && <DecisionStatePanel state={value.decision_state} />}
 
       {rounds.length > 0 ? (
         <>

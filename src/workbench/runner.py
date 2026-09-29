@@ -335,6 +335,30 @@ class RunOrchestrator:
             finally:
                 self.active_chairs.discard(run_id)
 
+            self._update_manifest(
+                manifest_path,
+                status="running",
+                status_source="run",
+                status_updated_at=self._now(),
+            )
+            self.active_discussions.add(run_id)
+            try:
+                await self._stage(
+                    run_id,
+                    run_dir,
+                    "mdt_discussion",
+                    "team_discussion",
+                    self.workflow.run_discussion,
+                    run_id,
+                    run_dir,
+                    case_id,
+                    self._discussion_configs(run_dir),
+                )
+            finally:
+                self.active_discussions.discard(run_id)
+            if not self.catalog.run_summary(run_dir)["discussion_complete"]:
+                raise RuntimeError("未完成 MDT 团队讨论及最终报告。")
+
         except asyncio.CancelledError:
             self._update_manifest(
                 manifest_path,
@@ -591,8 +615,8 @@ class RunOrchestrator:
                     if batch["kind"] == "run":
                         await self.start(item["run_id"], Path(item["input_path"]))
                         result = self.catalog.run_summary(self.catalog.run_dir(item["run_id"]))
-                        if not result["chair_complete"]:
-                            raise RuntimeError((result.get("manifest") or {}).get("error") or "未完成 MDT 主持人整合。")
+                        if not result["discussion_complete"]:
+                            raise RuntimeError((result.get("manifest") or {}).get("error") or "未完成 MDT 团队讨论及最终报告。")
                     else:
                         if self._chair_sha256(item["run_id"]) != item["baseline_sha256"]:
                             self._update_batch_item(batch_id, item["run_id"], status="skipped", finished_at=self._now(), error="主持人整合结果已变化，请重新选择该运行。")

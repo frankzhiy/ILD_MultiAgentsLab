@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agents.common.decision_state import MultiSpecialtyDecisionState
+from src.agents.common.judgment_protocol import judgment_system_prompt
 from src.agents.mdt_chair.models import (
     AssessmentBoundary,
     ChairEvidenceBundle,
@@ -121,12 +122,37 @@ class FinalReportAgent:
                 "output_schema": output_schema,
             },
         )
+        dropped_diagnoses: list[str] = []
 
         def resolve(result: MDTFinalReport) -> MDTFinalReport:
             result.schema_version = "mdt_final_report.v3"
             result.case_id = case_id
             result.discussion_rounds = len(rounds)
             result.reasoning_trace = _resolve_reasoning_trace(result, chair_result)
+            alternative_ids = {
+                item["conclusion_id"]
+                for item in chair_result.get("integrated_conclusions", [])
+                if item.get("conclusion_type") in {"etiologic_attribution", "ild_attribution"}
+                or (
+                    item.get("role") == "important_alternative"
+                    and item.get("conclusion_type") in {"working_diagnosis", "etiologic_association"}
+                )
+            }
+            supported = [
+                diagnosis
+                for diagnosis in result.clinical_report.differential_diagnoses
+                if alternative_ids.intersection(diagnosis.chair_item_ids)
+            ]
+            if len(supported) != len(result.clinical_report.differential_diagnoses):
+                dropped_diagnoses.extend(
+                    item.diagnosis
+                    for item in result.clinical_report.differential_diagnoses
+                    if item not in supported
+                )
+                result.clinical_report.differential_diagnoses = supported
+                for rank, diagnosis in enumerate(supported, 1):
+                    diagnosis.rank = rank
+                result.reasoning_trace = _resolve_reasoning_trace(result, chair_result)
             result.discussion_audit = build_discussion_audit(
                 baseline_chair_result or chair_result,
                 rounds,
@@ -165,16 +191,19 @@ class FinalReportAgent:
                 result.consensus_status = "consensus_reached"
             return result
 
-        return self.generator.generate(
+        report, trace = self.generator.generate(
             schema_model=MDTFinalReport,
             schema_name="mdt_final_report",
-            system_prompt=(
+            system_prompt=judgment_system_prompt(
                 "你是以呼吸科为主要背景的 ILD MDT 主持人，负责在讨论结束后形成统一报告。"
                 "忠实保留证据边界和未解决分歧，只返回符合 schema 的 JSON。"
             ),
             user_prompt=prompt,
             extra_validation=resolve,
         )
+        if dropped_diagnoses:
+            trace["dropped_unsupported_differentials"] = dropped_diagnoses
+        return report, trace
 
 
 _CHAIR_COLLECTIONS = (

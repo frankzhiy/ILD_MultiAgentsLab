@@ -146,7 +146,11 @@ class RunCatalog:
             "status_source": status_source,
             "semantic_complete": semantic_complete,
             "chair_complete": chair_complete,
-            "discussion_complete": discussion["status"] == "completed",
+            "discussion_complete": (
+                discussion["status"] == "completed"
+                and discussion["report_status"] == "completed"
+                and discussion["final_report"] is not None
+            ),
             "completed_specialties": completed_specialties,
             "has_error_artifact": has_error,
             "orchestrated": bool(manifest),
@@ -342,7 +346,9 @@ class RunCatalog:
             run_dir / f"{case_id}_mdt_discussion_team_discussion_failure_trace.json"
         )
         state = self._json(state_path, None)
-        decision_state = (state or {}).get("decision_state")
+        decision_state = (state or {}).get("decision_state") or self._json(
+            run_dir / f"{case_id}_mdt_decision_state.json", None
+        )
         baseline_hash = (
             sha256(baseline_path.read_bytes()).hexdigest()
             if baseline_path.exists()

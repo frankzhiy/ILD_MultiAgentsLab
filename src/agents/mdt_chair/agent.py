@@ -12,6 +12,7 @@ from typing import Annotated, Any, Callable
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from src.agents.common.initial_output import legacy_role_for_evidence_relation
+from src.agents.common.judgment_protocol import judgment_system_prompt
 from src.agents.mdt_chair.models import (
     ChairSemanticLedger,
     BoundaryLedgerClaimGroup,
@@ -23,7 +24,6 @@ from src.agents.mdt_chair.models import (
     CrossSpecialtyConflictDraft,
     ConflictLedgerClaimGroup,
     EvidenceNeed,
-    FollowUpLedgerClaimGroup,
     IntegratedConclusionDraft,
     IntegratedQuestion,
     IntegratedLedgerClaimGroup,
@@ -45,7 +45,7 @@ from src.utils.config import load_text, load_yaml, render_template
 
 SYSTEM_PROMPT = (
     "你是以呼吸科为主要背景的 ILD MDT 主持人。你只整合四个专科当前有效的正式判断、"
-    "链接会中针对原问题的专科答复、合并专科已经提出的问题，并汇总已有证据需求；"
+    "链接会中针对原问题的专科答复、合并专科已经提出的问题，并按共同协议筛选证据需求；"
     "不创造问题，不联系或重新运行专科 Agent，"
     "识别并如实描述未解决的跨专科冲突，但不裁决冲突，不输出最终 MDT 诊断或治疗方案。"
     "所有面向人的文本使用简体中文，只返回符合 schema 的 JSON。"
@@ -97,33 +97,73 @@ def _ledger_generation_model(bundle: ChairPromptBundle) -> type[BaseModel]:
             for ref in sorted(bundle.question_refs_to_classify)
         },
     )
+    need_group = create_model(
+        "ChairEvidenceNeedGroupDraft",
+        __base__=LedgerEvidenceNeedGroup,
+        source_refs=(list[str], Field(default_factory=list)),
+    )
     return create_model(
         "ChairSemanticLedgerDraft",
         __config__=ConfigDict(extra="forbid"),
         claim_groups=(list[Annotated[
             IntegratedLedgerClaimGroup
             | BoundaryLedgerClaimGroup
-            | ConflictLedgerClaimGroup
-            | FollowUpLedgerClaimGroup,
+            | ConflictLedgerClaimGroup,
             Field(discriminator="disposition"),
         ]], ...),
         question_routes=(routes, ...),
-        evidence_need_groups=(list[LedgerEvidenceNeedGroup], ...),
+        evidence_need_groups=(list[need_group], ...),
     )
 
 
 def _ledger_from_draft(draft: BaseModel, bundle: ChairPromptBundle) -> ChairSemanticLedger:
     decisions = draft.question_routes.model_dump(mode="json")
+    groups = []
+    for generated in draft.claim_groups:
+        group = LedgerClaimGroup.model_validate(generated.model_dump(mode="json"))
+        if group.disposition == "conflict" and all(
+            claim.source_ref in bundle.source_registry
+            and bundle.source_registry[claim.source_ref].source_type == "specialty_assessment"
+            for claim in group.claims
+        ):
+            try:
+                _validate_conflict_group(group, bundle, len(groups))
+            except ValueError as error:
+                retained = [
+                    claim for claim in group.claims
+                    if claim.epistemic_status in {"affirms", "possible"}
+                ]
+                groups.extend(
+                    LedgerClaimGroup(label=claim.dimension, disposition="integrated", claims=[claim])
+                    for claim in retained
+                )
+                bundle.normalization_events.append({
+                    "context": "claim_groups",
+                    "action": "reclassified_invalid_conflict",
+                    "label": group.label,
+                    "reason": str(error),
+                    "retained_claims": len(retained),
+                })
+                continue
+        groups.append(group)
+    empty_needs = sum(not group.source_refs for group in draft.evidence_need_groups)
+    if empty_needs:
+        bundle.normalization_events.append({
+            "context": "evidence_need_groups",
+            "action": "dropped_unsourced_requests",
+            "count": empty_needs,
+        })
     return ChairSemanticLedger(
-        claim_groups=[
-            LedgerClaimGroup.model_validate(group.model_dump(mode="json"))
-            for group in draft.claim_groups
-        ],
+        claim_groups=groups,
         question_routes=[
             LedgerQuestionRoute(source_refs=[ref], **decisions[ref])
             for ref in sorted(bundle.question_refs_to_classify)
         ],
-        evidence_need_groups=draft.evidence_need_groups,
+        evidence_need_groups=[
+            LedgerEvidenceNeedGroup.model_validate(group.model_dump(mode="json"))
+            for group in draft.evidence_need_groups
+            if group.source_refs
+        ],
     )
 
 
@@ -276,6 +316,7 @@ def _source_ref_schema_constraints(
     coverage = {
         ref
         for group in semantic_ledger.evidence_need_groups
+        if group.decision_role == "non_blocking_refinement"
         for ref in group.coverage_source_refs
     }
     claim_ids = {
@@ -362,6 +403,19 @@ def materialize_integration_draft(
     """Resolve each selected ledger basis into its one authoritative provenance."""
 
     data = draft.model_dump(mode="json")
+    based_boundaries = [
+        item for item in data["assessment_boundaries"]
+        if item["atomic_claim_ids"]
+        or item["question_source_refs"]
+        or item["related_evidence_need_source_refs"]
+    ]
+    if len(based_boundaries) != len(data["assessment_boundaries"]):
+        bundle.normalization_events.append({
+            "context": "assessment_boundaries",
+            "action": "dropped_without_ledger_basis",
+            "count": len(data["assessment_boundaries"]) - len(based_boundaries),
+        })
+        data["assessment_boundaries"] = based_boundaries
     claims = {
         claim.claim_id: (group, claim)
         for group in ledger.claim_groups
@@ -1115,6 +1169,14 @@ def _compact_specialty(
         path = f"interspecialty_questions.questions[{index}]"
         question = str(item.get("question") or "").strip()
         evidence = _related_evidence_refs(item.get("related_evidence") or [], registry)
+        if not evidence["background"]:
+            related_ids = set(item.get("related_assessment_ids") or [])
+            evidence["background"] = _ordered_unique(
+                option["evidence_ref"]
+                for assessment in projected_assessments
+                if assessment["assessment_id"] in related_ids
+                for option in assessment["evidence_options"]
+            )
         source_ref = registry.source(
             specialty,
             "interspecialty_question",
@@ -1460,7 +1522,7 @@ class MDTChairAgent:
         _, ledger_trace = self.generator.generate(
             schema_model=ledger_model,
             schema_name="mdt_chair_semantic_ledger",
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=judgment_system_prompt(SYSTEM_PROMPT),
             user_prompt=ledger_prompt,
             extra_validation=validate_ledger_draft,
             dependent_field_constraints=_claim_evidence_schema_constraints(bundle),
@@ -1538,7 +1600,7 @@ class MDTChairAgent:
         result, synthesis_trace = self.generator.generate(
             schema_model=_integration_generation_model(ledger, discussion_previous),
             schema_name="mdt_chair_integration",
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=judgment_system_prompt(SYSTEM_PROMPT),
             user_prompt=synthesis_prompt,
             extra_validation=resolve,
             string_field_constraints=_source_ref_schema_constraints(
@@ -2089,17 +2151,6 @@ def resolve_semantic_ledger(
                 "affirmed or possible"
             )
         _validate_conflict_group(group, bundle, topic_index - 1)
-    covered_assessments = {
-        claim.source_ref
-        for group in ledger.claim_groups
-        for claim in group.claims
-    }
-    missing_assessments = sorted(expected_assessments - covered_assessments)
-    if missing_assessments:
-        ledger_errors.append(
-            "claim_groups omits specialty assessments: "
-            f"{missing_assessments}"
-        )
     if ledger_errors:
         raise ValueError("; ".join(ledger_errors))
     normalized_routes = []

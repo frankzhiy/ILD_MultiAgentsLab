@@ -14,7 +14,7 @@ retry_backoff_seconds: 2
 classification_max_attempts: 2
 graph_unit_max_attempts: 2
 primary_frame_max_attempts: 2
-clinical_proposition_max_attempts: 2
+clinical_proposition_max_attempts: 4
 max_tokens: 16000
 classification_max_tokens: 8000
 graph_unit_max_tokens: 12000

@@ -15,6 +15,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.semantic_graphing.clinical_proposition import PropositionType
+from src.schemas.semantic_graphing.document import SourceType
 from src.schemas.semantic_graphing.graph_unit import (
     GraphUnitCertainty,
     GraphUnitStatus,
@@ -138,6 +139,10 @@ _CHEST_MODALITY_RE = re.compile(
     r"(?:HRCT|CTPA|肺动脉CT|胸部CT|肺部CT|肺CT|胸片|胸部X线|肺窗|高分辨率CT)",
     re.IGNORECASE,
 )
+_CHEST_FINDING_RE = re.compile(
+    r"(?:双肺|[左右]肺|肺纹理|肺间质|肺实质|支气管|胸膜|胸腔|纵隔|"
+    r"肺气肿|实变影|透亮影|磨玻璃|蜂窝)"
+)
 _OTHER_MODALITY_RE = re.compile(
     r"(?:超声心动图|心脏彩超|双下肢|下肢动脉|下肢静脉|肺功能|"
     r"冠状动脉CT|冠脉CT|腹部彩超|甲状腺|关节超声|骨科)",
@@ -195,13 +200,13 @@ def build_radiology_working_input(case_input: SpecialtyCaseInput) -> RadiologyWo
                 continue
             candidate_count += 1
 
-            if not _contains_thoracic_imaging(graph_unit.text):
+            if not _contains_thoracic_imaging(graph_unit.text, graph_unit.source_type):
                 excluded.append(
                     ExcludedRadiologyCandidate(
                         graph_unit_id=graph_unit.graph_unit_id,
                         evidence_role=unit.evidence_role,
                         reason=(
-                            "unit虽被路由至胸部影像科，但未发现胸部CT/HRCT/CTPA/胸片信号；"
+                            "unit虽被路由至胸部影像科，但未发现胸部检查名称或胸部影像所见；"
                             "其中的肺功能、心脏超声或下肢超声只能作为病例背景。"
                         ),
                         text=graph_unit.text,
@@ -331,8 +336,11 @@ def _radiology_evidence_view(working_input: RadiologyWorkingInput) -> list[dict]
     ]
 
 
-def _contains_thoracic_imaging(text: str) -> bool:
-    return bool(_CHEST_MODALITY_RE.search(text))
+def _contains_thoracic_imaging(text: str, source_type: SourceType) -> bool:
+    return bool(
+        _CHEST_MODALITY_RE.search(text)
+        or (source_type == SourceType.IMAGING_FINDINGS and _CHEST_FINDING_RE.search(text))
+    )
 
 
 def _project_statement(unit_text: str, graph_unit_id: str, proposition) -> ProjectedStatement:

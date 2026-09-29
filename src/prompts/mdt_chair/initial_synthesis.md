@@ -9,8 +9,8 @@
 - 对 `programmatic_review_dispositions` 中每个 `assessment_boundary`，对应的 `question_source_refs` 必须逐项填入该判断边界的 `question_source_refs`；不得遗漏原问题来源。
 - 对每个 `evidence_need`，对应的会中 `assessment_evidence_need` 来源必须保留在该证据需求的 `source_refs` 中；不得遗漏请求方已经批准转入的资料需求。
 
-一、`integrated_conclusions`：跨专科整合结论
-- 只使用台账中 `disposition=integrated` 的实质性肯定或可能判断，按临床语义合并相近内容。
+一、`integrated_conclusions`：当前可用的专科判断与跨专科整合结论
+- 只使用台账中 `disposition=integrated` 的实质性肯定或可能判断，按临床语义合并相近内容。单一专科有依据的当前工作判断也应保留，并明确其来源和边界；不要写成跨专科共识。
 - 不得把 `indeterminate / not_assessable / not_applicable` 写成支持意见；它们应进入判断边界。
 - `statement` 清楚表达共同判断，`medical_basis` 解释为何可以合并，`decision_impact` 说明对本轮讨论的影响。
 - 每条结论的 `atomic_claim_ids` 必须非空；程序由这些判断回填 `source_refs`。
@@ -46,9 +46,10 @@
 
 五、`evidence_needs`：可进一步明确判断的非阻断证据需求
 - 只依据 `decision_role=non_blocking_refinement` 的 `evidence_need_groups` 去重合并，包括从问题重分类出的非阻断资料需求；`blocking_boundary` 只能进入判断边界。
+- `limitation_only` 不进入本板块或待办；保留相关专科判断已说明的边界即可。
 - `source_refs` 可引用形成需求的 `interspecialty_question / assessment_evidence_need`，以及台账中明确列为覆盖资料的 `specialty_assessment`。判断来源和问题来源必须分别保留，不得混成同一语义。
 - `required_information`、`available_information`、`remaining_information` 分别说明所需、已有和仍缺资料。是否满足按实际资料覆盖判断，不能因为某科引用或回应过就视为满足。
-- 必须写清当前已经成立的判断，以及补充资料能提高的是明确度、置信度还是精细程度；没有该资料时当前判断仍然成立。若没有资料就不能做判断，应进入本轮判断边界。
+- 必须写清当前已经成立的判断，以及补充资料得到不同结果时下一步决策可能怎样改变；没有该资料时当前判断仍然成立。若没有资料就不能做判断，应进入本轮判断边界。
 - `raised_by`、`provided_by` 由程序按来源类型回填；只有确实被选作覆盖资料的专科结论才计入 `provided_by`。
 - 只有程序处置为 `evidence_need` 的会中资料需求才与既有需求按医学含义合并。证据需求可以保持 `missing`，但本项目不会等待新资料后重启讨论，也不得因此把已经回答的问题重新派发。
 

@@ -6,6 +6,7 @@ import pytest
 from src.agents.mdt_chair.agent import (
     MDTChairAgent,
     _integration_generation_model,
+    _ledger_from_draft,
     _ledger_generation_model,
     _source_ref_schema_constraints,
     _discussion_previous_view,
@@ -302,6 +303,27 @@ def test_ledger_generation_requires_one_fixed_slot_per_source_question():
         model.model_validate(extra)
 
 
+def test_question_inherits_linked_assessment_evidence_when_own_links_are_empty():
+    values = outputs()
+    question = values["pulmonology"]["professional_conclusions"]["interspecialty_questions"][0]
+    question["related_evidence"] = []
+    question["related_assessment_ids"] = ["pulmonology_1"]
+
+    bundle = build_chair_prompt_bundle("case-1", values)
+    question_ref = source_ref(bundle, "pulmonology", "interspecialty_question")
+    assert bundle.source_evidence[question_ref]["background"]
+    assert bundle.prompt_input["specialties"][0]["interspecialty_questions"][0]["related_evidence"]
+
+
+def test_ledger_generation_keeps_current_judgments_in_public_sections():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    model = _ledger_generation_model(bundle)
+    payload = ledger_generation_payload(ledger_payload(bundle))
+    payload["claim_groups"][0]["disposition"] = "follow_up"
+    with pytest.raises(ValueError):
+        model.model_validate(payload)
+
+
 def test_ledger_generation_rejects_mixed_group_and_missing_comparison_target():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     model = _ledger_generation_model(bundle)
@@ -340,13 +362,13 @@ def test_ledger_keeps_atomic_status_when_assessment_is_not_assessable():
     assert ledger.claim_groups[0].claims[0].position_role == "preferred"
 
 
-def test_ledger_requires_coverage_of_every_specialty_assessment():
+def test_ledger_allows_omitting_nondecisive_specialty_assessment():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     payload = ledger_payload(bundle)
     payload["claim_groups"].pop()
 
-    with pytest.raises(ValueError, match="omits specialty assessments"):
-        resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
+    assert len(ledger.claim_groups) == len(payload["claim_groups"])
 
 
 def test_discussion_ledger_covers_active_versions_without_requiring_superseded_sources():
@@ -765,8 +787,9 @@ def test_integration_draft_requires_explicit_claim_selection():
     payload["assessment_boundaries"][0]["atomic_claim_ids"] = []
     payload["assessment_boundaries"][0]["question_source_refs"] = []
     payload["assessment_boundaries"][0]["related_evidence_need_source_refs"] = []
-    with pytest.raises(ValueError, match="requires a ledger basis"):
-        MDTChairIntegrationDraft.model_validate(payload)
+    draft = MDTChairIntegrationDraft.model_validate(payload)
+    result = materialize_integration_draft(draft, resolved_ledger(bundle), bundle)
+    assert result.assessment_boundaries == []
 
     legacy = resolve_chair_references(
         MDTChairIntegration.model_validate(integration_payload(bundle)),
@@ -820,6 +843,20 @@ def test_blocking_need_only_boundary_has_no_claim_evidence():
     assert result.assessment_boundaries[0].source_refs == need_group.source_refs
     assert result.assessment_boundaries[0].atomic_claim_ids == []
     assert result.assessment_boundaries[0].evidence.links == []
+
+
+def test_limitation_only_need_cannot_become_chair_request():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    ledger_value = ledger_payload(bundle)
+    for group in ledger_value["evidence_need_groups"]:
+        group["decision_role"] = "limitation_only"
+    ledger = resolve_semantic_ledger(ChairSemanticLedger.model_validate(ledger_value), bundle)
+    model = _integration_generation_model(ledger)
+    payload = integration_generation_payload(bundle, ledger_value)
+    payload["evidence_needs"] = []
+
+    assert model.model_validate(payload).evidence_needs == []
+    assert _source_ref_schema_constraints(bundle, semantic_ledger=ledger)["EvidenceNeed"]["source_refs"] == set()
 
 
 def test_conflict_draft_derives_each_position_source_from_selected_claim():
@@ -902,10 +939,48 @@ def test_ledger_rejects_boundary_claims_in_substantive_group():
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
 
 
+def test_ledger_reclassifies_single_specialty_placeholder_conflict():
+    bundle = build_chair_prompt_bundle("case-1", outputs())
+    payload = ledger_payload(bundle)
+    claim = payload["claim_groups"][0]["claims"][0]
+    payload["claim_groups"].append({
+        "label": "单科占位冲突",
+        "disposition": "conflict",
+        "conflict_nature": "direct_contradiction",
+        "comparison_target": "诊断",
+        "comparison_conditions": "现有资料",
+        "why_incompatible": "仅一科意见",
+        "decision_impact": "无跨科分歧",
+        "claims": [claim],
+    })
+    payload["evidence_need_groups"].append({
+        "source_refs": [],
+        "required_information": "没有来源的占位需求",
+        "decision_role": "limitation_only",
+    })
+
+    payload["question_routes"] = {
+        route["source_refs"][0]: {
+            key: value for key, value in route.items()
+            if key not in {"source_refs", "target_specialties"}
+        }
+        for route in payload["question_routes"]
+    }
+    draft = _ledger_generation_model(bundle).model_validate(payload)
+    ledger = resolve_semantic_ledger(_ledger_from_draft(draft, bundle), bundle)
+
+    assert len(ledger.claim_groups) == 3
+    assert ledger.claim_groups[-1].disposition == "integrated"
+    assert all(group.source_refs for group in ledger.evidence_need_groups)
+    assert {event["action"] for event in bundle.normalization_events} == {
+        "reclassified_invalid_conflict", "dropped_unsourced_requests"
+    }
+
+
 def test_integration_retries_full_snapshot_after_invalid_section_selection():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     ledger_value = ledger_payload(bundle)
-    ledger_value["claim_groups"][0]["disposition"] = "follow_up"
+    ledger_value["claim_groups"].pop(0)
     invalid = integration_generation_payload(bundle, ledger_payload(bundle))
     corrected = {
         "integrated_conclusions": [],
@@ -1009,7 +1084,7 @@ def test_semantic_ledger_rejects_two_relations_for_same_claim_locator():
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
 
 
-def test_ledger_reports_relation_conflict_and_missing_assessment_together():
+def test_ledger_reports_relation_conflict_even_if_other_assessment_is_omitted():
     bundle = build_chair_prompt_bundle("case-1", outputs())
     payload = ledger_payload(bundle)
     claim = payload["claim_groups"][0]["claims"][0]
@@ -1018,13 +1093,12 @@ def test_ledger_reports_relation_conflict_and_missing_assessment_together():
         {"evidence_ref": evidence_ref, "relation": "supports", "rationale": "主要证据。"},
         {"evidence_ref": evidence_ref, "relation": "qualifies", "rationale": "范围限制。"},
     ]
-    omitted = payload["claim_groups"][1]["claims"].pop()["source_ref"]
+    payload["claim_groups"][1]["claims"].pop()
 
     with pytest.raises(ValueError) as error:
         resolve_semantic_ledger(ChairSemanticLedger.model_validate(payload), bundle)
 
     assert "multiple relations" in str(error.value)
-    assert f"omits specialty assessments: ['{omitted}']" in str(error.value)
 
 
 def test_ledger_repairs_all_conflicting_evidence_links_without_regenerating():

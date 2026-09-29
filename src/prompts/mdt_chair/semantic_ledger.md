@@ -12,8 +12,8 @@
    - `professional_level` 必须区分：病例观察 `observation`、形态模式 `morphologic_pattern`、疾病诊断 `disease_diagnosis`、病因归属 `etiologic_attribution`、严重度或病程 `severity_or_trajectory`、可评价性 `assessability`。模式不能直接等同疾病诊断。存在专科版本条件时必须沿用其中的层级。
    - `position_role` 必须区分：当前首选 `preferred`、重要替代解释 `alternative`、暂定可能 `tentative`、判断边界 `boundary`。只有正式输出中作为当前主要判断且 `status=supported/favored` 的结论才能标为 `preferred`；`possible` 不能仅因措辞积极而升级为首选。
    - `epistemic_status` 必须区分：直接肯定 `affirms`、直接否定 `denies`、可能 `possible`、仍不确定 `indeterminate`、资料不足而不可评价 `not_assessable`、不适用 `not_applicable`。
-   - 一个 `claim_group` 只能有一种去向。先按每条原子判断的认识状态分流，再按临床主题聚合；不得仅按专科或来源 assessment 分组。即使讨论同一临床主题，也必须把 `indeterminate / not_assessable / not_applicable` 原子判断单独放入 `boundary` 组，不得与肯定、否定或可能判断放在同一组。`integrated` 组只能含 `affirms / possible`。每条 `specialty_assessment` 至少要有一条原子判断进入台账。
-   - 只有实质相近、对象和层级一致的肯定或可能判断进入 `integrated`。
+   - 只选入会影响本轮团队综合的专科判断；其余意见仍保存在共享决策状态。一个 `claim_group` 只能有一种去向。先按每条入选原子判断的认识状态分流，再按临床主题聚合；不得仅按专科或来源 assessment 分组。即使讨论同一临床主题，也必须把 `indeterminate / not_assessable / not_applicable` 原子判断单独放入 `boundary` 组，不得与肯定、否定或可能判断放在同一组。`integrated` 组只能含 `affirms / possible`。
+   - 已形成的肯定或可能工作判断进入 `integrated`；一个主题可以只引用一个负责专科的判断，保留其来源及信度，不把单科判断写成跨科共识。多个专科实质相近、对象和层级一致时才合并。
    - `indeterminate / not_assessable / not_applicable` 进入 `boundary`，不能当作支持结论，也不能当作冲突立场。
    - `conflict` 只允许以下两类，并填写 `conflict_nature`、`comparison_target`、`comparison_conditions`、`why_incompatible` 和 `decision_impact`：
      1. 硬冲突 `direct_contradiction`：至少两个专科在同一对象、时间、资料条件和专业层级下，对同一原子命题分别直接肯定与直接否定。
@@ -33,10 +33,10 @@
 
 3. 证据需求台账 `evidence_need_groups`
    - 合并重复的 `evidence_needs`，并纳入从原生问题重分类出的资料需求。
-   - 每组必须填写 `decision_role`：`blocking_boundary` 表示没有该关键证据便不能完成某项判断，最终进入“本轮判断边界”；`non_blocking_refinement` 表示当前判断已经成立，补充证据只提高明确度、置信度或精细程度，最终进入“证据需求”。两者不得因缺少资料这一表面相似性混为一谈。
+   - 每组必须填写 `decision_role`：`blocking_boundary` 表示它限定了当前无法完成的具体判断，最终进入“本轮判断边界”；`non_blocking_refinement` 表示通过共同判断协议筛选、值得追索且不阻断当前判断的资料，最终进入“证据需求”；`limitation_only` 表示未通过决策价值与负担筛选，仅保留为限制，不生成待办。独立核对共同协议第 3 条，不把来源专科自述的 `decision_unlocked` 直接当作已通过筛选；不要仅因资料缺失选择前两种。
    - `source_refs` 只能引用原始 `interspecialty_question` 或 `assessment_evidence_need`；`coverage_source_refs` 只引用确实提供了所需资料内容的 `specialty_assessment`。
    - “专科说资料不足”不是资料已经提供；缺少资料也不是阴性结果。
-   - 会中只有 `programmatic_review_dispositions` 明确为 `evidence_need` 的资料需求才在这里与既有需求去重合并；它表示已有判断成立、资料仅增加明确度，不得回流到问题路由。缺少关键证据而不能判断的内容属于判断边界。
+   - 会中只有 `programmatic_review_dispositions` 明确为 `evidence_need` 的资料需求才在这里与既有需求去重合并；不得回流到问题路由。其他需求按共同判断协议筛选。
 
 输入的每条项目都有 `source_type`，必须按其类型引用：`specialty_assessment` 是专科当前有效的正式判断，`discussion_answer` 是会中对某个原问题的回答，`interspecialty_question` 是需其他专科回答的问题，`assessment_evidence_need` 是判断产生的资料缺口。`claim_groups` 和 `coverage_source_refs` 只能放 `specialty_assessment`；`answer_links.source_refs` 可以放目标专科的 `specialty_assessment` 或 `discussion_answer`；`assessment_evidence_need` 只能用于 `evidence_need_groups.source_refs`，绝不能当作已有回答或资料已覆盖。
 
@@ -48,7 +48,7 @@
 待分类原始问题索引（`question_routes` 的全部固定键；逐键依据对应问题文本填写，不要借用其他资料需求的内容）：
 {{ question_index }}
 
-会中重整规则：`discussion_context` 非空时，上一轮五板块是当前状态基线，本轮回答与复核是状态变化信号。`programmatic_review_dispositions` 是程序确定的唯一去向，不得重新分类。上一轮及更早的问题不得重新放入 `question_routes`；只有本轮投影中由 `evidence_need` 处置产生的资料需求进入 `evidence_need_groups`。`assessment_boundary` 是缺少关键证据便不能判断的底线；`evidence_need` 是不阻断当前判断、只增加明确度的补充资料；`continue_clarification / continue_corroboration` 沿用原问题；`conflict_assessment` 只触发重新比较，不直接证明存在正式冲突。
+会中重整规则：`discussion_context` 非空时，上一轮五板块是当前状态基线，本轮回答与复核是状态变化信号。`programmatic_review_dispositions` 是程序确定的唯一去向，不得重新分类。上一轮及更早的问题不得重新放入 `question_routes`；只有本轮投影中由 `evidence_need` 处置产生的资料需求进入 `evidence_need_groups`。`assessment_boundary` 保留不能完成的具体判断；`evidence_need` 保留已通过决策价值筛选的非阻断性资料需求；`continue_clarification / continue_corroboration` 沿用原问题；`conflict_assessment` 只触发重新比较，不直接证明存在正式冲突。
 
 JSON Schema：
 {{ output_schema }}

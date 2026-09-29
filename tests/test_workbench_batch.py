@@ -37,7 +37,7 @@ def test_batch_limits_case_concurrency_and_keeps_other_cases_running(monkeypatch
         orchestrator.catalog,
         "run_summary",
         lambda run_dir: {
-            "chair_complete": run_dir.name != "run-case-b",
+            "discussion_complete": run_dir.name != "run-case-b",
             "manifest": {"error": "specialty failed"},
         },
     )

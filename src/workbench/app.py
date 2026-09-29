@@ -78,13 +78,10 @@ def not_found(error: FileNotFoundError) -> HTTPException:
 
 def discussion_result(run_id: str, *, accepted: bool = False) -> dict:
     result = catalog.discussion(run_id)
-    running = accepted
-    if not running and orchestrator.discussion_running(run_id):
-        summary = catalog.run_summary(catalog.run_dir(run_id))
-        running = (
-            summary["status"] == "running"
-            and summary["status_source"] == "mdt_discussion"
-        )
+    running = accepted or (
+        orchestrator.discussion_running(run_id)
+        and catalog.run_summary(catalog.run_dir(run_id))["status"] == "running"
+    )
     if running:
         result["status"] = "running"
         result["error"] = None

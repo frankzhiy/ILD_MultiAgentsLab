@@ -1,8 +1,11 @@
 import asyncio
 import json
 from hashlib import sha256
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 import src.workbench.workflow as workflow_module
 from src.agents.pulmonology.agent import PulmonologyAgent
@@ -119,10 +122,21 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     assert catalog.chair("run-1")["status"] == "completed"
     assert catalog.run_summary(run_dir)["chair_complete"] is True
 
+    write_json(
+        run_dir / ".workbench_run.json",
+        {
+            "case_id": "case-1",
+            "status": "running",
+            "status_source": "run",
+            "status_updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    assert catalog.run_summary(run_dir)["status"] == "running"
+
     write_json(run_dir / "case-1_mdt_decision_state.json", {"judgments": ["initial"]})
     pending_discussion = catalog.discussion("run-1")
     assert pending_discussion["status"] == "pending"
-    assert pending_discussion["decision_state"] is None
+    assert pending_discussion["decision_state"] == {"judgments": ["initial"]}
 
     baseline_path = run_dir / "case-1_mdt_chair_integration.json"
     write_json(run_dir / ".workbench_run.json", {"case_id": "case-1", "status": "failed"})
@@ -193,7 +207,8 @@ def test_web_orchestrator_and_workflow_include_chair_without_html_reporting():
     assert ".html" not in source
 
 
-def test_full_run_executes_chair_after_all_specialties(monkeypatch, tmp_path):
+@pytest.mark.parametrize("discussion_complete", [True, False])
+def test_full_run_executes_discussion_after_chair(monkeypatch, tmp_path, discussion_complete):
     run_dir = tmp_path / "outputs/runs/run-1"
     run_dir.mkdir(parents=True)
     input_path = tmp_path / "case-1.txt"
@@ -215,10 +230,16 @@ def test_full_run_executes_chair_after_all_specialties(monkeypatch, tmp_path):
         stages.append((agent_id, stage))
 
     monkeypatch.setattr(orchestrator, "_stage", record_stage)
+    monkeypatch.setattr(orchestrator, "_discussion_configs", lambda _run_dir: {})
+    monkeypatch.setattr(orchestrator.catalog, "run_summary", lambda _run_dir: {"discussion_complete": discussion_complete})
     asyncio.run(orchestrator._execute("run-1", input_path))
 
-    assert stages[-1] == ("mdt_chair", "cross_specialty_integration")
-    assert {agent for agent, _stage in stages[-5:-1]} == set(SPECIALTIES)
+    assert stages[-1] == ("mdt_discussion", "team_discussion")
+    assert stages[-2] == ("mdt_chair", "cross_specialty_integration")
+    assert {agent for agent, _stage in stages[-6:-2]} == set(SPECIALTIES)
+    assert json.loads((run_dir / ".workbench_run.json").read_text())["status"] == (
+        "completed" if discussion_complete else "failed"
+    )
 
 
 def test_successful_manual_chair_rerun_updates_failed_manifest(monkeypatch, tmp_path):

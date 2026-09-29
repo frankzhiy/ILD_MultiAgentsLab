@@ -46,7 +46,7 @@ from src.agents.mdt_discussion.specialty_agent import (
     discussion_evidence_schema_constraints,
 )
 from src.llm.base import LLMResponse
-from src.llm.structured import StructuredGenerationError, json_schema_response_format
+from src.llm.structured import json_schema_response_format
 
 
 DIAGNOSTIC_DIMENSIONS = [
@@ -177,6 +177,8 @@ def expanded_chair_result():
             "statement": "保留主席语义结论",
             "medical_basis": "保留医学依据",
             "status": "favored",
+            "role": "important_alternative",
+            "conclusion_type": "etiologic_attribution",
             "supporting_specialties": ["pulmonology"],
             "source_refs": ["S001"],
             "source_citations": [{
@@ -712,13 +714,13 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations():
     assert resolved.guideline_evidence[0].guideline_id == "guide-1"
 
     proposal.proposed_content.guideline_evidence[0].chunk_id = "invented-chunk"
-    with pytest.raises(StructuredGenerationError, match="was not validated"):
-        agent.propose_judgment_update(
-            round_number=1,
-            tasks=[task],
-            answers=[answer],
-            active_judgments=[current],
-        )
+    update, _ = agent.propose_judgment_update(
+        round_number=1,
+        tasks=[task],
+        answers=[answer],
+        active_judgments=[current],
+    )
+    assert update.proposals[0].proposed_content.guideline_evidence == []
 
 
 def test_judgment_update_repairs_change_type_before_committing_core_change():
@@ -1354,6 +1356,37 @@ def test_v2_report_rejects_unknown_chair_item_reference():
             rounds=[],
             stop_reason="讨论结束。",
         )
+
+
+def test_final_report_does_not_rank_boundary_only_differential():
+    chair = expanded_chair_result()
+    chair["assessment_boundaries"] = [{
+        "boundary_id": "B001",
+        "topic": "病因",
+        "scope": "etiology",
+        "status": "not_assessable",
+        "source_refs": ["S001"],
+        "statement": "病因不可评价。",
+        "reason": "没有区分性证据。",
+        "decision_impact": "不能确定病因。",
+    }]
+    payload = final_report_v2_payload()
+    payload["clinical_report"]["differential_diagnoses"][0]["chair_item_ids"] = ["B001"]
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
+    report, trace = FinalReportAgent(FakeLLM(), config={"max_attempts": 1}).generate(
+        case_id="case-1",
+        chair_result=chair,
+        rounds=[],
+        stop_reason="讨论结束。",
+    )
+    assert report.clinical_report.differential_diagnoses == []
+    assert trace["dropped_unsupported_differentials"] == ["特发性肺纤维化"]
 
 
 def test_discussion_audit_preserves_answer_review_and_closure():

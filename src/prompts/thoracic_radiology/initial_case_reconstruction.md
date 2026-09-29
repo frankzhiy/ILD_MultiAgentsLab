@@ -9,6 +9,7 @@
 1. 识别临床触发和当前最需要影像科回答的主问题。急性低氧、术后恶化、咯血、发热或肺栓塞待排等定向问题优先于常规ILD分型。
 2. 重建胸部影像检查。区分HRCT、普通CT、CTPA和胸片；区分正式报告、报告摘录、临床转述和标签性结论。
 3. 若两段描述可能来自同一次检查但原文未明确，只能记录`possible_same_exam_as`和关系不确定，不能制造纵向比较。
+   独立的胸部影像所见即使未重述检查名称，也要按原文记录；不能仅凭相邻段落认定它属于某次HRCT，检查方式不明时用`unknown`。
 4. 将原文内容分为finding、impression、recommendation、availability。原报告印象必须保留来源，不得改写成你的独立分型。
 5. 给每次检查确定文字资料等级：feature_level、impression_level、label_only或uncertain。该等级描述文字能支持到什么程度，不等于扫描本身质量。
 6. 形成任务计划。主问题设为primary；ILD表型、模式、纵向或偶发发现按病例实际设为secondary/conditional/background。没有临床疑似/既往IPF语境时，`conditional_ipf_hrct`不能active。

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -10,6 +11,7 @@ from src.agents.thoracic_radiology.agent import (
     validate_initial_assessment,
 )
 from src.agents.thoracic_radiology.evidence_projection import (
+    build_radiology_evidence_prompt_input,
     build_radiology_working_input,
 )
 from src.agents.thoracic_radiology.models import (
@@ -45,11 +47,46 @@ from src.llm.base import LLMResponse
 from src.llm.structured import StructuredLLMGenerator
 from src.reporting.thoracic_radiology_report import render_thoracic_radiology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.schemas.semantic_graphing.clinical_proposition import PropositionType
+from src.schemas.semantic_graphing.document import SourceType
 
 
 RUN_0714 = "outputs/runs/20260714_163246_76-IPF_step2_step3"
 RUN_0715 = "outputs/runs/20260715_121324_77-IPF_step2_step3"
 CONFIG = "configs/agents/thoracic_radiology/agent.yaml"
+
+
+def test_chest_report_findings_without_modality_are_usable_evidence():
+    def unit(unit_id, text, concept):
+        graph = SimpleNamespace(
+            graph_unit_id=unit_id, segment_id="seg_001", text=text,
+            source_type=SourceType.IMAGING_FINDINGS,
+            mdt_specialty=[MdtSpecialty.THORACIC_RADIOLOGY],
+            temporal_anchor=None, clinical_context=None,
+        )
+        proposition = SimpleNamespace(
+            proposition_id="prop_001", proposition_type=PropositionType.FINDING,
+            concept_text=concept, status="present", certainty="high",
+            evidence=SimpleNamespace(evidence_ids=[f"{unit_id}_ev_001"], quote=concept),
+            attribution=None,
+        )
+        return SimpleNamespace(
+            graph_unit=graph, evidence_role="owned",
+            clinical_propositions=SimpleNamespace(propositions=[proposition]),
+        )
+
+    chest = unit("seg_001_gu_001", "影像所见：双肺多发渗出实变影。", "双肺多发渗出实变影")
+    echo = unit("seg_001_gu_002", "超声心动图：右房扩大，肺动脉高压。", "右房扩大")
+    case = SimpleNamespace(
+        case_id="case-1", source_run_dir="test",
+        target_specialty=MdtSpecialty.THORACIC_RADIOLOGY,
+        segments=[SimpleNamespace(units=[chest, echo])],
+    )
+
+    working = build_radiology_working_input(case)
+    assert working.eligible_statement_keys() == {("seg_001_gu_001", "prop_001")}
+    assert build_radiology_evidence_prompt_input(working)["imaging_evidence"][0]["statements"][0]["concept_text"] == "双肺多发渗出实变影"
+    assert [item.graph_unit_id for item in working.excluded_radiology_candidates] == ["seg_001_gu_002"]
 
 
 class FakeLLM:
@@ -589,6 +626,17 @@ def test_central_pe_negative_cannot_be_expanded_to_complete_exclusion():
 
     with pytest.raises(ValueError, match="central-PE-only"):
         validate_initial_assessment(result, case)
+
+
+
+def test_pe_wording_allows_explicit_non_exclusion():
+    from types import SimpleNamespace
+    from src.agents.thoracic_radiology.validation import _validate_pe_wording
+
+    pointers = [SimpleNamespace(quote="CTPA未见明确中央型肺栓塞直接征象")]
+    _validate_pe_wording("报告仅未见中央型直接征象，不能据此排除肺栓塞。", pointers)
+    with pytest.raises(ValueError, match="central-PE-only"):
+        _validate_pe_wording("CTPA已经排除肺栓塞。", pointers)
 
 
 def test_ipf_hrct_task_cannot_activate_without_explicit_ipf_context():

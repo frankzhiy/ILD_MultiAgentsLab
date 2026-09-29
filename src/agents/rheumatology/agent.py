@@ -14,6 +14,7 @@ from src.agents.common.initial_output_validation import (
     validate_specialty_initial_output,
 )
 from src.agents.common.prompt_contract import specialty_output_contract
+from src.agents.common.judgment_protocol import judgment_system_prompt
 from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.rheumatology.models import (
     InitialAutoimmuneAssessment,
@@ -285,7 +286,7 @@ class RheumatologyAgent:
         result, trace = self.generator.generate(
             schema_model=schema_model,
             schema_name=("specialty_initial" if stage == "initial_reasoning_output" else stage),
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=judgment_system_prompt(SYSTEM_PROMPT),
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
             pointer_field_constraints=pointer_constraints,

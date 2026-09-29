@@ -46,6 +46,7 @@ a { color: inherit; }
 .pipeline-flow .react-flow__node { min-width: 138px; padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: #24324a; font-size: 12px; text-align: center; box-shadow: 0 2px 5px rgb(15 23 42 / 6%); }
 .pipeline-flow .flow-success { border-color: #31a77b; background: #eefbf6; }
 .pipeline-flow .flow-active { border-color: #2f6fed; background: #eff6ff; }
+.pipeline-flow .flow-failed { border-color: #dc5555; background: #fff1f1; }
 .pipeline-flow .flow-router { border-color: #d39b2a; background: #fff8e8; }
 .pipeline-flow .flow-pending { color: #94a3b8; background: #f8fafc; }
 .success-icon { color: #0f9f6e; }

@@ -102,14 +102,6 @@ def validate_material_plan(
         raise ValueError(
             "No assessable pathology material requires no_pathology_material formulation"
         )
-    if not result.missing_data:
-        raise ValueError(
-            "No assessable pathology material requires decision-relevant material needs"
-        )
-    if not result.specialist_dependencies:
-        raise ValueError(
-            "No assessable pathology material requires a material-recovery dependency"
-        )
     return result
 
 
@@ -246,15 +238,6 @@ def _validate_material_consistency(value) -> None:
         raise ValueError(
             "No assessable pathology material requires no_pathology_material formulation"
         )
-    if no_material and "missing_data" in type(value).model_fields:
-        if not getattr(value, "missing_data", []):
-            raise ValueError(
-                "No assessable pathology material requires decision-relevant material needs"
-            )
-        if not getattr(value, "specialist_dependencies", []):
-            raise ValueError(
-                "No assessable pathology material requires a material-recovery dependency"
-            )
     owns_specimens = "specimens" in type(value).model_fields
     if owns_specimens and patterns and not specimens:
         raise ValueError("Histopathologic pattern assessment requires at least one specimen record")

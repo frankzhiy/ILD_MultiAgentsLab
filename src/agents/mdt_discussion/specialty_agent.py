@@ -9,6 +9,7 @@ from src.agents.common.decision_state import (
     SpecialtyJudgmentVersion,
     prepare_judgment_change,
 )
+from src.agents.common.judgment_protocol import judgment_system_prompt
 from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaim,
     DiscussionEvidenceUse,
@@ -218,7 +219,7 @@ class SpecialtyDiscussionAgent:
         draft, trace = self.generator.generate(
             schema_model=SpecialtyTaskAnswerDraft,
             schema_name=f"{self.specialty}_discussion_{task.task_id}",
-            system_prompt=(
+            system_prompt=judgment_system_prompt(
                 f"你是严谨的 ILD MDT {SPECIALTY_LABELS[self.specialty]}会诊医生。"
                 f"{ROLE_BOUNDARIES[self.specialty]}只返回符合 schema 的 JSON。"
             ),
@@ -305,7 +306,7 @@ class SpecialtyDiscussionAgent:
         draft, trace = self.review_generator.generate(
             schema_model=SpecialtyAnswerReviewDraft,
             schema_name=f"{self.specialty}_review_{answer.answer_id}",
-            system_prompt=(
+            system_prompt=judgment_system_prompt(
                 f"你是严谨的 ILD MDT {SPECIALTY_LABELS[self.specialty]}会诊医生。"
                 "只复核当前问题和回答，不扩展病例，只返回符合 schema 的 JSON。"
             ),
@@ -443,20 +444,16 @@ class SpecialtyDiscussionAgent:
                         if graph_nodes is not None
                         else list(getattr(source, "node_ids", []))
                     )
-                for index, pointer in enumerate(
-                    proposal.proposed_content.guideline_evidence
-                ):
+                validated_guidelines = []
+                for pointer in proposal.proposed_content.guideline_evidence:
                     source = guideline_sources.get(_guideline_pointer_key(pointer))
                     if source is None:
-                        errors.append(
-                            f"proposals[{proposal_index}] judgment update uses a guideline passage that was not "
-                            "validated in the current judgment or round answer"
-                        )
                         continue
                     resolved = source.model_copy(deep=True)
                     resolved.relevance = pointer.relevance
                     resolved.application = pointer.application
-                    proposal.proposed_content.guideline_evidence[index] = resolved
+                    validated_guidelines.append(resolved)
+                proposal.proposed_content.guideline_evidence = validated_guidelines
                 if proposal.change_type != "create" and current is not None:
                     try:
                         prepare_judgment_change(current, proposal)
@@ -490,7 +487,7 @@ class SpecialtyDiscussionAgent:
         draft, trace = self.generator.generate(
             schema_model=SpecialtyJudgmentUpdateDraft,
             schema_name=f"{self.specialty}_judgment_update_r{round_number:02d}",
-            system_prompt=(
+            system_prompt=judgment_system_prompt(
                 f"你是严谨的 ILD MDT {SPECIALTY_LABELS[self.specialty]}会诊医生。"
                 "你只更新本专科判断，不替其他专科或主持人作决定。只返回符合 schema 的 JSON。"
             ),

@@ -303,9 +303,6 @@ def agent(responses):
         initial_specimen_reconstruction_prompt_path=f"{PROMPT_DIR}/initial_specimen_reconstruction.md",
         initial_morphologic_assessment_prompt_path=f"{PROMPT_DIR}/initial_morphologic_assessment.md",
         initial_consult_formulation_prompt_path=f"{PROMPT_DIR}/initial_consult_formulation.md",
-        discussion_evidence_mapping_prompt_path=f"{PROMPT_DIR}/discussion_evidence_mapping.md",
-        discussion_state_update_prompt_path=f"{PROMPT_DIR}/discussion_state_update.md",
-        discussion_consult_response_prompt_path=f"{PROMPT_DIR}/discussion_consult_response.md",
         clinical_rules={},
         temperature=0,
         max_tokens=4000,
@@ -488,10 +485,10 @@ def test_initial_assessment_without_pathology_material_does_not_invent_pattern()
             }
         ],
     )
-    with pytest.raises(ValueError, match="decision-relevant material needs"):
-        validate_material_plan(
-            formulation.model_copy(update={"missing_data": []}), reconstruction
-        )
+    assert validate_material_plan(
+        formulation.model_copy(update={"missing_data": [], "specialist_dependencies": []}),
+        reconstruction,
+    ).missing_data == []
     result, trace = agent(
         [payload(reconstruction), payload(formulation)]
     ).initial_assessment(case)

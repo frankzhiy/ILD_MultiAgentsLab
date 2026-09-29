@@ -184,10 +184,11 @@ def test_rheumatology_requires_disease_and_ild_attribution_assessments(monkeypat
         "uncertain_availability",
     ],
 )
-def test_pathology_without_material_requires_boundary_plan(monkeypatch, material_status):
+def test_pathology_without_material_allows_boundary_without_request(monkeypatch, material_status):
     stub_evidence(monkeypatch)
-    payload = output_payload(questions=[question("pulmonology")])
+    payload = output_payload()
     payload["specialty_assessments"]["assessability"] = "not_assessable"
+    payload["specialty_assessments"]["evidence_gaps"] = []
     payload["specialty_assessments"]["assessments"] = [
         assessment(
             assessment_type="material_evaluability",
@@ -206,8 +207,8 @@ def test_pathology_without_material_requires_boundary_plan(monkeypatch, material
     )
 
     assert validated.specialty_assessments.assessability == "not_assessable"
-    assert validated.specialty_assessments.evidence_gaps
-    assert validated.interspecialty_questions.questions
+    assert validated.specialty_assessments.evidence_gaps == []
+    assert validated.interspecialty_questions.questions == []
 
 
 def test_formal_output_allows_probability_terms_in_clinical_text(monkeypatch):

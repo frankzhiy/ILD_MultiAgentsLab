@@ -256,7 +256,7 @@ class LedgerEvidenceNeedGroup(BaseModel):
     group_id: SkipJsonSchema[str] = ""
     source_refs: list[str] = Field(min_length=1)
     required_information: str = Field(min_length=1)
-    decision_role: Literal["blocking_boundary", "non_blocking_refinement"]
+    decision_role: Literal["blocking_boundary", "non_blocking_refinement", "limitation_only"]
     coverage_source_refs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -555,17 +555,6 @@ class AssessmentBoundaryDraft(AssessmentBoundary):
         if isinstance(value, dict) and value.get("source_refs"):
             raise ValueError("source_refs are derived from boundary bases")
         return value
-
-    @model_validator(mode="after")
-    def require_basis(self):
-        if not (
-            self.atomic_claim_ids
-            or self.question_source_refs
-            or self.related_evidence_need_source_refs
-        ):
-            raise ValueError("Assessment boundary requires a ledger basis")
-        return self
-
 
 class ConflictPositionDraft(ConflictPosition):
     source_refs: SkipJsonSchema[list[str]] = Field(default_factory=list, exclude=True)

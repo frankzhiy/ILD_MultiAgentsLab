@@ -44,7 +44,7 @@ export function NewRunPage() {
       <Header className="global-header"><Brand /><Button icon={<ArrowLeftOutlined />}><Link to="/runs">返回运行列表</Link></Button></Header>
       <Content className="page-content narrow-content">
         <div className="page-heading"><div><Text className="eyebrow">NEW EXPERIMENT</Text><Title level={2}>配置一次 MDT 运行</Title><Text type="secondary">病例原文保持只读；每个 Agent 的模型设置与最终产物一起记录。</Text></div></div>
-        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="完整流程依次执行 Semantic Graphing、四个并行专科和 MDT 主持人整合；批量运行中单个病例失败不会中断其他病例。" />
+        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="完整流程依次执行 Semantic Graphing、四个并行专科、MDT 主持人整合、团队讨论和最终报告；批量运行中单个病例失败不会中断其他病例。" />
         <Form form={form} layout="vertical" initialValues={{ mode: 'single', source: 'library', max_concurrency: 6, max_case_concurrency: 2, max_request_concurrency: 6 }} onFinish={(values) => mutation.mutate({ ...values, agents: agentConfig })}>
           <Form.Item name="mode" label="运行方式"><Radio.Group options={[{ value: 'single', label: '单个病例' }, { value: 'batch', label: '批量病例库运行' }]} /></Form.Item>
           <Card title={<Space><FileTextOutlined />病例输入</Space>} className="section-card">
@@ -62,7 +62,7 @@ export function NewRunPage() {
             <Table rowKey="agent_id" columns={columns} dataSource={agents} pagination={false} size="middle" />
           </Card>
           <Card className="section-card">
-            <Row gutter={24} align="middle"><Col flex="auto"><Title level={5}>启动完整 MDT 流程</Title><Text type="secondary">Semantic Graphing → unit 分发 → 四专科并行评估 → 主持人跨专科整合</Text></Col><Col><Button type="primary" htmlType="submit" size="large" loading={mutation.isPending}>开始运行</Button></Col></Row>
+            <Row gutter={24} align="middle"><Col flex="auto"><Title level={5}>启动完整 MDT 流程</Title><Text type="secondary">Semantic Graphing → unit 分发 → 四专科并行评估 → 主持人整合 → 团队讨论 → 最终报告</Text></Col><Col><Button type="primary" htmlType="submit" size="large" loading={mutation.isPending}>开始运行</Button></Col></Row>
           </Card>
         </Form>
       </Content>

@@ -212,14 +212,14 @@ describe('DiscussionWorkspace', () => {
     api.discussion.mockResolvedValue({
       status: 'pending', runnable: true, rounds: [],
       decision_state: {
-        judgments: [{ judgment_id: 'pulmonology_001', active_version_id: 'v1', versions: [{ version_id: 'v1', assessment: { statement: '首轮专科判断。' } }] }],
+        judgments: [{ judgment_id: 'pulmonology_001', specialty: 'pulmonology', active_version_id: 'v1', versions: [{ version_id: 'v1', assessment: { statement: '首轮专科判断。' } }] }],
       },
     })
     api.runDiscussion.mockResolvedValue({ status: 'running', runnable: true, rounds: [] })
     renderWorkspace()
 
     expect(await screen.findByText('尚未产生团队讨论轮次；点击“运行团队讨论”后，这里会实时出现任务与处理进度。')).toBeInTheDocument()
-    expect(screen.queryByText('首轮专科判断。')).not.toBeInTheDocument()
+    expect(screen.getByText('首轮专科判断。')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: '运行团队讨论' }))
 
     await waitFor(() => expect(api.runDiscussion).toHaveBeenCalledWith('run-1'))

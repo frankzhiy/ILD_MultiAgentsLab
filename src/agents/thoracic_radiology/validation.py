@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import re
 
 from src.agents.common.validation import (
     case_units,
@@ -625,7 +626,11 @@ def _validate_pe_wording(text: str, pointers: Iterable[EvidencePointer]) -> None
     quotes = " ".join(pointer.quote for pointer in pointers)
     only_central_negative = "中央型肺栓塞" in quotes and "未见" in quotes
     if only_central_negative and any(
-        phrase in text for phrase in ("排除肺栓塞", "未见肺栓塞", "无肺栓塞")
+        not re.search(
+            r"(?:不能|无法|不足以|不等于|不意味着|不代表|不应|不得|不可|不宜|并非|并未|尚未|没有)[^。；，,;]{0,8}$",
+            text[max(0, match.start() - 16):match.start()],
+        )
+        for match in re.finditer(r"排除(?:全部|所有)?肺栓塞|未见肺栓塞|无肺栓塞", text)
     ):
         raise ValueError(
             "A central-PE-only negative report cannot be expanded to exclusion of all PE"

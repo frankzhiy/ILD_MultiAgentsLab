@@ -10,8 +10,6 @@ from src.agents.common.evidence_projection import (
     build_specialty_working_input,
 )
 from src.agents.common.initial_output import (
-    EvidenceGap,
-    InterspecialtyQuestion,
     InterspecialtyQuestions,
     SpecialtyAssessment,
     SpecialtyAssessments,
@@ -24,6 +22,7 @@ from src.agents.common.initial_output_validation import (
     validate_specialty_initial_output,
 )
 from src.agents.common.prompt_contract import specialty_output_contract
+from src.agents.common.judgment_protocol import judgment_system_prompt
 from src.agents.common.validation import diagnostic_evidence_schema_constraints
 from src.agents.pathology.models import (
     InitialConsultFormulation,
@@ -77,16 +76,11 @@ class _MaterialPlanAssessments(SpecialtyAssessments):
         min_length=1,
         validation_alias=AliasChoices("assessments", "conclusions"),
     )
-    evidence_gaps: list[EvidenceGap] = Field(min_length=1)
-
-
-class _MaterialPlanQuestions(InterspecialtyQuestions):
-    questions: list[InterspecialtyQuestion] = Field(min_length=1)
 
 
 class _PathologyMaterialPlanOutput(SpecialtyInitialOutput):
     specialty_assessments: _MaterialPlanAssessments
-    interspecialty_questions: _MaterialPlanQuestions
+    interspecialty_questions: InterspecialtyQuestions
 
 _RULE_KEYS_BY_STAGE = {
     "initial_specimen_reconstruction": ("sampling", "biopsy_scope", "boundaries"),
@@ -372,7 +366,7 @@ class PathologyAgent:
         result, trace = self.generator.generate(
             schema_model=schema_model,
             schema_name=("specialty_initial" if stage == "initial_reasoning_output" else stage),
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=judgment_system_prompt(SYSTEM_PROMPT),
             user_prompt=prompt,
             extra_validation=validate_with_guidelines,
             pointer_field_constraints=pointer_constraints,
