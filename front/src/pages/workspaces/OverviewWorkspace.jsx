@@ -90,7 +90,7 @@ export function OverviewWorkspace({ runId, run }) {
           ['chair', '主持人整合', run?.chair_complete ? 'completed' : chairStatus],
           ['discussion', `MDT 团队讨论 · 第 ${discussion.data?.current_round || 0} 轮`, discussionStatus],
           ['report', '最终报告', reportStatus],
-        ].map(([id, label, status]) => <div className="agent-status-row" key={id}><div className="agent-status-icon">{status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{label}</Text></div><Tag color={status === 'completed' ? 'success' : status === 'failed' ? 'error' : status === 'running' ? 'processing' : 'default'}>{status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中'}</Tag></div>)}</div>{reportStatus === 'completed' && <Link to={`/runs/${encodeURIComponent(runId)}/discussion`}>查看最终报告</Link>}</Card></Col>
+        ].map(([id, label, status]) => <div className="agent-status-row" key={id}><div className="agent-status-icon">{status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{label}</Text></div><Tag color={status === 'completed' ? 'success' : status === 'failed' ? 'error' : status === 'running' ? 'processing' : 'default'}>{status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中'}</Tag></div>)}</div>{reportStatus === 'completed' && <Link to={`/runs/${encodeURIComponent(runId)}/report`}>查看最终报告</Link>}</Card></Col>
         <Col span={9}><Card title="生命周期" className="section-card"><Timeline items={lifecycle} /></Card></Col>
       </Row>
     </div>

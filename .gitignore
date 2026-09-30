@@ -36,6 +36,7 @@ ENV/
 
 # Outputs & runs (keep directory structure, ignore generated files)
 outputs/runs/*/
+outputs/batches/
 outputs/reports/
 outputs/traces/
 

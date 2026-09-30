@@ -229,6 +229,13 @@ DiagnosticStatus = Literal[
     "not_applicable",
 ]
 DiagnosticConfidence = Literal["high", "moderate", "low", "unknown", "not_applicable"]
+DiseaseCategory = Literal[
+    "known_cause",
+    "idiopathic_interstitial_pneumonia",
+    "granulomatous_ild",
+    "other_ild",
+    "unclassifiable",
+]
 DiagnosticRole = Literal[
     "primary",
     "important_alternative",
@@ -248,6 +255,8 @@ class ReportDiagnosticItem(BaseModel):
     medical_basis: str = Field(min_length=1)
     chair_item_ids: list[str] = Field(min_length=1)
     limitations: list[str] = Field(default_factory=list)
+    disease_category: DiseaseCategory | None = None
+    specific_disease: str | None = None
 
     @model_validator(mode="after")
     def keep_uncertainty_semantics_distinct(self):
@@ -257,6 +266,8 @@ class ReportDiagnosticItem(BaseModel):
             raise ValueError("not_applicable requires not_applicable confidence")
         if self.status in {"not_assessable", "not_applicable"} and self.role != "boundary":
             raise ValueError("non-assessable diagnostic items must use the boundary role")
+        if self.dimension != "mdt_diagnosis" and (self.disease_category or self.specific_disease):
+            raise ValueError("disease classification belongs only to mdt_diagnosis")
         return self
 
 
@@ -301,14 +312,25 @@ class ClinicalMDTReport(BaseModel):
         ranks = [item.rank for item in self.differential_diagnoses]
         if ranks != list(range(1, len(ranks) + 1)):
             raise ValueError("differential diagnosis ranks must be consecutive from 1")
-        diagnosis = next(item for item in self.diagnostic_matrix if item.dimension == "mdt_diagnosis")
-        sentences = [diagnosis.statement, diagnosis.medical_basis]
+        matrix = {item.dimension: item for item in self.diagnostic_matrix}
+        diagnosis = matrix["mdt_diagnosis"]
+        context = []
+        for dimension in ("radiologic_pattern", "histopathologic_pattern", "disease_behavior"):
+            item = matrix[dimension]
+            if item.status != "not_applicable" and not (
+                dimension == "histopathologic_pattern" and item.status == "not_assessable"
+            ):
+                context.append(item.statement)
+        paragraphs = [[diagnosis.statement, diagnosis.medical_basis], context]
         for item in self.secondary_judgments:
-            sentences.extend((item.statement, item.medical_basis))
-        self.clinical_narrative = "".join(
-            sentence.strip() if sentence.strip().endswith(("。", "！", "？"))
-            else sentence.strip() + "。"
-            for sentence in sentences if sentence.strip()
+            paragraphs.append([item.statement, item.medical_basis])
+        self.clinical_narrative = "\n\n".join(
+            "".join(
+                sentence.strip() if sentence.strip().endswith(("。", "！", "？"))
+                else sentence.strip() + "。"
+                for sentence in paragraph if sentence.strip()
+            )
+            for paragraph in paragraphs if paragraph
         )
         return self
 
@@ -396,8 +418,8 @@ class MDTFinalReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: SkipJsonSchema[
-        Literal["mdt_final_report.v2", "mdt_final_report.v3", "mdt_final_report.v4", "mdt_final_report.v5"]
-    ] = "mdt_final_report.v5"
+        Literal["mdt_final_report.v2", "mdt_final_report.v3", "mdt_final_report.v4", "mdt_final_report.v5", "mdt_final_report.v6"]
+    ] = "mdt_final_report.v6"
     case_id: SkipJsonSchema[str] = ""
     consensus_status: SkipJsonSchema[Literal[
         "consensus_reached",

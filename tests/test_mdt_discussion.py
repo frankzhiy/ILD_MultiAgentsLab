@@ -93,6 +93,7 @@ def final_report_v2_payload(*, chair_item_id="IC001"):
                     "medical_basis": "保留医学依据",
                     "chair_item_ids": [chair_item_id],
                     "limitations": [],
+                    "disease_category": "unclassifiable" if dimension == "mdt_diagnosis" else None,
                 }
                 for dimension in DIAGNOSTIC_DIMENSIONS
             ],
@@ -329,6 +330,27 @@ def test_stable_chair_ids_remain_unique_when_two_items_match_one_prior_item():
         "IC001",
         "IC002",
     ]
+
+
+def test_stable_chair_id_is_not_reused_for_a_different_conclusion_type():
+    previous = MDTChairIntegration.model_validate({
+        "integrated_conclusions": [chair_conclusion(
+            conclusion_id="IC001",
+            source_refs=["S001"],
+            statement="既有疾病诊断。",
+        )],
+    })
+    changed = chair_conclusion(
+        conclusion_id="",
+        source_refs=["S001"],
+        statement="同一来源中的严重度判断。",
+    )
+    changed["conclusion_type"] = "severity_or_risk"
+    current = MDTChairIntegration.model_validate({"integrated_conclusions": [changed]})
+
+    stabilized = stabilize_integration_ids(current, previous)
+
+    assert stabilized.integrated_conclusions[0].conclusion_id == "IC002"
 
 
 def test_specialty_initial_prompt_view_keeps_only_two_formal_sections():
@@ -1297,6 +1319,46 @@ def test_final_report_retries_clunky_overall_conclusion():
     assert report.clinical_report.overall_conclusion.startswith("纤维化性间质性肺病")
 
 
+def test_final_report_requires_named_disease_and_retries_report_process_language():
+    class FakeLLM:
+        supports_json_schema = False
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, **kwargs):
+            self.calls += 1
+            payload = final_report_v2_payload()
+            diagnosis = next(item for item in payload["clinical_report"]["diagnostic_matrix"]
+                             if item["dimension"] == "mdt_diagnosis")
+            if self.calls > 1:
+                diagnosis["disease_category"] = "idiopathic_interstitial_pneumonia"
+            else:
+                diagnosis.pop("disease_category")
+            diagnosis["specific_disease"] = "特发性肺纤维化"
+            diagnosis["statement"] = (
+                "双肺病变的当前首选工作诊断为暂定特发性肺纤维化。"
+                if self.calls == 2 else "首选考虑特发性肺纤维化，但尚不能确诊。"
+            )
+            next(item for item in payload["clinical_report"]["diagnostic_matrix"]
+                 if item["dimension"] == "radiologic_pattern")["statement"] = "UIP 影像模式尚不能确定。"
+            next(item for item in payload["clinical_report"]["diagnostic_matrix"]
+                 if item["dimension"] == "disease_behavior")["statement"] = "纤维化进展不可评价。"
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
+    llm = FakeLLM()
+    report, _ = FinalReportAgent(llm, config={"max_attempts": 3}).generate(
+        case_id="case-1", chair_result=expanded_chair_result(), rounds=[], stop_reason="讨论结束。"
+    )
+
+    diagnosis = next(item for item in report.clinical_report.diagnostic_matrix
+                     if item.dimension == "mdt_diagnosis")
+    assert llm.calls == 3
+    assert diagnosis.specific_disease == "特发性肺纤维化"
+    assert diagnosis.disease_category == "idiopathic_interstitial_pneumonia"
+    assert "UIP 影像模式尚不能确定。纤维化进展不可评价。" in report.clinical_report.clinical_narrative
+
+
 def test_legacy_report_is_migrated_without_inventing_diagnostic_layers():
     report = MDTFinalReport.model_validate({
         "case_id": "case-1",
@@ -1386,7 +1448,7 @@ def test_v4_report_restores_exact_provenance_from_selected_chair_items():
         decision_state=decision_state,
     )
 
-    assert report.schema_version == "mdt_final_report.v5"
+    assert report.schema_version == "mdt_final_report.v6"
     assert len(report.reasoning_trace) == 9
     assert report.clinical_report.overall_conclusion == report.clinical_report.diagnostic_matrix[3].statement
     assert report.clinical_report.integrated_summary == report.clinical_report.diagnostic_matrix[3].medical_basis
@@ -1505,6 +1567,35 @@ def test_final_report_does_not_rank_boundary_only_differential():
     )
     assert report.clinical_report.differential_diagnoses == []
     assert trace["dropped_unsupported_differentials"] == ["特发性肺纤维化"]
+
+
+def test_final_report_keeps_differential_supported_by_primary_working_diagnosis():
+    chair = expanded_chair_result()
+    chair["integrated_conclusions"][0].update({
+        "role": "primary",
+        "conclusion_type": "working_diagnosis",
+        "statement": "首选考虑特发性肺纤维化；自身免疫相关间质性肺病仍是重要备选。",
+    })
+    payload = final_report_v2_payload()
+    payload["clinical_report"]["differential_diagnoses"][0].update({
+        "diagnosis": "自身免疫相关间质性肺病",
+        "rationale": "存在患者特异的自身免疫线索，但尚不足以确立。",
+    })
+
+    class FakeLLM:
+        supports_json_schema = False
+
+        def complete(self, messages, *, temperature, max_tokens, response_format=None):
+            return LLMResponse(content=json.dumps(payload, ensure_ascii=False), raw={"choices": [{}]})
+
+    report, trace = FinalReportAgent(FakeLLM(), config={"max_attempts": 1}).generate(
+        case_id="case-1", chair_result=chair, rounds=[], stop_reason="讨论结束。"
+    )
+
+    assert [item.diagnosis for item in report.clinical_report.differential_diagnoses] == [
+        "自身免疫相关间质性肺病"
+    ]
+    assert "dropped_unsupported_differentials" not in trace
 
 
 def test_discussion_audit_preserves_answer_review_and_closure():

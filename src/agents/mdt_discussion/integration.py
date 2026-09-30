@@ -662,7 +662,7 @@ def stabilize_integration_ids(
         previous.integrated_conclusions,
         "conclusion_id",
         "IC",
-        _citation_key,
+        _conclusion_key,
     )
     _stabilize(
         result.assessment_boundaries,
@@ -709,6 +709,13 @@ def _citation_key(item) -> frozenset[tuple[str, str, str, str]]:
             citation.quote,
         )
         for citation in item.source_citations
+    )
+
+
+def _conclusion_key(item) -> frozenset[tuple[str, str, str, str, str]]:
+    return frozenset(
+        (item.conclusion_type, *identity)
+        for identity in _citation_key(item)
     )
 
 

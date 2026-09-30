@@ -35,6 +35,7 @@ from src.utils.config import load_text, load_yaml, render_template
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/final_report.md"
 _REPORT_STYLE = re.compile(
     r"^(?:目前|当前|本次|本轮)?.{0,8}(?:工作诊断|工作判断)(?:为|是)"
+    r"|(?:首选工作诊断为|工作诊断为暂定|暂定工作诊断)"
     r"|间质性[／/]渗出性肺部过程"
     r"|^(?:主要诊断|肺部改变|关键边界|次要判断|诊断依据)\s*[:：]"
 )
@@ -136,7 +137,21 @@ class FinalReportAgent:
             diagnosis = next(
                 item for item in clinical.diagnostic_matrix if item.dimension == "mdt_diagnosis"
             )
+            if not result.legacy_source and result.schema_version == "mdt_final_report.v6":
+                if not diagnosis.disease_category:
+                    raise ValueError("主诊断须注明 ILD 疾病类别")
+                if diagnosis.disease_category == "unclassifiable":
+                    if diagnosis.specific_disease:
+                        raise ValueError("不能分类时不得填写具体疾病")
+                elif not diagnosis.specific_disease or diagnosis.specific_disease not in diagnosis.statement:
+                    raise ValueError("主诊断须在结论中写出具体疾病")
             narrative_parts = [diagnosis.statement, diagnosis.medical_basis]
+            narrative_parts.extend(
+                item.statement for item in clinical.diagnostic_matrix
+                if item.dimension in {"radiologic_pattern", "histopathologic_pattern", "disease_behavior"}
+                and item.status != "not_applicable"
+                and (item.dimension != "histopathologic_pattern" or item.status != "not_assessable")
+            )
             for item in clinical.secondary_judgments:
                 narrative_parts.extend((item.statement, item.medical_basis))
             if any(_REPORT_STYLE.search(part) for part in narrative_parts):
@@ -155,7 +170,7 @@ class FinalReportAgent:
                 for value in (item.diagnosis, item.rationale):
                     validate_clinical_text(value)
             result.schema_version = (
-                "mdt_final_report.v2" if result.legacy_source else "mdt_final_report.v5"
+                "mdt_final_report.v2" if result.legacy_source else "mdt_final_report.v6"
             )
             result.case_id = case_id
             result.discussion_rounds = len(rounds)
@@ -177,11 +192,12 @@ class FinalReportAgent:
             alternative_ids = {
                 item["conclusion_id"]
                 for item in chair_result.get("integrated_conclusions", [])
-                if item.get("conclusion_type") in {"etiologic_attribution", "ild_attribution"}
-                or (
-                    item.get("role") == "important_alternative"
-                    and item.get("conclusion_type") in {"working_diagnosis", "etiologic_association"}
-                )
+                if item.get("conclusion_type") in {
+                    "working_diagnosis",
+                    "etiologic_attribution",
+                    "ild_attribution",
+                    "etiologic_association",
+                }
             }
             supported = [
                 diagnosis

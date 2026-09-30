@@ -122,63 +122,6 @@ const active = {
   },
 }
 
-const diagnosticDimensions = [
-  ['ild_presence', '存在纤维化性间质性肺病。', 'favored', 'moderate', 'primary'],
-  ['radiologic_pattern', '影像所见支持双肺异常，具体模式尚不能分类。', 'unclassifiable', 'low', 'boundary'],
-  ['histopathologic_pattern', '本轮无病理资料，无法作组织学判断。', 'not_assessable', 'unknown', 'boundary'],
-  ['mdt_diagnosis', '纤维化性间质性肺病工作诊断，具体类型待分类。', 'favored', 'moderate', 'primary'],
-  ['etiologic_attribution', '病因未分类。', 'unclassifiable', 'low', 'boundary'],
-  ['disease_behavior', '缺少纵向资料，PPF 不可评价。', 'not_assessable', 'unknown', 'boundary'],
-  ['acute_or_comorbid_factors', '近期低氧可能为多因素参与。', 'possible', 'low', 'cannot_safely_ignore'],
-]
-
-const completedV2 = {
-  ...completed,
-  final_report: {
-    schema_version: 'mdt_final_report.v2',
-    consensus_status: 'consensus_with_boundaries',
-    discussion_rounds: 1,
-    report_scope: 'diagnostic_only',
-    clinical_report: {
-      overall_conclusion: '纤维化性间质性肺病工作诊断，具体类型待分类。',
-      overall_confidence: 'moderate',
-      integrated_summary: '模式诊断与病因诊断分别保留边界。',
-      diagnostic_matrix: diagnosticDimensions.map(([dimension, statement, status, confidence, role]) => ({
-        dimension, statement, status, confidence, role, medical_basis: '基于现有 MDT 整合。', chair_item_ids: ['IC001'], limitations: [],
-      })),
-      differential_diagnoses: [{ rank: 1, diagnosis: '特发性肺纤维化', confidence: 'low', rationale: '现有影像所见和临床资料尚不足以支持该病因。', chair_item_ids: ['IC001'] }],
-    },
-    reasoning_trace: [{
-      claim_id: 'DX01',
-      claim_statement: '存在纤维化性间质性肺病。',
-      chair_item_ids: ['IC001'],
-      medical_basis: '呼吸科判断与影像所见一致。',
-      source_citations: [{ source_ref: 'S001', specialty: 'pulmonology', source_path: 'specialty_assessments.assessments[0]', quote: '呼吸科工作诊断原话。' }],
-      evidence: { supporting: [{ evidence_ref: 'E001', graph_unit_id: 'gu-1', evidence_ids: ['ev-1'], quote: '静息低氧' }] },
-      guideline_evidence: [{ chunk_id: 'guide-1', quote_unit_ids: ['unit-1'], guideline_id: 'guide-1', title: 'ILD 诊断指南', source_file: 'guide.pdf', page: 3, quote: '多学科综合诊断。' }],
-      limitations: [],
-    }],
-    assessment_boundaries: [],
-    evidence_needs: [],
-    evidence_need_groups: [
-      { source_refs: ['S011'], required_information: '既有抗体结果', decision_role: 'blocking_boundary' },
-      { source_refs: ['S012'], required_information: '相关职业暴露史', decision_role: 'non_blocking_refinement' },
-      { source_refs: ['S013'], required_information: '可比影像报告', decision_role: 'limitation_only' },
-    ],
-    unresolved_conflicts: [],
-    discussion_audit: {
-      decisions: [{
-        issue_id: 'Q001', issue_type: 'question', question: '低氧的主要归因是什么？', why_it_matters: '影响急性问题归因。', baseline_result: '现有资料不足。', final_status: 'closed', final_result: '接受多因素边界。', decision_impact: '避免将低氧直接归因于 ILD 进展。',
-        rounds: [{ round_number: 1, task_id: 'R01-Q001-pulmonology', specialty: 'pulmonology', prompt: '低氧的主要归因是什么？', answer: '不能量化各因素贡献。', answerability: 'partially_answered', confidence: 'moderate', changed_from_previous: false, reviews: [{ reviewer_specialty: 'thoracic_radiology', outcome: 'accept_boundary', rationale: '接受边界。' }], chair_result_after_round: '转为带边界共识。', closure: 'accept_boundary' }],
-      }],
-      conflicts: [],
-      stop_reason: '当前仅剩判断边界。',
-    },
-    research_metrics: { diagnostic_claims: 7, claims_with_specialty_citations: 1, claims_with_patient_evidence: 1, claims_with_guideline_citations: 0, discussion_issues: 1, closed_issues: 1, formal_conflicts: 0, resolved_formal_conflicts: 0, unresolved_formal_conflicts: 0, assessment_boundaries: 0 },
-    judgment_changes: [{ transaction_id: 'R01-pulmonology-judgment-update', specialty: 'pulmonology', judgment_id: 'pulmonology_001', change_type: 'qualify', before_version_id: 'pulmonology_001@v001', after_version_id: 'pulmonology_001@v002', round_number: 1, trigger_issue_ids: ['Q001'], considered_source_refs: ['R01-Q001-thoracic_radiology-A'], rationale: '影像科意见要求收紧判断边界。', changed_fields: ['statement', 'limitations'] }],
-  },
-}
-
 class FakeEventSource {
   static instances = []
   constructor(url) {
@@ -256,7 +199,7 @@ describe('DiscussionWorkspace', () => {
     api.discussion.mockResolvedValue(completed)
     renderWorkspace()
 
-    expect((await screen.findAllByText('最终 MDT 统一报告')).length).toBeGreaterThan(1)
+    expect(await screen.findByText('最终 MDT 统一报告')).toBeInTheDocument()
     expect(screen.getAllByText('低氧的主要归因是什么？').length).toBeGreaterThan(1)
     expect(screen.getByText('现有资料不足。')).toBeInTheDocument()
     expect(screen.getByText('影像提示肺实质因素可能参与。')).toBeInTheDocument()
@@ -274,55 +217,6 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getByText('证据需求及满足状态')).toBeInTheDocument()
     expect(screen.getByText('讨论前主持人基线不计入轮次')).toBeInTheDocument()
     expect(screen.getByText('本轮决策')).toBeInTheDocument()
-  })
-
-  it('shows a clinical report and its diagnostic evidence without research audit text', async () => {
-    api.discussion.mockResolvedValue(completedV2)
-    const { container } = renderWorkspace()
-
-    expect(await screen.findByRole('tab', { name: 'MDT 最终报告' })).toBeInTheDocument()
-    expect(container.querySelector('.final-report-summary').textContent).toContain('纤维化性间质性肺病工作诊断，具体类型待分类。')
-    expect(screen.queryByText('分层诊断矩阵')).not.toBeInTheDocument()
-    expect(screen.queryByText('鉴别诊断')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /S001/ })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('tab', { name: '诊断依据' }))
-    expect(await screen.findByText('呼吸科判断与影像所见一致。')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /(病历原文|专科)/ }).length).toBeGreaterThan(0)
-    expect(screen.getByText('判断边界')).toBeInTheDocument()
-    expect(screen.getByText('资料缺口与证据需求')).toBeInTheDocument()
-    expect(screen.getByText('影响当前判断：')).toBeInTheDocument()
-    expect(screen.getByText('值得后续追索：')).toBeInTheDocument()
-    expect(screen.getByText('仅记录限制：')).toBeInTheDocument()
-    expect(screen.getAllByText('指南依据').length).toBeGreaterThan(0)
-    expect(screen.getByText('未解决的专科分歧')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /S001/ })).not.toBeInTheDocument()
-
-    expect(screen.queryByRole('tab', { name: '讨论与研究审计' })).not.toBeInTheDocument()
-    expect(screen.queryByText('诊断型报告')).not.toBeInTheDocument()
-  })
-
-  it('renders one narrative from the matrix diagnosis and secondary judgments', async () => {
-    const result = structuredClone(completedV2)
-    result.final_report.schema_version = 'mdt_final_report.v5'
-    const diagnosis = result.final_report.clinical_report.diagnostic_matrix.find((item) => item.dimension === 'mdt_diagnosis')
-    diagnosis.statement = '首选考虑特发性肺纤维化，尚未确诊。'
-    diagnosis.medical_basis = 'HRCT 呈纤维化表型，但 UIP 模式尚不能确认。'
-    Object.assign(result.final_report.clinical_report, {
-      overall_conclusion: '旧版独立结论不应显示。',
-      integrated_summary: '旧版独立摘要不应显示。',
-      secondary_judgments: [{ statement: '结缔组织病相关间质性肺病仍需鉴别。', medical_basis: '存在有限自身免疫线索。', chair_item_ids: ['IC001'] }],
-    })
-    api.discussion.mockResolvedValue(result)
-    const { container } = renderWorkspace()
-
-    expect(await screen.findByRole('tab', { name: 'MDT 最终报告' })).toBeInTheDocument()
-    const text = container.querySelector('.final-report-summary').textContent
-    const positions = ['首选考虑特发性肺纤维化', 'HRCT 呈纤维化表型', '结缔组织病相关间质性肺病仍需鉴别', '存在有限自身免疫线索'].map((part) => text.indexOf(part))
-    expect(positions.every((position) => position >= 0)).toBe(true)
-    expect(positions).toEqual([...positions].sort((a, b) => a - b))
-    expect(text).not.toContain('旧版独立')
-    expect(text).not.toContain('主要诊断：')
   })
 
   it('shows the current specialty judgment and preserves its version history', async () => {

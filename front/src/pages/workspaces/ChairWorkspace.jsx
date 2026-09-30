@@ -421,8 +421,8 @@ export function ChairResultTabs({ result }) {
 export function ChairWorkspace({ runId, run }) {
   const queryClient = useQueryClient()
   const query = useQuery({
-    queryKey: ['chair', runId],
-    queryFn: () => api.chair(runId),
+    queryKey: ['chair', runId, 'presented'],
+    queryFn: () => api.chair(runId, true),
     refetchInterval: (current) => {
       const status = current.state.data?.status
       if (status === 'running' || (status === 'pending' && !['completed', 'failed', 'cancelled'].includes(run?.status))) return 2500
@@ -432,7 +432,7 @@ export function ChairWorkspace({ runId, run }) {
   const mutation = useMutation({
     mutationFn: () => api.runChair(runId),
     onSuccess: (value) => {
-      queryClient.setQueryData(['chair', runId], value)
+      queryClient.setQueryData(['chair', runId, 'presented'], value)
       queryClient.invalidateQueries({ queryKey: ['chair', runId] })
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
     },
@@ -466,6 +466,7 @@ export function ChairWorkspace({ runId, run }) {
         </Button>
       </div>
 
+      {value.presentation_status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="文字润色暂不可用" description="当前显示主持人原始判断；医学结论和证据记录未受影响。" />}
       <Alert className="section-gap" type="info" showIcon title="开发阶段单独运行入口" description="此按钮只运行 MDT 主持人，会直接使用现有四个专科结果，不会重新运行前序 Agent。" />
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="主持人尚不可运行" description={value.error} />}
       {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="现有主持人结果属于旧版结构" description="下方结果仍可查看，请点击重新运行以生成当前五板块完整结果。" />}

@@ -178,8 +178,8 @@ function isFormalOutput(output) {
 export function SpecialtyWorkspace({ runId, run }) {
   const [active, setActive] = useState('pulmonology')
   const query = useQuery({
-    queryKey: ['specialties', runId],
-    queryFn: () => api.specialties(runId),
+    queryKey: ['specialties', runId, 'presented'],
+    queryFn: () => api.specialties(runId, true),
     refetchInterval: (current) => {
       const results = current.state.data?.results
       if (results?.length && results.every((item) => item.status === 'completed')) return false
@@ -207,6 +207,8 @@ export function SpecialtyWorkspace({ runId, run }) {
           }))}
         />
       </div>
+
+      {query.data?.presentation_status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="文字润色暂不可用" description="当前显示专科原始判断；医学结论和证据记录未受影响。" />}
 
       {!selected || !output ? (
         <EmptyState description={`${selected?.label || '该专科'}尚无首轮正式输出，页面会自动刷新`} />

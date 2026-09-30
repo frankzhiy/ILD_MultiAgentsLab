@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from src.utils.config import load_yaml
 from src.workbench.catalog import RunCatalog
 from src.workbench.events import EventStore
+from src.workbench.presentation import present
 from src.workbench.runner import AGENTS, RunOrchestrator
 
 
@@ -209,6 +210,15 @@ def specialties(run_id: str) -> dict:
         raise not_found(FileNotFoundError(str(error))) from error
 
 
+@app.post("/api/runs/{run_id}/specialties/presented")
+def presented_specialties(run_id: str) -> dict:
+    try:
+        orchestrator.workflow._load_env()
+        return present(ROOT, catalog.run_dir(run_id), "specialties", catalog.specialties(run_id))
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
 @app.get("/api/runs/{run_id}/chair")
 def chair(run_id: str) -> dict:
     try:
@@ -216,6 +226,18 @@ def chair(run_id: str) -> dict:
         if orchestrator.chair_running(run_id):
             result["status"] = "running"
         return result
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.post("/api/runs/{run_id}/chair/presented")
+def presented_chair(run_id: str) -> dict:
+    try:
+        orchestrator.workflow._load_env()
+        result = catalog.chair(run_id)
+        if orchestrator.chair_running(run_id):
+            result["status"] = "running"
+        return present(ROOT, catalog.run_dir(run_id), "chair", result)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
 
@@ -237,6 +259,26 @@ async def run_chair(run_id: str) -> dict:
 def discussion(run_id: str) -> dict:
     try:
         return discussion_result(run_id)
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.post("/api/runs/{run_id}/discussion/presented")
+def presented_discussion(run_id: str) -> dict:
+    try:
+        orchestrator.workflow._load_env()
+        return present(ROOT, catalog.run_dir(run_id), "discussion", discussion_result(run_id))
+    except (FileNotFoundError, ValueError) as error:
+        raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.post("/api/runs/{run_id}/report/presented")
+def presented_report(run_id: str) -> dict:
+    try:
+        orchestrator.workflow._load_env()
+        discussion = discussion_result(run_id)
+        report = {key: discussion[key] for key in ("case_id", "status", "report_status", "final_report", "error")}
+        return present(ROOT, catalog.run_dir(run_id), "report", report)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
 

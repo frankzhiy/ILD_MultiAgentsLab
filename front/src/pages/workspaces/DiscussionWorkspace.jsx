@@ -11,7 +11,6 @@ import { Citation, CitationGroup } from '../../components/Citation'
 import { QueryError } from '../../components/QueryState'
 import { StatusTag } from '../../components/StatusTag'
 import { ChairResultTabs } from './ChairWorkspace'
-import { FinalReport } from './FinalReport'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -538,8 +537,8 @@ function DecisionStatePanel({ state }) {
 export function DiscussionWorkspace({ runId, run }) {
   const queryClient = useQueryClient()
   const query = useQuery({
-    queryKey: ['discussion', runId],
-    queryFn: () => api.discussion(runId),
+    queryKey: ['discussion', runId, 'presented'],
+    queryFn: () => api.discussion(runId, true),
     refetchInterval: (current) => current.state.data?.status === 'running' ? 2000 : false,
   })
   const refresh = useCallback(() => {
@@ -550,9 +549,9 @@ export function DiscussionWorkspace({ runId, run }) {
   const mutation = useMutation({
     mutationFn: () => api.runDiscussion(runId),
     onMutate: () => {
-      const previous = queryClient.getQueryData(['discussion', runId])
+      const previous = queryClient.getQueryData(['discussion', runId, 'presented'])
       queryClient.cancelQueries({ queryKey: ['discussion', runId] })
-      queryClient.setQueryData(['discussion', runId], (current = {}) => ({
+      queryClient.setQueryData(['discussion', runId, 'presented'], (current = {}) => ({
         ...current,
         status: 'running',
         error: null,
@@ -560,11 +559,11 @@ export function DiscussionWorkspace({ runId, run }) {
       return { previous }
     },
     onSuccess: (value) => {
-      queryClient.setQueryData(['discussion', runId], value)
+      queryClient.setQueryData(['discussion', runId, 'presented'], value)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
     },
     onError: (_error, _variables, context) => {
-      queryClient.setQueryData(['discussion', runId], context?.previous)
+      queryClient.setQueryData(['discussion', runId, 'presented'], context?.previous)
     },
   })
   const [selectedRound, setSelectedRound] = useState()
@@ -646,6 +645,7 @@ export function DiscussionWorkspace({ runId, run }) {
         </div>
       </div>
 
+      {value.presentation_status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="文字润色暂不可用" description="当前显示讨论原始记录；医学结论和证据记录未受影响。" />}
       {connection === 'disconnected' && <Alert className="section-gap" type="warning" showIcon title="实时事件流已断开" description="页面会自动重连，并每 2 秒从服务端恢复一次讨论进度。" />}
       {running && <Alert className="section-gap" type="info" showIcon title="新一轮团队讨论已启动" description={hasResult ? '正在初始化任务；下方暂时保留上一次运行结果，新进度写入后会自动替换。' : '正在初始化任务与运行资源，新进度写入后会自动显示。'} />}
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="团队讨论尚不可运行" description={value.error} />}
@@ -691,7 +691,6 @@ export function DiscussionWorkspace({ runId, run }) {
       ) : (
         <Card className="section-card discussion-empty-card"><Empty image={<FileSearchOutlined />} description="尚未产生团队讨论轮次；点击“运行团队讨论”后，这里会实时出现任务与处理进度。" /></Card>
       )}
-      <FinalReport report={value.final_report} />
       {value.stop_reason && <Alert className="section-gap" type="success" showIcon title="讨论停止原因" description={value.stop_reason} />}
     </div>
   )

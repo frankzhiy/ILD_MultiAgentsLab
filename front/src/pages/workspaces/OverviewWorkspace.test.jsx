@@ -33,7 +33,7 @@ it('restores the chair, discussion, and final report stages after refresh', asyn
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<MemoryRouter><QueryClientProvider client={client}><OverviewWorkspace runId="run-1" run={{ status: 'completed', semantic_complete: true, completed_specialties: ['pulmonology', 'thoracic_radiology', 'rheumatology', 'pathology'], chair_complete: true, discussion_complete: true }} /></QueryClientProvider></MemoryRouter>)
 
-  await waitFor(() => expect(screen.getByRole('link', { name: '查看最终报告' })).toHaveAttribute('href', '/runs/run-1/discussion'))
+  await waitFor(() => expect(screen.getByRole('link', { name: '查看最终报告' })).toHaveAttribute('href', '/runs/run-1/report'))
   const nodes = JSON.parse(screen.getByTestId('flow').dataset.nodes)
   expect(nodes.filter((node) => ['chair', 'discussion', 'report'].includes(node.id)).map((node) => node.className)).toEqual(['flow-success', 'flow-success', 'flow-success'])
 })
