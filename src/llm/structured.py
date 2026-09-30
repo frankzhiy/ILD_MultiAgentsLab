@@ -326,7 +326,9 @@ class StructuredLLMGenerator:
                                 'remove_indices 可从数组删除指定位置，格式为 '
                                 '{"op":"remove_indices","path":"/items","value":[2,3]}。'
                                 "如一个字段的修正影响其他字段，也要一并修正相关标量字段；"
-                                "若错误包含 duplicates，必须减少重复的 source_ref 出现次数；"
+                                "若错误包含 Duplicate 或 duplicates，必须减少重复的 ID 出现次数；"
+                                "合并信息后用 remove_indices 删除冗余项，不能把重复 ID 改成其他 ID，"
+                                "也不能因数组位置变动而重编号。"
                                 "只修改 route 等分类字段不能消除重复。删除冗余项前，"
                                 "先确认需保留的信息已存在于其他项目。"
                                 "若同一原子判断的 evidence_links 对同一 evidence_ref "
@@ -337,6 +339,9 @@ class StructuredLLMGenerator:
                                 "仅收紧确定度或适用范围用 qualify，实质修正判断用 revise；"
                                 "若只是补充依据，则恢复原核心字段。不要为通过校验丢弃新信息。"
                                 "不要返回完整台账，不要替换数组或对象，不要解释。\n"
+                                "以下为原始生成时各模型字段允许的来源编号，局部修复仍必须遵守；"
+                                "不在 JudgmentReview.source_ref 中的编号不能作为正式判断审阅：\n"
+                                f"{json.dumps(string_field_constraints or {}, default=sorted, ensure_ascii=False)}\n"
                                 f"{repair_feedback}"
                                 f"校验错误：{exc}"
                             ),
