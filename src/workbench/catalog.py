@@ -98,7 +98,7 @@ class RunCatalog:
         has_error = any(name.endswith("_error.json") or "failure_trace" in name for name in names)
         candidates = []
         manifest_status = manifest.get("status")
-        if manifest_status in {"queued", "running", "stopping", "completed", "cancelled", "failed", "stopped"}:
+        if manifest_status in {"queued", "running", "stopping", "completed", "cancelled", "failed", "stopped", "interrupted"}:
             timestamp = 0.0
             for field in ("status_updated_at", "finished_at", "started_at", "created_at"):
                 if manifest.get(field):

@@ -11,6 +11,7 @@ export function App() {
       <Route path="/" element={<Navigate to="/runs" replace />} />
       <Route path="/runs" element={<RunListPage />} />
       <Route path="/runs/new" element={<NewRunPage />} />
+      <Route path="/batches/new" element={<NewRunPage initialMode="batch" />} />
       <Route path="/batches/:batchId" element={<BatchPage />} />
       <Route path="/runs/:runId/:view?" element={<><RunWorkspace /><EvidenceDrawer /></>} />
     </Routes>

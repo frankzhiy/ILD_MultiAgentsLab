@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import csv
+import io
+import json
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.utils.config import load_yaml
 from src.workbench.catalog import RunCatalog
@@ -24,6 +28,13 @@ orchestrator = RunOrchestrator(ROOT, catalog, events)
 class AgentOverride(BaseModel):
     model: str | None = None
     reasoning_effort: str | None = None
+
+    @field_validator("model")
+    @classmethod
+    def nonempty_model(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("模型名称不能为空。")
+        return value.strip() if value is not None else None
 
 
 class CreateRunRequest(BaseModel):
@@ -178,6 +189,27 @@ async def retry_batch(batch_id: str) -> dict:
         raise not_found(error) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/batches/{batch_id}/export")
+def export_batch(batch_id: str) -> Response:
+    batch = get_batch(batch_id)
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream)
+    writer.writerow(["batch_id", "case_id", "run_id", "status", "stage", "round_number",
+                     "elapsed_seconds", "error", "case_version_id", "agents", "final_report"])
+    for item in batch["items"]:
+        progress = item["progress"]
+        row = [batch_id, item["case_id"], item["run_id"], item["status"], progress["stage"],
+               progress["round_number"], item["elapsed_seconds"], item.get("error"),
+               item.get("case_version_id"), json.dumps(batch.get("agents", {}), ensure_ascii=False),
+               f"/api/runs/{quote(item['run_id'], safe='')}/artifacts/{quote(item['case_id'], safe='')}_mdt_final_report.json"
+               if item["status"] == "completed" else ""]
+        # Spreadsheet exports must keep model/error text from becoming formulas.
+        writer.writerow(["'" + cell if isinstance(cell, str) and cell.lstrip().startswith(("=", "+", "-", "@"))
+                         else cell for cell in row])
+    return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{batch_id}.csv"'})
 
 
 @app.get("/api/runs/{run_id}")

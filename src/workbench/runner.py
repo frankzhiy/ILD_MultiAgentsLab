@@ -45,12 +45,16 @@ class RunOrchestrator:
         self.active_discussions: set[str] = set()
         self._recover_batches()
 
-    def prepare(self, request: dict[str, Any]) -> tuple[str, Path]:
+    def prepare(self, request: dict[str, Any], *, retry_run_id: str | None = None) -> tuple[str, Path]:
         case_id = str(request.get("case_id") or "").strip()
         if not SAFE_CASE_ID.fullmatch(case_id):
             raise ValueError(
                 "case_id 只能包含字母、数字、空格、点、下划线和连字符，且长度不超过 80。"
             )
+        retry_dir = self.catalog.run_dir(retry_run_id) if retry_run_id else None
+        retry_manifest = self._read_json(retry_dir / ".workbench_run.json") if retry_dir else {}
+        if retry_dir and retry_manifest["case_id"] != case_id:
+            raise ValueError("重跑必须使用同一病例的快照。")
         parent_run_id = request.get("parent_run_id")
         parent_version = None
         if parent_run_id:
@@ -64,7 +68,7 @@ class RunOrchestrator:
                 raise ValueError("前序病例快照已改变，不能建立版本关联。")
         source = request.get("source", "library")
         if source == "library":
-            input_path = self.catalog.cases_dir / f"{case_id}.txt"
+            input_path = (retry_dir or self.catalog.cases_dir) / f"{case_id}{'_input' if retry_dir else ''}.txt"
             if not input_path.is_file():
                 raise FileNotFoundError(f"病例不存在：{case_id}")
         elif source == "paste":
@@ -95,8 +99,10 @@ class RunOrchestrator:
         config_dir.mkdir()
         overrides = request.get("agents") or {}
         config_paths: dict[str, str] = {}
+        agent_settings = {}
         for agent_id in AGENTS:
-            source_path = self.root / "configs/agents" / agent_id / "agent.yaml"
+            source_path = (Path(retry_manifest["configs"][agent_id]) if retry_dir
+                           else self.root / "configs/agents" / agent_id / "agent.yaml")
             config = load_yaml(source_path)
             for key, value in list(config.items()):
                 if (key == "prompt" or key.endswith("_prompt")) and isinstance(value, str):
@@ -118,6 +124,10 @@ class RunOrchestrator:
                 yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
             )
             config_paths[agent_id] = str(target)
+            agent_settings[agent_id] = {
+                "model": config.get("model"),
+                "reasoning_effort": config.get("request_options", {}).get("reasoning_effort", "none"),
+            }
 
         semantic_config = load_yaml(Path(config_paths["semantic_graphing"]))
         signature = build_run_signature(semantic_config)
@@ -145,6 +155,7 @@ class RunOrchestrator:
             "max_concurrency": int(request.get("max_concurrency") or 6),
             "configs": config_paths,
             "agent_overrides": overrides,
+            "agent_settings": agent_settings,
         }
         self._write_json(run_dir / ".workbench_run.json", manifest)
         return run_id, input_path
@@ -221,28 +232,33 @@ class RunOrchestrator:
         self._refresh_configs(run_dir, ("mdt_chair",))
         return self._launch(run_id, start_stage="mdt_report")
 
-    def create_batch(self, request: dict[str, Any]) -> dict[str, Any]:
+    def create_batch(self, request: dict[str, Any], *, retry_of: str | None = None) -> dict[str, Any]:
         kind = str(request.get("kind") or "")
         if kind not in {"run", "discussion"}:
             raise ValueError("批次类型必须是 run 或 discussion。")
         if kind == "run":
             item_ids = self._unique_ids(request.get("case_ids"), "病例")
+            previous_items = {item["case_id"]: item for item in self._read_batch(retry_of)["items"]} if retry_of else {}
             for case_id in item_ids:
                 if not SAFE_CASE_ID.fullmatch(case_id):
                     raise ValueError(f"病例 ID 不合法：{case_id}")
-                if not (self.catalog.cases_dir / f"{case_id}.txt").is_file():
+                input_path = (Path(previous_items[case_id]["input_path"]) if retry_of
+                              else self.catalog.cases_dir / f"{case_id}.txt")
+                if not input_path.is_file():
                     raise FileNotFoundError(f"病例不存在：{case_id}")
             items = []
             for case_id in item_ids:
-                run_id, input_path = self.prepare(
-                    {**request, "source": "library", "case_id": case_id}
-                )
+                run_request = {**request, "source": "library", "case_id": case_id}
+                run_id, input_path = (self.prepare(run_request, retry_run_id=previous_items[case_id]["run_id"])
+                                      if retry_of else self.prepare(run_request))
+                manifest = self.catalog._json(self.catalog.runs_dir / run_id / ".workbench_run.json", {})
                 items.append(
                     {
                         "case_id": case_id,
                         "run_id": run_id,
                         "input_path": str(input_path),
                         "status": "queued",
+                        "case_version_id": manifest.get("case_version_id"),
                     }
                 )
         else:
@@ -269,6 +285,8 @@ class RunOrchestrator:
             "status": "queued",
             "created_at": self._now(),
             "updated_at": self._now(),
+            "retry_of": retry_of,
+            "agents": (manifest.get("agent_settings", request.get("agents", {})) if kind == "run" else {}),
             "request": {**request, "case_ids": item_ids if kind == "run" else [], "run_ids": item_ids if kind == "discussion" else []},
             "items": items,
         }
@@ -280,20 +298,29 @@ class RunOrchestrator:
 
     def list_batches(self) -> list[dict[str, Any]]:
         return sorted(
-            (self.batch(path.stem) for path in self.batches_dir.glob("*.json")),
+            (self.batch(path.stem, include_progress=False) for path in self.batches_dir.glob("*.json")),
             key=lambda item: item["updated_at"],
             reverse=True,
         )
 
-    def batch(self, batch_id: str) -> dict[str, Any]:
+    def batch(self, batch_id: str, *, include_progress: bool = True) -> dict[str, Any]:
         value = self._read_batch(batch_id)
         counts = {status: 0 for status in ("queued", "running", "completed", "failed", "skipped", "interrupted", "stopped")}
         for item in value["items"]:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
+            if include_progress:
+                item["progress"] = item.get("progress") or self.events.progress(item["run_id"], before=item.get("finished_at"))
+                started = item.get("started_at")
+                item["elapsed_seconds"] = (max(0, round((
+                    datetime.fromisoformat(item.get("finished_at") or self._now())
+                    - datetime.fromisoformat(started)
+                ).total_seconds())) if started else None)
         return {**value, "summary": {"total": len(value["items"]), **counts}}
 
     def retry_batch(self, batch_id: str) -> dict[str, Any]:
         batch = self._read_batch(batch_id)
+        if batch["status"] in {"queued", "running"}:
+            raise ValueError("请等待本批次结束后重跑未完成病例。")
         retry_items = [item for item in batch["items"] if item["status"] in {"failed", "interrupted", "stopped"}]
         if not retry_items:
             raise ValueError("该批次没有可重跑的失败或中断病例。")
@@ -302,7 +329,7 @@ class RunOrchestrator:
             request["case_ids"] = [item["case_id"] for item in retry_items]
         else:
             request["run_ids"] = [item["run_id"] for item in retry_items]
-        return self.create_batch(request)
+        return self.create_batch(request, retry_of=batch_id)
 
     def discussion_running(self, run_id: str) -> bool:
         return run_id in self.active_discussions
@@ -524,7 +551,9 @@ class RunOrchestrator:
             await asyncio.gather(*(run_item(item) for item in batch["items"]))
         finally:
             request_throttle.unregister(batch_id)
-        self._update_batch(batch_id, status="completed")
+        finished = self._read_batch(batch_id)
+        status = "completed" if all(item["status"] == "completed" for item in finished["items"]) else "completed_with_errors"
+        self._update_batch(batch_id, status=status, finished_at=self._now())
 
     def _recover_batches(self) -> None:
         for path in self.batches_dir.glob("*.json"):
@@ -536,6 +565,12 @@ class RunOrchestrator:
                     item["status"] = "interrupted"
                     item["finished_at"] = self._now()
                     item["error"] = "服务重启，未完成的批次任务已安全中断。"
+                    item["progress"] = self.events.progress(item["run_id"])
+                    manifest_path = self.catalog.runs_dir / item["run_id"] / ".workbench_run.json"
+                    if manifest_path.exists():
+                        self._update_manifest(manifest_path, status="interrupted", status_source="run",
+                                              finished_at=item["finished_at"], status_updated_at=item["finished_at"],
+                                              error=item["error"])
             batch["status"] = "interrupted"
             batch["updated_at"] = self._now()
             self._write_json(path, batch)
@@ -589,6 +624,8 @@ class RunOrchestrator:
         batch = self._read_batch(batch_id)
         for item in batch["items"]:
             if item["run_id"] == run_id:
+                if changes.get("status") not in {None, "queued", "running"}:
+                    changes["progress"] = self.events.progress(run_id)
                 item.update(changes)
                 batch["updated_at"] = self._now()
                 self._write_batch(batch)

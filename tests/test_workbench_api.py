@@ -143,6 +143,33 @@ def test_create_run_rejects_unsafe_case_id_before_starting_agent():
     assert response.status_code == 422
 
 
+def test_batch_export_keeps_case_status_configuration_and_safe_error_text():
+    import csv
+    import io
+
+    orchestrator._write_batch({
+        "id": "export-batch", "kind": "run", "status": "completed_with_errors",
+        "agents": {"pulmonology": {"model": "specialty-model"}},
+        "items": [
+            {"case_id": "81- IPF", "run_id": "run-a", "status": "completed"},
+            {"case_id": "case-b", "run_id": "run-b", "status": "failed", "error": "=unsafe formula"},
+        ],
+    })
+    client = TestClient(app)
+    response = client.get("/api/batches/export-batch/export")
+    assert response.status_code == 200
+    assert "export-batch.csv" in response.headers["content-disposition"]
+    rows = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+    assert [row["status"] for row in rows] == ["completed", "failed"]
+    assert rows[0]["case_id"] == "81- IPF"
+    assert rows[0]["final_report"].endswith("81-%20IPF_mdt_final_report.json")
+    assert "specialty-model" in rows[0]["agents"]
+    assert rows[1]["error"] == "'=unsafe formula"
+    assert client.get("/api/batches/missing/export").status_code == 404
+    assert client.post("/api/batches", json={"kind": "run", "case_ids": ["case-b"],
+        "agents": {"pulmonology": {"model": " "}}}).status_code == 422
+
+
 import pytest
 
 @pytest.fixture(autouse=True)

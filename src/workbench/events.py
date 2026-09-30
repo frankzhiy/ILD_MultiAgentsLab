@@ -111,6 +111,34 @@ class EventStore:
             except TimeoutError:
                 yield ": heartbeat\n\n"
 
+    def progress(self, run_id: str, *, before: str | None = None) -> dict[str, Any]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_type, agent_id, stage,
+                       json_extract(payload_json, '$.round_number')
+                FROM events WHERE run_id = ? AND (? IS NULL OR created_at <= ?) AND event_type IN
+                    ('run_started', 'stage_started', 'stage_completed', 'agent_error',
+                     'discussion_round_started', 'synthesis_acceptance_started')
+                ORDER BY sequence
+                """,
+                (run_id, before, before),
+            ).fetchall()
+        progress = {"stage": None, "completed_specialties": [], "round_number": None}
+        for event, agent, stage, round_number in rows:
+            if event == "run_started":
+                progress = {"stage": None, "completed_specialties": [], "round_number": None}
+            elif event in {"stage_started", "agent_error"}:
+                progress["stage"] = stage
+            elif event == "stage_completed" and stage == "initial_consult":
+                if agent not in progress["completed_specialties"]:
+                    progress["completed_specialties"].append(agent)
+            elif event == "discussion_round_started":
+                progress["round_number"] = round_number
+            elif event == "synthesis_acceptance_started":
+                progress["stage"] = "synthesis_acceptance"
+        return progress
+
     async def _notify(self) -> None:
         async with self._condition:
             self._condition.notify_all()
