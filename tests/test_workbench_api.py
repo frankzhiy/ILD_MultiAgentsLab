@@ -5,24 +5,24 @@ from fastapi.testclient import TestClient
 from src.workbench.app import app, orchestrator
 
 
-RUN_ID = "20260716_163006_86-IPF_step2_step3"
-DISCUSSION_RUN_ID = "20260722_210144_78-IPF_step2_step3"
+RUN_ID = "synthetic-initial"
+DISCUSSION_RUN_ID = "synthetic-discussion"
 
 
-def test_workbench_exposes_real_run_and_semantic_projection():
+def test_workbench_exposes_synthetic_run_and_semantic_projection():
     client = TestClient(app)
     runs = client.get("/api/runs").json()
     assert any(item["id"] == RUN_ID for item in runs)
 
     semantic = client.get(f"/api/runs/{RUN_ID}/semantic").json()
-    assert semantic["case_id"] == "86-IPF"
+    assert semantic["case_id"] == "synthetic-case"
     assert semantic["summary"]["segment_count"] > 0
     first = semantic["segments"][0]["units"][0]
     assert first["graph_unit_id"]
     assert first["local_graph"]["nodes"]
 
 
-def test_workbench_exposes_unique_unit_routing_and_marks_legacy_specialty_outputs():
+def test_workbench_exposes_unique_unit_routing_and_current_specialty_outputs():
     client = TestClient(app)
     routing = client.get(f"/api/runs/{RUN_ID}/routing").json()
     assert len(routing["specialties"]) == 4
@@ -31,7 +31,7 @@ def test_workbench_exposes_unique_unit_routing_and_marks_legacy_specialty_output
 
     specialties = client.get(f"/api/runs/{RUN_ID}/specialties").json()["results"]
     assert len(specialties) == 4
-    assert all(item["legacy"] for item in specialties)
+    assert all(not item["legacy"] for item in specialties)
     assert all("trace" not in item and "internal_state" not in item for item in specialties)
 
 
@@ -40,13 +40,13 @@ def test_workbench_exposes_chair_endpoint_and_model():
 
     response = client.get(f"/api/runs/{RUN_ID}/chair")
     assert response.status_code == 200
-    assert response.json()["status"] == "unavailable"
+    assert response.json()["status"] == "pending"
     assert "mdt_chair" in {
         item["agent_id"] for item in client.get("/api/models").json()["agents"]
     }
 
 
-def test_chair_endpoint_starts_only_the_chair_stage(monkeypatch):
+def test_chair_endpoint_starts_from_chair(monkeypatch):
     started = []
     monkeypatch.setattr(orchestrator, "start_chair", started.append)
 
@@ -102,7 +102,7 @@ def test_discussion_endpoint_keeps_current_failure_while_worker_cleans_up(monkey
     assert response.json()["status"] == "failed"
 
 
-def test_discussion_endpoint_starts_only_the_discussion_stage(monkeypatch):
+def test_discussion_endpoint_starts_from_discussion(monkeypatch):
     started = []
     monkeypatch.setattr(orchestrator, "start_discussion", started.append)
     monkeypatch.setattr(
@@ -124,11 +124,11 @@ def test_workbench_rejects_path_traversal():
     assert response.status_code == 404
 
 
-def test_workbench_exposes_failure_artifacts_without_hiding_completed_run():
+def test_workbench_exposes_history_without_marking_partial_run_complete():
     client = TestClient(app)
     run = client.get(f"/api/runs/{RUN_ID}").json()
     errors = client.get(f"/api/runs/{RUN_ID}/errors").json()
-    assert run["status"] == "completed"
+    assert run["status"] == "incomplete"
     assert run["has_error_artifact"] is True
     assert errors
     assert all(item["artifact"].endswith(".json") for item in errors)
@@ -141,3 +141,36 @@ def test_create_run_rejects_unsafe_case_id_before_starting_agent():
         json={"source": "paste", "case_id": "../escape", "raw_text": "case"},
     )
     assert response.status_code == 422
+
+
+import pytest
+
+@pytest.fixture(autouse=True)
+def isolated_api_runs(tmp_path, monkeypatch):
+    import importlib
+    import sys
+    from synthetic_case import write_run
+    from test_expert_protocol import setup_case, run_expert
+    from src.agents.common.decision_state import project_active_specialty_outputs
+    from src.agents.common.specialty_input import build_specialty_case_input
+    from src.utils.persistence import write_json
+    from src.workbench.catalog import RunCatalog
+    from src.workbench.events import EventStore
+    from src.workbench.runner import RunOrchestrator
+    api_module = importlib.import_module('src.workbench.app')
+    catalog = RunCatalog(tmp_path)
+    runner = RunOrchestrator(tmp_path, catalog, EventStore(tmp_path/'events.sqlite3'))
+    for run_id in (RUN_ID, DISCUSSION_RUN_ID):
+        directory = write_run(tmp_path/'outputs/runs'/run_id)
+        state, bundle, payload = setup_case()
+        for specialty, output in project_active_specialty_outputs(state).items():
+            write_json(directory/f'synthetic-case_{specialty}_initial.json', output)
+            write_json(directory/f'synthetic-case_{specialty}_input.json', build_specialty_case_input(directory, specialty))
+        write_json(directory/'synthetic-case_old_failure_trace.json', {'error':'旧失败记录'})
+        write_json(directory/'.workbench_run.json', {'case_id':'synthetic-case','run_id':run_id,'status':'completed'})
+        if run_id == DISCUSSION_RUN_ID:
+            bundle.case_id = 'synthetic-case'
+            write_json(directory/'synthetic-case_mdt_chair_integration.json',run_expert(bundle,[payload]))
+    monkeypatch.setattr(api_module,'catalog',catalog)
+    monkeypatch.setattr(api_module,'orchestrator',runner)
+    monkeypatch.setattr(sys.modules[__name__],'orchestrator',runner)

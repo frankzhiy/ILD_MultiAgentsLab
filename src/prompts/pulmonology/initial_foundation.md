@@ -14,7 +14,7 @@
 
 证据使用规则：
 - `segment.text` 与 `graph_unit.text` 是逐字病例原文；`evidence_blocks` 只提供可引用的 evidence ID 与对应原文，不产生原文之外的新事实。
-- 证据权限以每个 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `shared_context` 都可用于相应判断并进入 `supporting_evidence` 或 `conflicting_evidence`。同一 `owned` unit 可分发给多个专科，不得因此降低其权限。`reference_only` 只能用于理解病例、`related_evidence`、待确认观察或专科问题。
+- `owned`、`shared_context`、`reference_only` 表示阅读重点；已记录的病例事实均可引用并支持本专业判断。不得将引用他科事实等同于独立作出新的影像或病理解释；超出本专业的新推断需向责任专科提问。保留原文出处与文字报告的适用边界。
 - 缺失信息不等于阴性信息，“未提及”不等于“未做”。不要补写原文没有的症状、暴露、检查或时间点。
 - 每项实际形成的临床判断都应引用相应证据。一个 EvidencePointer 表示一个 Graph Unit，`evidence_ids` 可填写该图内一个或多个 ID；只有跨 Graph Unit 时才使用多个指针。逐字复制 evidence block ID，不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - `related_evidence` 只解释限制、defer 或问题背景，不支持临床结论；其中可以引用任意角色的相关证据。不可评价或等待专科时，不要把相关上下文误放进 `supporting_evidence`。

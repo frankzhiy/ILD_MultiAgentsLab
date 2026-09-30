@@ -1,6 +1,8 @@
 import json
 import os
 import socket
+import ssl
+import http.client
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -83,6 +85,8 @@ class APIYIClient(LLMClient):
             raise RuntimeError(f"APIYI request timed out after {self.timeout_seconds}s") from exc
         except socket.timeout as exc:
             raise RuntimeError(f"APIYI request timed out after {self.timeout_seconds}s") from exc
+        except (http.client.RemoteDisconnected, http.client.IncompleteRead, ConnectionError, ssl.SSLEOFError) as exc:
+            raise RuntimeError(f"APIYI connection interrupted: {exc}") from exc
 
         try:
             raw = json.loads(response_text)

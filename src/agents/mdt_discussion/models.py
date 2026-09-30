@@ -6,19 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.agents.common.initial_output import EvidenceGap, InterspecialtyQuestion
+from src.agents.common.team_synthesis import MDTTeamReport
 from src.agents.common.decision_state import (
-    JudgmentChangeEvent,
     MultiSpecialtyDecisionState,
     SpecialtyJudgmentUpdate,
 )
-from src.agents.mdt_chair.models import (
-    AssessmentBoundary,
-    ChairEvidenceBundle,
-    CrossSpecialtyConflict,
-    EvidenceNeed,
-    LedgerEvidenceNeedGroup,
-    SpecialtySourceCitation,
-)
+
 from src.guidelines.models import GuidelineEvidencePointer
 
 
@@ -72,7 +65,10 @@ class DiscussionEvidenceCandidate(BaseModel):
 
 class DiscussionTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    affected_specialties: list[Specialty] = Field(default_factory=list)
 
+    origin: Literal["chair", "specialty"] = "chair"
+    raised_by: list[Specialty] = Field(default_factory=list)
     task_id: str
     round_number: int = Field(ge=1, le=3)
     issue_type: IssueType
@@ -210,324 +206,21 @@ class DiscussionRound(BaseModel):
     round_decision: dict[str, Any] = Field(default_factory=dict)
 
 
-DiagnosticDimension = Literal[
-    "ild_presence",
-    "radiologic_pattern",
-    "histopathologic_pattern",
-    "mdt_diagnosis",
-    "etiologic_attribution",
-    "disease_behavior",
-    "acute_or_comorbid_factors",
-]
-DiagnosticStatus = Literal[
-    "supported",
-    "favored",
-    "possible",
-    "indeterminate",
-    "unclassifiable",
-    "not_assessable",
-    "not_applicable",
-]
-DiagnosticConfidence = Literal["high", "moderate", "low", "unknown", "not_applicable"]
-DiseaseCategory = Literal[
-    "known_cause",
-    "idiopathic_interstitial_pneumonia",
-    "granulomatous_ild",
-    "other_ild",
-    "unclassifiable",
-]
-DiagnosticRole = Literal[
-    "primary",
-    "important_alternative",
-    "cannot_safely_ignore",
-    "boundary",
-]
-
-
-class ReportDiagnosticItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    dimension: DiagnosticDimension
-    statement: str = Field(min_length=1)
-    status: DiagnosticStatus
-    confidence: DiagnosticConfidence
-    role: DiagnosticRole
-    medical_basis: str = Field(min_length=1)
-    chair_item_ids: list[str] = Field(min_length=1)
-    limitations: list[str] = Field(default_factory=list)
-    disease_category: DiseaseCategory | None = None
-    specific_disease: str | None = None
-
-    @model_validator(mode="after")
-    def keep_uncertainty_semantics_distinct(self):
-        if self.status == "not_assessable" and self.confidence != "unknown":
-            raise ValueError("not_assessable requires unknown confidence")
-        if self.status == "not_applicable" and self.confidence != "not_applicable":
-            raise ValueError("not_applicable requires not_applicable confidence")
-        if self.status in {"not_assessable", "not_applicable"} and self.role != "boundary":
-            raise ValueError("non-assessable diagnostic items must use the boundary role")
-        if self.dimension != "mdt_diagnosis" and (self.disease_category or self.specific_disease):
-            raise ValueError("disease classification belongs only to mdt_diagnosis")
-        return self
-
-
-class ReportDifferentialDiagnosis(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    rank: int = Field(ge=1)
-    diagnosis: str = Field(min_length=1)
-    confidence: Literal["high", "moderate", "low", "unknown"]
-    rationale: str = Field(min_length=1)
-    chair_item_ids: list[str] = Field(min_length=1)
-
-
-class ReportSecondaryJudgment(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    statement: str = Field(min_length=1)
-    medical_basis: str = Field(min_length=1)
-    chair_item_ids: list[str] = Field(min_length=1)
-
-
-class ClinicalMDTReport(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    # Legacy fields remain readable; new reports derive the opening from the matrix.
-    overall_conclusion: SkipJsonSchema[str] = ""
-    overall_confidence: SkipJsonSchema[DiagnosticConfidence] = "unknown"
-    pulmonary_description: SkipJsonSchema[str] = ""
-    key_boundary: SkipJsonSchema[str] = ""
-    secondary_judgments: list[ReportSecondaryJudgment]
-    integrated_summary: SkipJsonSchema[str] = ""
-    diagnostic_matrix: list[ReportDiagnosticItem] = Field(min_length=7, max_length=7)
-    differential_diagnoses: list[ReportDifferentialDiagnosis] = Field(default_factory=list)
-    clinical_narrative: SkipJsonSchema[str] = ""
-
-    @model_validator(mode="after")
-    def require_each_diagnostic_dimension(self):
-        dimensions = [item.dimension for item in self.diagnostic_matrix]
-        expected = set(DiagnosticDimension.__args__)
-        if len(set(dimensions)) != len(dimensions) or set(dimensions) != expected:
-            raise ValueError("diagnostic_matrix must contain each diagnostic dimension exactly once")
-        ranks = [item.rank for item in self.differential_diagnoses]
-        if ranks != list(range(1, len(ranks) + 1)):
-            raise ValueError("differential diagnosis ranks must be consecutive from 1")
-        matrix = {item.dimension: item for item in self.diagnostic_matrix}
-        diagnosis = matrix["mdt_diagnosis"]
-        context = []
-        for dimension in ("radiologic_pattern", "histopathologic_pattern", "disease_behavior"):
-            item = matrix[dimension]
-            if item.status != "not_applicable" and not (
-                dimension == "histopathologic_pattern" and item.status == "not_assessable"
-            ):
-                context.append(item.statement)
-        paragraphs = [[diagnosis.statement, diagnosis.medical_basis], context]
-        for item in self.secondary_judgments:
-            paragraphs.append([item.statement, item.medical_basis])
-        self.clinical_narrative = "\n\n".join(
-            "".join(
-                sentence.strip() if sentence.strip().endswith(("。", "！", "？"))
-                else sentence.strip() + "。"
-                for sentence in paragraph if sentence.strip()
-            )
-            for paragraph in paragraphs if paragraph
-        )
-        return self
-
-
-class ReportReasoningTrace(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    claim_id: str
-    claim_statement: str
-    chair_item_ids: list[str] = Field(default_factory=list)
-    medical_basis: str
-    source_citations: list[SpecialtySourceCitation] = Field(default_factory=list)
-    evidence: ChairEvidenceBundle = Field(default_factory=ChairEvidenceBundle)
-    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
-
-
-class DiscussionAuditRound(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    round_number: int = Field(ge=1, le=3)
-    task_id: str
-    specialty: Specialty
-    prompt: str
-    current_result: str = ""
-    answer: str = ""
-    answerability: str = ""
-    confidence: str = ""
-    changed_from_previous: bool = False
-    reviews: list[dict[str, str]] = Field(default_factory=list)
-    chair_result_after_round: str = ""
-    closure: str = ""
-
-
-class DiscussionDecisionAudit(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    issue_id: str
-    issue_type: IssueType
-    question: str
-    why_it_matters: str = ""
-    baseline_result: str = ""
-    rounds: list[DiscussionAuditRound] = Field(default_factory=list)
-    final_status: str
-    final_result: str = ""
-    decision_impact: str = ""
-
-
-class ConflictAuditItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    issue_id: str
-    topic: str
-    kind: Literal["formal_conflict", "flagged_incompatibility"]
-    outcome: Literal["resolved", "unresolved", "not_confirmed_as_formal_conflict"]
-    first_round: int = Field(ge=0, le=3)
-    last_round: int = Field(ge=0, le=3)
-    summary: str
-
-
-class DiscussionAudit(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    decisions: list[DiscussionDecisionAudit] = Field(default_factory=list)
-    conflicts: list[ConflictAuditItem] = Field(default_factory=list)
-    stop_reason: str = ""
-
-
-class ResearchAuditMetrics(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    diagnostic_claims: int = Field(default=0, ge=0)
-    claims_with_specialty_citations: int = Field(default=0, ge=0)
-    claims_with_patient_evidence: int = Field(default=0, ge=0)
-    claims_with_guideline_citations: int = Field(default=0, ge=0)
-    discussion_issues: int = Field(default=0, ge=0)
-    closed_issues: int = Field(default=0, ge=0)
-    formal_conflicts: int = Field(default=0, ge=0)
-    resolved_formal_conflicts: int = Field(default=0, ge=0)
-    unresolved_formal_conflicts: int = Field(default=0, ge=0)
-    assessment_boundaries: int = Field(default=0, ge=0)
-
-
-class MDTFinalReport(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: SkipJsonSchema[
-        Literal["mdt_final_report.v2", "mdt_final_report.v3", "mdt_final_report.v4", "mdt_final_report.v5", "mdt_final_report.v6"]
-    ] = "mdt_final_report.v6"
-    case_id: SkipJsonSchema[str] = ""
-    consensus_status: SkipJsonSchema[Literal[
-        "consensus_reached",
-        "consensus_with_boundaries",
-        "unresolved_after_max_rounds",
-        "unresolved_without_further_progress",
-    ]] = "consensus_reached"
-    report_scope: SkipJsonSchema[Literal["diagnostic_only"]] = "diagnostic_only"
-    discussion_rounds: SkipJsonSchema[int] = 0
-    clinical_report: ClinicalMDTReport
-    reasoning_trace: SkipJsonSchema[list[ReportReasoningTrace]] = Field(default_factory=list)
-    discussion_audit: SkipJsonSchema[DiscussionAudit] = Field(default_factory=DiscussionAudit)
-    research_metrics: SkipJsonSchema[ResearchAuditMetrics] = Field(
-        default_factory=ResearchAuditMetrics
-    )
-    assessment_boundaries: SkipJsonSchema[list[AssessmentBoundary]] = Field(default_factory=list)
-    unresolved_conflicts: SkipJsonSchema[list[CrossSpecialtyConflict]] = Field(default_factory=list)
-    evidence_needs: SkipJsonSchema[list[EvidenceNeed]] = Field(default_factory=list)
-    evidence_need_groups: SkipJsonSchema[list[LedgerEvidenceNeedGroup]] = Field(default_factory=list)
-    judgment_changes: SkipJsonSchema[list[JudgmentChangeEvent]] = Field(default_factory=list)
-    legacy_source: SkipJsonSchema[bool] = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_report(cls, value):
-        if not isinstance(value, dict):
-            return value
-        if "clinical_report" in value:
-            if value.get("schema_version") not in {"mdt_final_report.v2", "mdt_final_report.v3"}:
-                return value
-            migrated = dict(value)
-            clinical = dict(migrated["clinical_report"])
-            clinical.setdefault("pulmonary_description", "")
-            clinical.setdefault("key_boundary", "")
-            clinical.setdefault("secondary_judgments", [])
-            migrated["clinical_report"] = clinical
-            return migrated
-        if "primary_conclusion" not in value:
-            return value
-        migrated = dict(value)
-        primary = migrated.pop("primary_conclusion")
-        confidence_text = migrated.pop("diagnostic_confidence", "未知")
-        integrated_summary = migrated.pop("integrated_summary", primary)
-        discussion_summary = migrated.pop("discussion_summary", "")
-        migrated.pop("evidence_basis", None)
-        legacy_boundaries = migrated.pop("assessment_boundaries", [])
-        migrated.pop("unresolved_conflicts", None)
-        migrated.pop("evidence_needs", None)
-        dimensions = list(DiagnosticDimension.__args__)
-        migrated["clinical_report"] = {
-            "overall_conclusion": primary,
-            "overall_confidence": "unknown",
-            "pulmonary_description": "",
-            "key_boundary": "",
-            "secondary_judgments": [],
-            "integrated_summary": integrated_summary,
-            "diagnostic_matrix": [
-                {
-                    "dimension": dimension,
-                    "statement": (
-                        primary
-                        if dimension == "mdt_diagnosis"
-                        else f"旧版报告未单独记录 {dimension}。"
-                    ),
-                    "status": "indeterminate" if dimension == "mdt_diagnosis" else "not_assessable",
-                    "confidence": "unknown",
-                    "role": "primary" if dimension == "mdt_diagnosis" else "boundary",
-                    "medical_basis": (
-                        f"旧版信度表述：{confidence_text}"
-                        if dimension == "mdt_diagnosis"
-                        else "旧版报告未保留该诊断层级。"
-                    ),
-                    "chair_item_ids": ["LEGACY"],
-                    "limitations": legacy_boundaries if dimension == "mdt_diagnosis" else [],
-                }
-                for dimension in dimensions
-            ],
-            "differential_diagnoses": [],
-        }
-        migrated["reasoning_trace"] = []
-        migrated["discussion_audit"] = {
-            "decisions": [],
-            "conflicts": [],
-            "stop_reason": discussion_summary,
-        }
-        migrated["assessment_boundaries"] = []
-        migrated["unresolved_conflicts"] = []
-        migrated["evidence_needs"] = []
-        migrated["legacy_source"] = True
-        migrated["schema_version"] = "mdt_final_report.v2"
-        return migrated
-
-
 class MDTDiscussionState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["mdt_discussion.v3"] = "mdt_discussion.v3"
+    schema_version: Literal["mdt_discussion.v4"] = "mdt_discussion.v4"
     case_id: str
     baseline_sha256: str
-    status: Literal["running", "completed", "failed"]
+    status: Literal["running", "completed", "failed", "stopped"]
     max_rounds: int = Field(default=3, ge=1, le=3)
     rounds: list[DiscussionRound] = Field(default_factory=list)
     active_round: dict[str, Any] | None = None
-    report_status: Literal["waiting", "running", "completed", "failed"] = "waiting"
+    report_status: Literal["waiting", "running", "completed", "failed", "stopped"] = "waiting"
     latest_chair_result: dict[str, Any]
     decision_state: MultiSpecialtyDecisionState
     stop_reason: str = ""
-    final_report: MDTFinalReport | None = None
+    final_report: MDTTeamReport | None = None
     error: str = ""
 
     @model_validator(mode="before")

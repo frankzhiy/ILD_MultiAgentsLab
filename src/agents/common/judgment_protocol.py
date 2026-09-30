@@ -1,6 +1,5 @@
 """One runtime source for the shared clinical judgment protocol."""
 
-from functools import cache
 from pathlib import Path
 import re
 
@@ -15,7 +14,6 @@ _NONCLINICAL_EXPLANATION = re.compile(
 )
 
 
-@cache
 def _protocol() -> str:
     path = Path(__file__).resolve().parents[2] / "prompts/common/mdt_judgment_protocol.md"
     return path.read_text(encoding="utf-8")

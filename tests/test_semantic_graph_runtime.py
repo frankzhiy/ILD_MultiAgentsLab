@@ -404,6 +404,20 @@ class StaticResponseLLM:
         return LLMResponse(content=json.dumps(self.response, ensure_ascii=False), raw={})
 
 
+@pytest.mark.parametrize('supports_json_schema', [True, False])
+def test_classifier_uses_provider_schema_support(supports_json_schema):
+    llm = StaticResponseLLM({})
+    llm.supports_json_schema = supports_json_schema
+    classifier = DocumentClassifier(llm, 'src/prompts/semantic_graphing/document_classification.md',
+                                    temperature=0, max_tokens=1000)
+    response_format = classifier.generator._initial_response_format(
+        UnitRangeDocumentClassification, 'classification', None, None, None)
+    assert response_format['type'] == ('json_schema' if supports_json_schema else 'json_object')
+    if supports_json_schema:
+        schema = response_format['json_schema']['schema']
+        assert 'current_medication' not in schema['$defs']['SourceType']['enum']
+
+
 def test_primary_frame_selector_reuses_graph_unit_decision_without_llm_call():
     unit = GraphUnit(
         graph_unit_id="seg_001_gu_001",

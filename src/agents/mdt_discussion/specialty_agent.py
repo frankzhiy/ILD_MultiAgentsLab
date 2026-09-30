@@ -111,6 +111,22 @@ class SpecialtyDiscussionAgent:
             event_callback=event_callback,
         )
 
+    def review_synthesis(self, *, team, specialty_output):
+        from src.agents.common.team_synthesis import SynthesisAcceptanceDraft, SynthesisAcceptance
+        prompt = render_template(load_text(Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/synthesis_acceptance.md"), {
+            "specialty": SPECIALTY_LABELS[self.specialty],
+            "team": prompt_json(team.model_dump(mode="json", exclude={"acceptance", "acceptance_records"})),
+            "specialty_output": prompt_json(specialty_output),
+            "output_schema": prompt_schema_json(SynthesisAcceptanceDraft),
+        })
+        draft, trace = self.review_generator.generate(
+            schema_model=SynthesisAcceptanceDraft, schema_name="synthesis_acceptance",
+            system_prompt=judgment_system_prompt(ROLE_BOUNDARIES[self.specialty]), user_prompt=prompt,
+            repair_on_validation_error=True,
+        )
+        return SynthesisAcceptance(specialty=self.specialty, revision=team.revision,
+                                   snapshot_hash=team.snapshot_hash, **draft.model_dump()), trace
+
     def respond_to_task(
         self,
         *,
@@ -401,6 +417,8 @@ class SpecialtyDiscussionAgent:
             ]
             if len(targeted) != len(set(targeted)):
                 errors.append("One update cannot target the same judgment twice")
+            if self.config.get("protocol_version") == "expert.v1" and set(targeted) != set(current_by_id):
+                errors.append("Every supplied active judgment needs explicit maintain/change with rationale; empty updates cannot establish synchronization")
             for proposal_index, proposal in enumerate(draft.proposals):
                 if proposal.change_type != "maintain":
                     if not proposal.trigger_issue_ids:

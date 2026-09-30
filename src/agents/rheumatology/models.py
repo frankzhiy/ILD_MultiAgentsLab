@@ -8,7 +8,6 @@ from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
-from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
 ClinicalConfidence = Literal["very_high", "high", "moderate", "low", "unknown"]
@@ -192,10 +191,6 @@ class InitialDomainReview(DomainReview):
     ]
 
 
-class DiscussionDomainReview(DomainReview):
-    status: Literal[
-        "updated", "reviewed_unchanged", "still_not_assessable", "still_deferred", "resolved", "not_applicable"
-    ]
 
 
 class InitialCaseDomainReview(InitialDomainReview):
@@ -302,127 +297,28 @@ class InitialConsultFormulation(BaseModel):
         return self
 
 
-class SpecialistClaim(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    claim: str = Field(min_length=1)
-    evidence: list[EvidencePointer] = Field(default_factory=list)
 
 
-class SpecialistOpinion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    specialty: SpecialistTarget
-    opinion_id: str = Field(min_length=1)
-    summary: str = Field(min_length=1)
-    claims: list[SpecialistClaim] = Field(default_factory=list)
-    confidence: ClinicalConfidence
-    unresolved_questions: list[str] = Field(default_factory=list)
 
 
-class ChairQuestion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    question_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
 
 
-class RheumatologyDiscussionInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    case_input: SpecialtyCaseInput
-    initial_assessment: RheumatologyInitialAssessment
-    specialist_opinions: list[SpecialistOpinion] = Field(default_factory=list)
-    chair_questions: list[ChairQuestion] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_string_questions(cls, value):
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        migrated["chair_questions"] = [
-            {"question_id": f"chair_q_{index:03d}", "question": item} if isinstance(item, str) else item
-            for index, item in enumerate(value.get("chair_questions") or [], start=1)
-        ]
-        return migrated
 
 
-class MappedSpecialistFinding(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    opinion_id: str = Field(min_length=1)
-    relationship: Literal["concordant", "supplementary", "conflicting", "unresolved"]
-    affected_domains: list[RheumatologyDomain] = Field(min_length=1)
-    clinical_effect: str = Field(min_length=1)
-    evidence: list[EvidencePointer] = Field(default_factory=list)
 
 
-class DiscussionEvidenceMap(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    specialist_opinions_used: list[str] = Field(default_factory=list)
-    mapped_findings: list[MappedSpecialistFinding] = Field(default_factory=list)
-    unresolved_conflicts: list[ClinicalAssessmentItem] = Field(default_factory=list)
 
 
-class DomainChange(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    domain: RheumatologyDomain
-    change_status: Literal["updated", "reviewed_unchanged", "still_not_assessable", "still_deferred", "resolved", "not_applicable"]
-    initial_view: str = Field(min_length=1)
-    updated_view: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
-    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
-class RheumatologyDiscussionState(RheumatologyClinicalState):
-    phase: Literal["discussion_update"] = "discussion_update"
-    domain_reviews: list[DiscussionDomainReview] = Field(min_length=7, max_length=7)
 
 
-class DiscussionStateUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    updated_state: RheumatologyDiscussionState
-    domain_changes: list[DomainChange] = Field(min_length=7, max_length=7)
-
-    @model_validator(mode="after")
-    def validate_changes(self):
-        if self.updated_state.phase != "discussion_update":
-            raise ValueError("updated_state.phase must be discussion_update")
-        domains = [item.domain for item in self.domain_changes]
-        if len(domains) != len(set(domains)) or set(domains) != set(INITIAL_DOMAINS):
-            raise ValueError("domain_changes must cover each rheumatology domain exactly once")
-        reviews = {item.domain: item.status for item in self.updated_state.domain_reviews}
-        if any(reviews[change.domain] != change.change_status for change in self.domain_changes):
-            raise ValueError("domain change status must match updated state domain review")
-        return self
 
 
-class ChairAnswer(ClinicalAssessmentItem):
-    question_id: str = Field(min_length=1)
-    answer: str = Field(min_length=1)
-    assessment: str = "主席问题回答"
-    reasoning_summary: str = "回答依据见支持证据。"
 
 
-class DiscussionConsultOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    chair_answers: list[ChairAnswer] = Field(default_factory=list)
-    unresolved_conflicts: list[ClinicalAssessmentItem] = Field(default_factory=list)
-    diagnostic_recommendations: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
 
 
-class RheumatologyDiscussionResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    schema_version: Literal["rheumatology.v1"] = "rheumatology.v1"
-    case_id: SkipJsonSchema[str] = ""
-    phase: SkipJsonSchema[str] = "discussion_response"
-    updated_state: RheumatologyDiscussionState
-    domain_changes: list[DomainChange] = Field(min_length=7, max_length=7)
-    specialist_opinions_used: list[str] = Field(default_factory=list)
-    mapped_findings: list[MappedSpecialistFinding] = Field(default_factory=list)
-    chair_answers: list[ChairAnswer] = Field(default_factory=list)
-    unresolved_conflicts: list[ClinicalAssessmentItem] = Field(default_factory=list)
-    diagnostic_recommendations: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
 
 
 def _require_stage_domains(reviews, expected, allowed_statuses) -> None:

@@ -6,6 +6,8 @@ import { CitationGroup } from '../../components/Citation'
 import { EvidenceGroups } from '../../components/EvidenceGroups'
 import { EmptyState } from '../../components/EmptyState'
 import { QueryError } from '../../components/QueryState'
+import { JudgmentDimensions } from '../../components/JudgmentDimensions'
+import { ConditionalContributions } from '../../components/TeamSynthesis'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -95,6 +97,7 @@ function Assessment({ item }) {
         {item.assessment_type && <Tag>{valueLabel(item.assessment_type, TYPE_LABELS)}</Tag>}
         <Text code>{item.assessment_id}</Text>
       </Space>
+      <JudgmentDimensions item={item} />
       <Title level={5}>{item.statement}</Title>
       {item.medical_basis && <Paragraph>{item.medical_basis}</Paragraph>}
       {item.decision_impact && <Paragraph type="secondary"><Text strong>决策影响：</Text>{item.decision_impact}</Paragraph>}
@@ -126,7 +129,7 @@ function SpecialtyAssessments({ value }) {
                 <Title level={5}>{item.missing_information}</Title>
                 {item.available_information && <Paragraph><Text strong>已有信息：</Text>{item.available_information}</Paragraph>}
                 <Paragraph><Text strong>缺口意义：</Text>{item.why_it_matters}</Paragraph>
-                {item.decision_unlocked && <Paragraph type="secondary"><Text strong>补充后可改善：</Text>{item.decision_unlocked}</Paragraph>}
+                {item.decision_unlocked && <Paragraph type="secondary"><Text strong>将改变的决定：</Text>{item.decision_unlocked}</Paragraph>}
                 <CitationGroup refs={item.related_evidence || []} />
               </article>
             ))}
@@ -139,6 +142,7 @@ function SpecialtyAssessments({ value }) {
           ? <ul className="boundary-list">{value.boundaries.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>
           : <EmptyList description="未声明额外判断边界" />}
       </Section>
+      <ConditionalContributions items={value.conditional_contributions} />
     </Card>
   )
 }
@@ -183,7 +187,7 @@ export function SpecialtyWorkspace({ runId, run }) {
     refetchInterval: (current) => {
       const results = current.state.data?.results
       if (results?.length && results.every((item) => item.status === 'completed')) return false
-      return ['failed', 'cancelled'].includes(run?.status) ? false : 3000
+      return ['failed', 'cancelled', 'stopped', 'incomplete'].includes(run?.status) ? false : 3000
     },
   })
 

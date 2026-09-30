@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from threading import Event
 
 import yaml
 
@@ -14,7 +15,7 @@ from src.utils.config import load_yaml
 from src.llm.throttle import request_throttle
 from src.workbench.catalog import RunCatalog, SPECIALTIES
 from src.workbench.events import EventStore
-from src.workbench.workflow import WorkbenchWorkflow
+from src.workbench.workflow import WorkbenchWorkflow, RunStopped
 
 
 AGENTS = ("semantic_graphing", *SPECIALTIES, "mdt_chair")
@@ -39,6 +40,7 @@ class RunOrchestrator:
         self.batch_tasks: dict[str, asyncio.Task[None]] = {}
         self.batches_dir = self.root / "outputs/batches"
         self.batches_dir.mkdir(parents=True, exist_ok=True)
+        self.active_reports: set[str] = set()
         self.active_chairs: set[str] = set()
         self.active_discussions: set[str] = set()
         self._recover_batches()
@@ -49,6 +51,17 @@ class RunOrchestrator:
             raise ValueError(
                 "case_id 只能包含字母、数字、空格、点、下划线和连字符，且长度不超过 80。"
             )
+        parent_run_id = request.get("parent_run_id")
+        parent_version = None
+        if parent_run_id:
+            parent_dir = self.catalog.run_dir(parent_run_id)
+            if self.catalog.case_id(parent_dir) != case_id:
+                raise ValueError("后续资料必须关联同一病例的前序运行。")
+            parent_snapshot = parent_dir / f"{case_id}_input.txt"
+            parent_version = hashlib.sha256(parent_snapshot.read_bytes()).hexdigest()
+            parent_manifest = self.catalog._json(parent_dir / ".workbench_run.json", {})
+            if parent_manifest.get("case_version_id", parent_version) != parent_version:
+                raise ValueError("前序病例快照已改变，不能建立版本关联。")
         source = request.get("source", "library")
         if source == "library":
             input_path = self.catalog.cases_dir / f"{case_id}.txt"
@@ -73,6 +86,10 @@ class RunOrchestrator:
             counter += 1
         run_dir = self.catalog.runs_dir / run_id
         run_dir.mkdir(parents=True)
+        snapshot = run_dir / f"{case_id}_input.txt"
+        snapshot.write_bytes(input_path.read_bytes())
+        input_path = snapshot
+        case_version = hashlib.sha256(snapshot.read_bytes()).hexdigest()
 
         config_dir = run_dir / "workbench_config"
         config_dir.mkdir()
@@ -105,53 +122,62 @@ class RunOrchestrator:
         semantic_config = load_yaml(Path(config_paths["semantic_graphing"]))
         signature = build_run_signature(semantic_config)
         self._write_json(run_dir / f"{case_id}_run_signature.json", signature)
+        self._write_json(run_dir / "protocol_manifest.json", {
+            "protocol": "expert.v2",
+            "patient_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+            "agents": {key: build_run_signature(load_yaml(path)) for key, path in config_paths.items()},
+            "prompts": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted((self.root / "src/prompts").rglob("*.md"))},
+            "guidelines": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                           for p in sorted((self.root / "data/guidelines").glob("*.pdf"))},
+        })
         manifest = {
             "schema_version": "workbench.run.v1",
             "run_id": run_id,
             "case_id": case_id,
             "source": source,
+            "case_version_id": case_version,
+            "parent_run_id": parent_run_id,
+            "parent_case_version_id": parent_version,
             "input_path": str(input_path.resolve()),
             "status": "queued",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "max_concurrency": int(request.get("max_concurrency") or 6),
             "configs": config_paths,
+            "agent_overrides": overrides,
         }
         self._write_json(run_dir / ".workbench_run.json", manifest)
         return run_id, input_path
 
     def start(self, run_id: str, input_path: Path) -> asyncio.Task[None]:
-        if run_id in self.tasks and not self.tasks[run_id].done():
-            raise ValueError(f"运行已启动：{run_id}")
-        task = asyncio.create_task(self._execute(run_id, input_path), name=f"run:{run_id}")
+        return self._launch(run_id, input_path=input_path)
+
+    def _launch(self, run_id: str, *, input_path: Path | None = None,
+                start_stage: str = "semantic_graphing") -> asyncio.Task[None]:
+        if self._busy(run_id):
+            raise ValueError("该运行仍在执行，请等待结束。")
+        self._update_manifest(self.catalog.run_dir(run_id) / ".workbench_run.json",
+                              status="queued", status_source="run", status_updated_at=self._now(),
+                              error=None, finished_at=None)
+        self.workflow.stop_events[run_id] = Event()
+        task = asyncio.create_task(self._execute(run_id, input_path, start_stage=start_stage),
+                                   name=f"run:{run_id}")
         self.tasks[run_id] = task
-        task.add_done_callback(lambda _: self.tasks.pop(run_id, None))
+        def finish(_):
+            if self.tasks.get(run_id) is task:
+                self.tasks.pop(run_id, None)
+        task.add_done_callback(finish)
         return task
 
-    def start_chair(self, run_id: str) -> None:
+    def start_chair(self, run_id: str) -> asyncio.Task[None]:
         run_dir = self.catalog.run_dir(run_id)
         readiness = self.catalog.chair(run_id)
         if not readiness["runnable"]:
             raise ValueError(readiness["error"] or "四个专科正式输出尚未全部就绪。")
-        key = f"{run_id}:chair"
-        if run_id in self.tasks or key in self.tasks or run_id in self.active_discussions:
+        if self._busy(run_id):
             raise ValueError("该运行仍在执行，不能重复启动主持人。")
-        config_path = self._chair_config(run_dir)
-        manifest_path = run_dir / ".workbench_run.json"
-        if manifest_path.exists():
-            self._update_manifest(
-                manifest_path,
-                status="running",
-                status_source="mdt_chair",
-                status_updated_at=self._now(),
-                error=None,
-            )
-        task = asyncio.create_task(
-            self._execute_chair(run_id, run_dir, config_path),
-            name=f"chair:{run_id}",
-        )
-        self.active_chairs.add(run_id)
-        self.tasks[key] = task
-        task.add_done_callback(lambda _: self._finish_chair(key, run_id))
+        self._refresh_configs(run_dir, (*SPECIALTIES, "mdt_chair"))
+        return self._launch(run_id, start_stage="mdt_chair")
 
     def chair_running(self, run_id: str) -> bool:
         return run_id in self.active_chairs
@@ -161,27 +187,39 @@ class RunOrchestrator:
         readiness = self.catalog.discussion(run_id)
         if not readiness["runnable"]:
             raise ValueError(readiness["error"] or "讨论所需的既有产物尚未就绪。")
-        key = f"{run_id}:discussion"
-        if run_id in self.tasks or key in self.tasks or run_id in self.active_chairs:
+        if self._busy(run_id):
             raise ValueError("该运行仍在执行，不能重复启动团队讨论。")
-        config_paths = self._discussion_configs(run_dir)
-        manifest_path = run_dir / ".workbench_run.json"
-        if manifest_path.exists():
-            self._update_manifest(
-                manifest_path,
-                status="running",
-                status_source="mdt_discussion",
-                status_updated_at=self._now(),
-                error=None,
-            )
-        task = asyncio.create_task(
-            self._execute_discussion(run_id, run_dir, config_paths),
-            name=f"discussion:{run_id}",
-        )
-        self.active_discussions.add(run_id)
-        self.tasks[key] = task
-        task.add_done_callback(lambda _: self._finish_discussion(key, run_id))
-        return task
+        self._refresh_configs(run_dir, (*SPECIALTIES, "mdt_chair"))
+        return self._launch(run_id, start_stage="mdt_discussion")
+
+    def _busy(self, run_id: str) -> bool:
+        task = self.tasks.get(run_id)
+        return task is not None and not task.done()
+
+    def stop_run(self, run_id: str) -> None:
+        manifest_path = self.catalog.run_dir(run_id) / ".workbench_run.json"
+        manifest = self._read_json(manifest_path)
+        if self._busy(run_id):
+            self.workflow.stop_events[run_id].set()
+            self._update_manifest(manifest_path, status="stopping", status_source="run",
+                                  status_updated_at=self._now())
+            self.events.append(run_id, "run_stop_requested", {}, stage="run")
+        elif manifest.get("status") == "queued":
+            self._update_manifest(manifest_path, status="stopped", status_source="run",
+                                  finished_at=self._now(), status_updated_at=self._now())
+            self.events.append(run_id, "run_stopped", {}, stage="run")
+        else:
+            raise ValueError("当前没有正在执行或排队的病例流程。")
+
+    def start_report(self, run_id: str) -> asyncio.Task[None]:
+        readiness = self.catalog.report(run_id)
+        if self._busy(run_id):
+            raise ValueError("该病例仍有阶段在运行，请等待结束。")
+        if not readiness["runnable"]:
+            raise ValueError(readiness["error"] or "请先完成当前版本的团队讨论。")
+        run_dir = self.catalog.run_dir(run_id)
+        self._refresh_configs(run_dir, ("mdt_chair",))
+        return self._launch(run_id, start_stage="mdt_report")
 
     def create_batch(self, request: dict[str, Any]) -> dict[str, Any]:
         kind = str(request.get("kind") or "")
@@ -249,14 +287,14 @@ class RunOrchestrator:
 
     def batch(self, batch_id: str) -> dict[str, Any]:
         value = self._read_batch(batch_id)
-        counts = {status: 0 for status in ("queued", "running", "completed", "failed", "skipped", "interrupted")}
+        counts = {status: 0 for status in ("queued", "running", "completed", "failed", "skipped", "interrupted", "stopped")}
         for item in value["items"]:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
         return {**value, "summary": {"total": len(value["items"]), **counts}}
 
     def retry_batch(self, batch_id: str) -> dict[str, Any]:
         batch = self._read_batch(batch_id)
-        retry_items = [item for item in batch["items"] if item["status"] in {"failed", "interrupted"}]
+        retry_items = [item for item in batch["items"] if item["status"] in {"failed", "interrupted", "stopped"}]
         if not retry_items:
             raise ValueError("该批次没有可重跑的失败或中断病例。")
         request = dict(batch["request"])
@@ -269,140 +307,77 @@ class RunOrchestrator:
     def discussion_running(self, run_id: str) -> bool:
         return run_id in self.active_discussions
 
-    async def _execute(self, run_id: str, input_path: Path) -> None:
+    async def _execute(self, run_id: str, input_path: Path | None = None,
+                       *, start_stage: str = "semantic_graphing") -> None:
         run_dir = self.catalog.run_dir(run_id)
         manifest_path = run_dir / ".workbench_run.json"
         manifest = self._read_json(manifest_path)
         case_id = manifest["case_id"]
         configs = manifest["configs"]
-        self._update_manifest(
-            manifest_path,
-            status="running",
-            status_source="run",
-            started_at=self._now(),
-            status_updated_at=self._now(),
-        )
-        self.events.append(run_id, "run_started", {"case_id": case_id}, stage="run")
         try:
-            await self._stage(
-                run_id,
-                run_dir,
-                "semantic_graphing",
-                "semantic_graphing",
-                self.workflow.run_semantic,
-                run_id,
-                run_dir,
-                input_path,
-                case_id,
-                Path(configs["semantic_graphing"]),
-            )
-
-            specialty_results = await asyncio.gather(
-                *(
-                    self._stage(
-                        run_id,
-                        run_dir,
-                        specialty,
-                        "initial_consult",
-                        self.workflow.run_specialty,
-                        run_id,
-                        run_dir,
-                        case_id,
-                        specialty,
-                        Path(configs[specialty]),
-                    )
+            self.workflow._check_stop(run_id)
+            self._update_manifest(manifest_path, status="running", status_source="run",
+                                  started_at=self._now(), status_updated_at=self._now(), error=None)
+            self.events.append(run_id, "run_started", {"case_id": case_id, "start_stage": start_stage}, stage="run")
+            if start_stage == "semantic_graphing":
+                await self._stage(
+                    run_id, run_dir, "semantic_graphing", "semantic_graphing",
+                    self.workflow.run_semantic, run_id, run_dir, input_path, case_id,
+                    Path(configs["semantic_graphing"]),
+                )
+                specialty_results = await asyncio.gather(*(
+                    self._stage(run_id, run_dir, specialty, "initial_consult",
+                                self.workflow.run_specialty, run_id, run_dir, case_id,
+                                specialty, Path(configs[specialty]))
                     for specialty in SPECIALTIES
-                ),
-                return_exceptions=True,
-            )
-            failures = [str(item) for item in specialty_results if isinstance(item, Exception)]
-            if failures:
-                raise RuntimeError("；".join(failures))
+                ), return_exceptions=True)
+                self.workflow._check_stop(run_id)
+                failures = [str(item) for item in specialty_results if isinstance(item, Exception)]
+                if failures:
+                    raise RuntimeError("；".join(failures))
 
-            self.active_chairs.add(run_id)
-            try:
+            if start_stage in {"semantic_graphing", "mdt_chair"}:
                 await self._stage(
-                    run_id,
-                    run_dir,
-                    "mdt_chair",
-                    "cross_specialty_integration",
-                    self.workflow.run_chair,
-                    run_id,
-                    run_dir,
-                    case_id,
-                    Path(configs["mdt_chair"]),
+                    run_id, run_dir, "mdt_chair", "cross_specialty_integration",
+                    self.workflow.run_chair, run_id, run_dir, case_id, Path(configs["mdt_chair"]),
                 )
-            finally:
-                self.active_chairs.discard(run_id)
-
-            self._update_manifest(
-                manifest_path,
-                status="running",
-                status_source="run",
-                status_updated_at=self._now(),
+            if start_stage != "mdt_report":
+                await self._stage(
+                    run_id, run_dir, "mdt_discussion", "team_discussion",
+                    self.workflow.run_discussion, run_id, run_dir, case_id,
+                    {agent: Path(configs[agent]) for agent in (*SPECIALTIES, "mdt_chair")},
+                )
+            await self._stage(
+                run_id, run_dir, "mdt_report", "final_report", self.workflow.run_report,
+                run_id, run_dir, case_id, Path(configs["mdt_chair"]),
             )
-            self.active_discussions.add(run_id)
-            try:
-                await self._stage(
-                    run_id,
-                    run_dir,
-                    "mdt_discussion",
-                    "team_discussion",
-                    self.workflow.run_discussion,
-                    run_id,
-                    run_dir,
-                    case_id,
-                    self._discussion_configs(run_dir),
-                )
-            finally:
-                self.active_discussions.discard(run_id)
+            self.workflow._check_stop(run_id)
             if not self.catalog.run_summary(run_dir)["discussion_complete"]:
                 raise RuntimeError("未完成 MDT 团队讨论及最终报告。")
-
+        except RunStopped:
+            self._update_manifest(manifest_path, status="stopped", status_source="run",
+                                  finished_at=self._now(), status_updated_at=self._now(), error=None)
+            self.events.append(run_id, "run_stopped", {}, stage="run")
         except asyncio.CancelledError:
-            self._update_manifest(
-                manifest_path,
-                status="cancelled",
-                status_source="run",
-                finished_at=self._now(),
-                status_updated_at=self._now(),
-            )
+            self._update_manifest(manifest_path, status="cancelled", status_source="run",
+                                  finished_at=self._now(), status_updated_at=self._now())
             self.events.append(run_id, "run_cancelled", {}, stage="run")
             raise
         except Exception as error:
             failure_path = run_dir / f"{case_id}_workbench_failure_trace.json"
-            self._write_json(
-                failure_path,
-                {
-                    "schema_version": "workbench.failure.v1",
-                    "failed_stage": "orchestration",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                },
-            )
-            self._update_manifest(
-                manifest_path,
-                status="failed",
-                status_source="run",
-                finished_at=self._now(),
-                status_updated_at=self._now(),
-                error=str(error),
-            )
-            self.events.append(
-                run_id,
-                "run_failed",
-                {"error": str(error), "artifact": failure_path.name},
-                stage="run",
-            )
-            return
-        self._update_manifest(
-            manifest_path,
-            status="completed",
-            status_source="run",
-            finished_at=self._now(),
-            status_updated_at=self._now(),
-        )
-        self.events.append(run_id, "run_completed", {}, stage="run")
+            self._write_json(failure_path, {
+                "schema_version": "workbench.failure.v1", "failed_stage": "orchestration",
+                "error_type": type(error).__name__, "error": str(error),
+            })
+            self._update_manifest(manifest_path, status="failed", status_source="run",
+                                  finished_at=self._now(), status_updated_at=self._now(), error=str(error))
+            self.events.append(run_id, "run_failed", {"error": str(error), "artifact": failure_path.name}, stage="run")
+        else:
+            self._update_manifest(manifest_path, status="completed", status_source="run",
+                                  finished_at=self._now(), status_updated_at=self._now(), error=None)
+            self.events.append(run_id, "run_completed", {}, stage="run")
+        finally:
+            self.workflow.stop_events.pop(run_id, None)
 
     async def _stage(
         self,
@@ -413,12 +388,24 @@ class RunOrchestrator:
         function: Any,
         *args: Any,
     ) -> None:
+        self.workflow._check_stop(run_id)
+        active = {"mdt_chair": self.active_chairs, "mdt_discussion": self.active_discussions,
+                  "mdt_report": self.active_reports}.get(agent_id)
+        if active is not None:
+            active.add(run_id)
         self.events.append(
             run_id, "stage_started", {}, agent_id=agent_id, stage=stage
         )
         try:
+            if agent_id in {"mdt_chair", "mdt_discussion", "mdt_report"}:
+                self._archive_stage(run_dir, agent_id)
+                self._record_stage_rules(run_dir, agent_id)
             await asyncio.to_thread(function, *args)
+            self.workflow._check_stop(run_id)
+        except RunStopped:
+            raise
         except Exception as error:
+            self.workflow._check_stop(run_id)
             case_id = self.catalog.case_id(run_dir)
             failure_path = run_dir / f"{case_id}_{agent_id}_{stage}_failure_trace.json"
             self._write_json(
@@ -440,167 +427,65 @@ class RunOrchestrator:
                 stage=stage,
             )
             raise
+        finally:
+            if active is not None:
+                active.discard(run_id)
         self.events.append(
             run_id, "stage_completed", {}, agent_id=agent_id, stage=stage
         )
 
-    async def _execute_chair(
-        self, run_id: str, run_dir: Path, config_path: Path
-    ) -> None:
+    def _archive_stage(self, run_dir: Path, stage: str) -> None:
+        case = self.catalog.case_id(run_dir)
+        patterns = {
+            "mdt_chair": [f"{case}_mdt_chair*.json"],
+            "mdt_discussion": [f"{case}_mdt_discussion*.json", f"{case}_mdt_round_*.json",
+                               f"{case}_*_round_*.json", f"{case}_mdt_final_report*.json", f"{case}_mdt_report*.json"],
+            "mdt_report": [f"{case}_mdt_final_report*.json", f"{case}_mdt_report*failure_trace.json"],
+        }[stage]
+        files = {p for pattern in patterns for p in run_dir.glob(pattern)}
+        previous_rules = run_dir / f"{stage}_stage_rules.json"
+        if previous_rules.exists():
+            files.add(previous_rules)
+        if files:
+            history = run_dir / "stage_history" / (datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + stage)
+            history.mkdir(parents=True)
+            for path in files:
+                path.rename(history / path.name)
+
+    def _record_stage_rules(self, run_dir: Path, stage: str) -> None:
+        manifest = self._read_json(run_dir / ".workbench_run.json")
+        agents = (*SPECIALTIES, "mdt_chair") if stage == "mdt_discussion" else ("mdt_chair",)
+        self._write_json(run_dir / f"{stage}_stage_rules.json", {
+            "stage": stage, "created_at": self._now(),
+            "configs": {agent: load_yaml(manifest["configs"][agent]) for agent in agents},
+            "prompts": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted((self.root / "src/prompts").rglob("*.md"))},
+            "guidelines": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                           for p in sorted((self.root / "data/guidelines").glob("*.pdf"))},
+        })
+
+    def _refresh_configs(self, run_dir: Path, agents) -> None:
         manifest_path = run_dir / ".workbench_run.json"
-        self.events.append(
-            run_id,
-            "manual_stage_started",
-            {},
-            agent_id="mdt_chair",
-            stage="cross_specialty_integration",
-        )
-        try:
-            await self._stage(
-                run_id,
-                run_dir,
-                "mdt_chair",
-                "cross_specialty_integration",
-                self.workflow.run_chair,
-                run_id,
-                run_dir,
-                self.catalog.case_id(run_dir),
-                config_path,
-            )
-        except Exception as error:
-            if manifest_path.exists():
-                self._update_manifest(
-                    manifest_path,
-                    status="failed",
-                    status_source="mdt_chair",
-                    finished_at=self._now(),
-                    status_updated_at=self._now(),
-                    error=str(error),
-                )
-            return
-        if manifest_path.exists():
-            self._update_manifest(
-                manifest_path,
-                status="completed",
-                status_source="mdt_chair",
-                finished_at=self._now(),
-                status_updated_at=self._now(),
-                error=None,
-            )
-        self.events.append(
-            run_id,
-            "manual_stage_completed",
-            {},
-            agent_id="mdt_chair",
-            stage="cross_specialty_integration",
-        )
-
-    async def _execute_discussion(
-        self, run_id: str, run_dir: Path, config_paths: dict[str, Path]
-    ) -> None:
-        manifest_path = run_dir / ".workbench_run.json"
-        self.events.append(
-            run_id,
-            "manual_stage_started",
-            {},
-            agent_id="mdt_discussion",
-            stage="team_discussion",
-        )
-        try:
-            await self._stage(
-                run_id,
-                run_dir,
-                "mdt_discussion",
-                "team_discussion",
-                self.workflow.run_discussion,
-                run_id,
-                run_dir,
-                self.catalog.case_id(run_dir),
-                config_paths,
-            )
-        except Exception as error:
-            if manifest_path.exists():
-                self._update_manifest(
-                    manifest_path,
-                    status="failed",
-                    status_source="mdt_discussion",
-                    finished_at=self._now(),
-                    status_updated_at=self._now(),
-                    error=str(error),
-                )
-            return
-        if manifest_path.exists():
-            self._update_manifest(
-                manifest_path,
-                status="completed",
-                status_source="mdt_discussion",
-                finished_at=self._now(),
-                status_updated_at=self._now(),
-                error=None,
-            )
-        self.events.append(
-            run_id,
-            "manual_stage_completed",
-            {},
-            agent_id="mdt_discussion",
-            stage="team_discussion",
-        )
-
-    def _finish_chair(self, key: str, run_id: str) -> None:
-        self.tasks.pop(key, None)
-        self.active_chairs.discard(run_id)
-
-    def _finish_discussion(self, key: str, run_id: str) -> None:
-        self.tasks.pop(key, None)
-        self.active_discussions.discard(run_id)
-
-    def _chair_config(self, run_dir: Path) -> Path:
-        manifest_path = run_dir / ".workbench_run.json"
-        manifest = self._read_json(manifest_path) if manifest_path.exists() else {}
-        configured = (manifest.get("configs") or {}).get("mdt_chair")
-        if configured and Path(configured).is_file():
-            return Path(configured)
-
-        config = load_yaml(self.root / "configs/agents/mdt_chair/agent.yaml")
-        for key, value in list(config.items()):
-            if (key == "prompt" or key.endswith("_prompt")) and isinstance(value, str):
-                config[key] = str((self.root / value).resolve())
-        target = run_dir / "workbench_config/mdt_chair.yaml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
-        )
-        if manifest_path.exists():
-            manifest.setdefault("configs", {})["mdt_chair"] = str(target)
-            self._write_json(manifest_path, manifest)
-        return target
-
-    def _discussion_configs(self, run_dir: Path) -> dict[str, Path]:
-        manifest_path = run_dir / ".workbench_run.json"
-        manifest = self._read_json(manifest_path) if manifest_path.exists() else {}
-        configured = manifest.setdefault("configs", {})
-        result: dict[str, Path] = {}
-        for agent_id in (*SPECIALTIES, "mdt_chair"):
-            path = Path(configured.get(agent_id, ""))
-            if not path.is_file():
-                config = load_yaml(self.root / f"configs/agents/{agent_id}/agent.yaml")
-                for key, value in list(config.items()):
-                    if (key == "prompt" or key.endswith("_prompt")) and isinstance(value, str):
-                        config[key] = str((self.root / value).resolve())
-                retrieval = config.get("guideline_retrieval")
-                if isinstance(retrieval, dict) and isinstance(retrieval.get("directory"), str):
-                    retrieval["directory"] = str((self.root / retrieval["directory"]).resolve())
-                path = run_dir / "workbench_config" / f"{agent_id}.yaml"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
-                    encoding="utf-8",
-                )
-                configured[agent_id] = str(path)
-            result[agent_id] = path
-        if manifest_path.exists():
-            self._write_json(manifest_path, manifest)
-        return result
+        manifest = self._read_json(manifest_path) if manifest_path.exists() else {
+            "case_id": self.catalog.case_id(run_dir), "run_id": run_dir.name,
+        }
+        for agent in agents:
+            config = load_yaml(self.root / f"configs/agents/{agent}/agent.yaml")
+            override = manifest.get("agent_overrides", {}).get(agent, {})
+            if override.get("model"):
+                config["model"] = override["model"]
+            if override.get("reasoning_effort"):
+                config.setdefault("request_options", {})["reasoning_effort"] = override["reasoning_effort"]
+            for key, value in list(config.items()):
+                if (key == "prompt" or key.endswith("_prompt")) and isinstance(value, str):
+                    config[key] = str((self.root / value).resolve())
+            if config.get("guideline_retrieval", {}).get("directory"):
+                config["guideline_retrieval"]["directory"] = str((self.root / config["guideline_retrieval"]["directory"]).resolve())
+            target = run_dir / "workbench_config" / f"{agent}.yaml"
+            target.parent.mkdir(exist_ok=True)
+            target.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+            manifest.setdefault("configs", {})[agent] = str(target)
+        self._write_json(manifest_path, manifest)
 
     async def _execute_batch(self, batch_id: str) -> None:
         batch = self._read_batch(batch_id)
@@ -610,21 +495,26 @@ class RunOrchestrator:
 
         async def run_item(item: dict[str, Any]) -> None:
             async with limiter:
-                self._update_batch_item(batch_id, item["run_id"], status="running", started_at=self._now(), error=None)
                 try:
+                    run_dir = self.catalog.run_dir(item["run_id"])
+                    manifest = self.catalog._json(run_dir / ".workbench_run.json", {})
+                    if batch["kind"] == "run" and manifest.get("status") == "stopped":
+                        self._update_batch_item(batch_id, item["run_id"], status="stopped", finished_at=self._now())
+                        return
+                    self._update_batch_item(batch_id, item["run_id"], status="running", started_at=self._now(), error=None)
                     if batch["kind"] == "run":
                         await self.start(item["run_id"], Path(item["input_path"]))
-                        result = self.catalog.run_summary(self.catalog.run_dir(item["run_id"]))
-                        if not result["discussion_complete"]:
-                            raise RuntimeError((result.get("manifest") or {}).get("error") or "未完成 MDT 团队讨论及最终报告。")
                     else:
                         if self._chair_sha256(item["run_id"]) != item["baseline_sha256"]:
                             self._update_batch_item(batch_id, item["run_id"], status="skipped", finished_at=self._now(), error="主持人整合结果已变化，请重新选择该运行。")
                             return
                         await self.start_discussion(item["run_id"])
-                        result = self.catalog.discussion(item["run_id"])
-                        if result["status"] != "completed":
-                            raise RuntimeError(result.get("error") or "团队讨论未完成。")
+                    result = self.catalog.run_summary(run_dir)
+                    if result.get("status") in {"stopped", "cancelled"}:
+                        self._update_batch_item(batch_id, item["run_id"], status="stopped", finished_at=self._now())
+                        return
+                    if not result["discussion_complete"] or result.get("status") == "failed":
+                        raise RuntimeError((result.get("manifest") or {}).get("error") or "未完成 MDT 团队讨论及最终报告。")
                 except Exception as error:
                     self._update_batch_item(batch_id, item["run_id"], status="failed", finished_at=self._now(), error=str(error))
                     return
@@ -712,7 +602,8 @@ class RunOrchestrator:
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
-        path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        from src.utils.persistence import write_json
+        write_json(path, value)
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:

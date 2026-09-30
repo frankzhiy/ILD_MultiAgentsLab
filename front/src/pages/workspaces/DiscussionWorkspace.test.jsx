@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { api } from '../../api'
 import { chairChangeSummary, DiscussionWorkspace } from './DiscussionWorkspace'
 
@@ -8,16 +9,11 @@ vi.mock('../../api', () => ({
   api: {
     discussion: vi.fn(),
     runDiscussion: vi.fn(),
+    runs: vi.fn().mockResolvedValue([]),
   },
 }))
 
-const chairResult = {
-  integrated_conclusions: [],
-  assessment_boundaries: [],
-  conflicts: [],
-  questions: [],
-  evidence_needs: [],
-}
+import { chairResult } from '../../components/teamSynthesisFixture'
 
 const completed = {
   status: 'completed',
@@ -139,7 +135,7 @@ function renderWorkspace() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <DiscussionWorkspace runId="run-1" />
+      <MemoryRouter><DiscussionWorkspace runId="run-1" /></MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -156,7 +152,7 @@ afterEach(() => {
 })
 
 describe('DiscussionWorkspace', () => {
-  it('starts only the discussion stage from existing outputs', async () => {
+  it('starts from discussion using existing outputs', async () => {
     api.discussion.mockResolvedValue({
       status: 'pending', runnable: true, rounds: [],
       decision_state: {
@@ -166,8 +162,9 @@ describe('DiscussionWorkspace', () => {
     api.runDiscussion.mockResolvedValue({ status: 'running', runnable: true, rounds: [] })
     renderWorkspace()
 
-    expect(await screen.findByText('尚未产生团队讨论轮次；点击“运行团队讨论”后，这里会实时出现任务与处理进度。')).toBeInTheDocument()
-    expect(screen.getByText('首轮专科判断。')).toBeInTheDocument()
+    expect(await screen.findByText('尚未产生问答轮次；运行后会显示实际议题与处理进度。')).toBeInTheDocument()
+    expect(screen.queryByText('首轮专科判断。')).not.toBeInTheDocument()
+    expect(screen.getByText('本次会诊进展')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: '运行团队讨论' }))
 
     await waitFor(() => expect(api.runDiscussion).toHaveBeenCalledWith('run-1'))
@@ -185,7 +182,7 @@ describe('DiscussionWorkspace', () => {
     api.runDiscussion.mockImplementation(() => new Promise((resolve) => { finishStart = resolve }))
     renderWorkspace()
 
-    fireEvent.click(await screen.findByRole('button', { name: '重新运行团队讨论' }))
+    fireEvent.click(await screen.findByRole('button', { name: '从讨论重新运行' }))
 
     expect(await screen.findByText('新一轮团队讨论已启动')).toBeInTheDocument()
     expect(screen.getByText(/下方暂时保留上一次运行结果/)).toBeInTheDocument()
@@ -199,7 +196,8 @@ describe('DiscussionWorkspace', () => {
     api.discussion.mockResolvedValue(completed)
     renderWorkspace()
 
-    expect(await screen.findByText('最终 MDT 统一报告')).toBeInTheDocument()
+    expect(await screen.findByText('MDT 团队讨论')).toBeInTheDocument()
+    expect(screen.queryByText('最终 MDT 统一报告')).not.toBeInTheDocument()
     expect(screen.getAllByText('低氧的主要归因是什么？').length).toBeGreaterThan(1)
     expect(screen.getByText('现有资料不足。')).toBeInTheDocument()
     expect(screen.getByText('影像提示肺实质因素可能参与。')).toBeInTheDocument()
@@ -210,16 +208,16 @@ describe('DiscussionWorkspace', () => {
     expect(screen.queryByText('E006')).not.toBeInTheDocument()
     expect(screen.getByText('主持人第 1 轮更新')).toBeInTheDocument()
     expect(screen.getByText('首轮主持人更新，作为后续轮次的比较基线')).toBeInTheDocument()
-    expect(screen.getAllByText('跨专科整合结论').length).toBeGreaterThan(1)
-    expect(screen.getByText('本轮判断边界（不可评价）')).toBeInTheDocument()
-    expect(screen.getByText('跨专科真实冲突')).toBeInTheDocument()
-    expect(screen.getByText('仍需其他专科回答的问题')).toBeInTheDocument()
-    expect(screen.getByText('证据需求及满足状态')).toBeInTheDocument()
-    expect(screen.getByText('讨论前主持人基线不计入轮次')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '临床结论' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '本轮判断边界' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '专科分歧与待核实矛盾' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '原始问题与讨论议程' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '证据需求及满足状态' })).toBeInTheDocument()
+    expect(screen.getByText('会前整合不计入讨论轮次')).toBeInTheDocument()
     expect(screen.getByText('本轮决策')).toBeInTheDocument()
   })
 
-  it('shows the current specialty judgment and preserves its version history', async () => {
+  it('shows only judgment changes with their reasons and links to full history', async () => {
     api.discussion.mockResolvedValue({
       ...completed,
       decision_state: {
@@ -230,36 +228,35 @@ describe('DiscussionWorkspace', () => {
           active_version_id: 'pulmonology_001@v002',
           versions: [
             { version_id: 'pulmonology_001@v001', change_type: 'initial', lifecycle_status: 'superseded', created_in_round: 0, rationale: '首轮专科判断。', changed_fields: [], assessment: { statement: '现有资料支持纤维化性间质性肺病。', medical_basis: '根据病例文字。', conditions: { subject: '纤维化性间质性肺病', professional_level: 'disease_diagnosis', timeframe: { description: '当前评估时点。' }, evidence_scope: { evidence_ids: ['ev_001'], scope_limitations: [] } } } },
-            { version_id: 'pulmonology_001@v002', change_type: 'qualify', lifecycle_status: 'active', created_in_round: 1, considered_source_refs: ['R01-Q001-thoracic_radiology-A'], rationale: '缺少原始 HRCT，需要收紧分型边界。', changed_fields: ['statement', 'limitations'], assessment: { statement: '现有资料仅支持未分类间质性肺病。', medical_basis: '已纳入影像科的可评价性意见。', conditions: { subject: '未分类间质性肺病', professional_level: 'disease_diagnosis', timeframe: { description: '当前评估时点。' }, evidence_scope: { evidence_ids: ['ev_001'], scope_limitations: ['缺少原始 HRCT。'] } } } },
+            { version_id: 'pulmonology_001@v002', change_type: 'qualify', lifecycle_status: 'active', created_in_round: 1, considered_source_refs: ['R01-Q001-thoracic_radiology-A'], rationale: '报告未记载病变分布，需要收紧分型边界。', changed_fields: ['statement', 'limitations'], assessment: { assessability: 'partially_assessable', direction: 'indeterminate', confidence: 'low', clinical_role: 'competing_explanation', statement: '现有资料仅支持未分类间质性肺病。', medical_basis: '已纳入影像科的可评价性意见。', conditions: { subject: '未分类间质性肺病', professional_level: 'disease_diagnosis', timeframe: { description: '当前评估时点。' }, evidence_scope: { evidence_ids: ['ev_001'], scope_limitations: ['报告未记载病变分布。'] } } } },
           ],
         }],
-        change_events: [{ judgment_id: 'pulmonology_001', after_version_id: 'pulmonology_001@v002', rationale: '缺少原始 HRCT，需要收紧分型边界。' }],
+        change_events: [{ change_type: 'qualify', before_version_id: 'pulmonology_001@v001', judgment_id: 'pulmonology_001', after_version_id: 'pulmonology_001@v002', rationale: '报告未记载病变分布，需要收紧分型边界。' }],
       },
     })
     renderWorkspace()
 
-    expect(await screen.findByText('当前多专科判断')).toBeInTheDocument()
-    expect(screen.getByText('现有资料仅支持未分类间质性肺病。')).toBeInTheDocument()
-    expect(screen.getByText('主持人只读取当前有效版本')).toBeInTheDocument()
-    expect(screen.getByText('2 个版本')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Expand row' }))
-    expect(await screen.findByText('现有资料支持纤维化性间质性肺病。')).toBeInTheDocument()
-    expect(screen.getByText('缺少原始 HRCT，需要收紧分型边界。')).toBeInTheDocument()
+    expect(await screen.findByText('本次会诊进展')).toBeInTheDocument()
+    expect(screen.queryByText('当前多专科判断')).not.toBeInTheDocument()
+    expect(screen.queryByText('2 个版本')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('查看 1 条判断变更及原因'))
+    expect(screen.getByText('原判断：现有资料支持纤维化性间质性肺病。')).toBeVisible()
+    expect(screen.getByText('更新后：现有资料仅支持未分类间质性肺病。')).toBeVisible()
+    expect(screen.getByText('原因：报告未记载病变分布，需要收紧分型边界。')).toBeVisible()
+    expect(screen.getByRole('link', { name: '查看完整判断与历史记录' })).toHaveAttribute('href', '/runs/run-1/artifacts')
   })
 
   it('summarizes structural changes between chair rounds', () => {
     const current = {
       ...chairResult,
-      integrated_conclusions: [{ conclusion_id: 'IC001', statement: '形成新结论' }],
-      questions: [{ question_id: 'Q001', question: '原问题', status: 'closed' }],
+      team_synthesis: { problems: [{ problem_id: 'P1', statement: '形成新结论' }], issues: [] },
     }
     const previous = {
       ...chairResult,
-      questions: [{ question_id: 'Q001', question: '原问题', status: 'open' }],
+      team_synthesis: { problems: [], issues: [{ issue_id: 'Q001', question: '原问题' }] },
     }
 
-    expect(chairChangeSummary(current, previous)).toEqual(['整合结论：新增 1', '待回答问题：更新 1'])
+    expect(chairChangeSummary(current, previous)).toEqual(['临床问题：新增 1', '讨论议题：移除 1'])
   })
 
   it('refreshes visible task progress when a discussion event arrives', async () => {
@@ -320,4 +317,31 @@ describe('DiscussionWorkspace', () => {
     expect(screen.queryByText(/已用时/)).not.toBeInTheDocument()
     expect(screen.getAllByText('失败').length).toBeGreaterThan(0)
   })
+})
+
+it('has no page-specific stop button', async () => {
+  api.discussion.mockResolvedValue(active)
+  renderWorkspace()
+  expect(await screen.findByText('MDT 团队讨论')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /停止/ })).not.toBeInTheDocument()
+})
+
+it('explains zero-round completion and displays recorded acceptance without pretending a discussion occurred', async () => {
+  const team = {
+    ...chairResult.team_synthesis,
+    issues: [],
+    acceptance_records: [
+      { specialty: 'pulmonology', decision: 'accept_with_boundaries', rationale: '仅在现有资料范围内接受', boundaries: ['病因未定'] },
+      { specialty: 'pathology', decision: 'dissent', rationale: '仍需核对材料范围', boundaries: [] },
+    ],
+  }
+  api.discussion.mockResolvedValue({ status: 'completed', runnable: true, rounds: [], latest_chair_result: { ...chairResult, team_synthesis: team }, report_status: 'waiting' })
+  renderWorkspace()
+  expect(await screen.findByText('本次未进入问答轮次；各专科对会前综合意见的确认情况如下。')).toBeInTheDocument()
+  expect(screen.getByText('已完成问答 0 轮')).toBeInTheDocument()
+  expect(screen.getByText('已记录专科态度 2 / 4')).toBeInTheDocument()
+  expect(screen.getByText('专科判断未发生变更。')).toBeInTheDocument()
+  fireEvent.click(screen.getByText('查看各专科确认意见'))
+  expect(screen.getByText('病理科 · 保留异议')).toBeVisible()
+  expect(screen.queryByText(/运行后会显示实际议题/)).not.toBeInTheDocument()
 })

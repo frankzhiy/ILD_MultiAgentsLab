@@ -1,31 +1,11 @@
 import json
-from pathlib import Path
 
 import pytest
 
 from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
 from src.agents.rheumatology.agent import RheumatologyAgent
 from src.agents.rheumatology.validation import validate_initial_stage
-from src.agents.rheumatology.models import (
-    ActivityAndRiskAssessment,
-    AutoimmuneManifestation,
-    ClinicalAssessmentItem,
-    DiscussionConsultOutput,
-    DiscussionEvidenceMap,
-    DiscussionStateUpdate,
-    DomainChange,
-    EvidencePointer,
-    IldAttributionAssessment,
-    InitialAutoimmuneAssessment,
-    InitialCaseReconstruction,
-    InitialConsultFormulation,
-    RheumaticDiseaseFormulation,
-    RheumatologyClinicalState,
-    RheumatologyDiscussionState,
-    RheumatologyDiscussionInput,
-    RheumatologyDomain,
-    SerologicFinding,
-)
+from src.agents.rheumatology.models import ActivityAndRiskAssessment, AutoimmuneManifestation, ClinicalAssessmentItem, EvidencePointer, IldAttributionAssessment, InitialAutoimmuneAssessment, InitialCaseReconstruction, InitialConsultFormulation, RheumaticDiseaseFormulation, RheumatologyDomain, SerologicFinding
 from src.llm.base import LLMResponse
 from src.reporting.rheumatology_report import render_rheumatology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
@@ -131,9 +111,6 @@ def test_initial_assessment_aggregates_three_stages_and_renders_report(tmp_path)
         initial_case_reconstruction_prompt_path="src/prompts/rheumatology/initial_case_reconstruction.md",
         initial_autoimmune_assessment_prompt_path="src/prompts/rheumatology/initial_autoimmune_assessment.md",
         initial_consult_formulation_prompt_path="src/prompts/rheumatology/initial_consult_formulation.md",
-        discussion_evidence_mapping_prompt_path="src/prompts/rheumatology/discussion_evidence_mapping.md",
-        discussion_state_update_prompt_path="src/prompts/rheumatology/discussion_state_update.md",
-        discussion_consult_response_prompt_path="src/prompts/rheumatology/discussion_consult_response.md",
         clinical_rules={}, temperature=0, max_tokens=2000,
     )
     result, trace = agent.initial_assessment(case)
@@ -171,52 +148,6 @@ def test_initial_stage_schema_excludes_discussion_statuses_and_other_domains():
         )
 
 
-def test_discussion_updates_same_state_without_chair_questions():
-    case = case_input()
-    reconstruction, autoimmune, formulation = stages(case)
-    initial = RheumatologyClinicalState(
-        case_id=case.case_id,
-        phase="initial_assessment",
-        domain_reviews=[
-            review(domain, "partially_assessable" if domain != RheumatologyDomain.ILD_ATTRIBUTION else "not_assessable")
-            for domain in RheumatologyDomain
-        ],
-        case_orientation=reconstruction.case_orientation,
-        autoimmune_manifestations=reconstruction.autoimmune_manifestations,
-        serologic_findings=autoimmune.serologic_findings,
-        rheumatic_disease_formulation=autoimmune.rheumatic_disease_formulation,
-        activity_and_risk=autoimmune.activity_and_risk,
-        ild_attribution=formulation.ild_attribution,
-    )
-    initial = initial.model_copy(update={"phase": "initial_assessment"})
-    from src.agents.rheumatology.models import RheumatologyInitialAssessment
-    initial = RheumatologyInitialAssessment.model_validate(initial.model_dump())
-    updated_data = initial.model_dump()
-    updated_data.update(
-        phase="discussion_update",
-        domain_reviews=[review(domain, "reviewed_unchanged") for domain in RheumatologyDomain],
-    )
-    updated = RheumatologyDiscussionState(**updated_data)
-    changes = [
-        DomainChange(domain=domain, change_status="reviewed_unchanged", initial_view="首轮状态", updated_view="复核后不变", reason="无新的正式专科证据。")
-        for domain in RheumatologyDomain
-    ]
-    evidence_map = DiscussionEvidenceMap()
-    update = DiscussionStateUpdate(updated_state=updated, domain_changes=changes)
-    consult = DiscussionConsultOutput()
-    agent = RheumatologyAgent(
-        FakeLLM([payload(evidence_map), payload(update), payload(consult)]),
-        initial_case_reconstruction_prompt_path="src/prompts/rheumatology/initial_case_reconstruction.md",
-        initial_autoimmune_assessment_prompt_path="src/prompts/rheumatology/initial_autoimmune_assessment.md",
-        initial_consult_formulation_prompt_path="src/prompts/rheumatology/initial_consult_formulation.md",
-        discussion_evidence_mapping_prompt_path="src/prompts/rheumatology/discussion_evidence_mapping.md",
-        discussion_state_update_prompt_path="src/prompts/rheumatology/discussion_state_update.md",
-        discussion_consult_response_prompt_path="src/prompts/rheumatology/discussion_consult_response.md",
-        clinical_rules={}, temperature=0, max_tokens=2000,
-    )
-    result, _ = agent.discussion_response(RheumatologyDiscussionInput(case_input=case, initial_assessment=initial))
-    assert result.updated_state.phase == "discussion_update"
-    assert len(result.domain_changes) == len(RheumatologyDomain)
 
 
 def test_rejects_non_rheumatology_input():
@@ -229,23 +160,19 @@ def test_rejects_non_rheumatology_input():
             initial_case_reconstruction_prompt_path="src/prompts/rheumatology/initial_case_reconstruction.md",
             initial_autoimmune_assessment_prompt_path="src/prompts/rheumatology/initial_autoimmune_assessment.md",
             initial_consult_formulation_prompt_path="src/prompts/rheumatology/initial_consult_formulation.md",
-            discussion_evidence_mapping_prompt_path="src/prompts/rheumatology/discussion_evidence_mapping.md",
-            discussion_state_update_prompt_path="src/prompts/rheumatology/discussion_state_update.md",
-            discussion_consult_response_prompt_path="src/prompts/rheumatology/discussion_consult_response.md",
             clinical_rules={}, temperature=0, max_tokens=2000,
         ).initial_assessment(case)
 
 
-def test_rejects_reference_only_evidence_as_initial_diagnostic_support():
+def test_recorded_cross_specialty_facts_can_support_initial_judgments():
     case = case_input()
-    unit = next(unit for segment in case.segments for unit in segment.units if not unit.may_support_diagnostic_claim)
+    unit = next(unit for segment in case.segments for unit in segment.units if unit.evidence_role == "reference_only")
     reference = EvidencePointer(evidence_ids=[unit.clinical_propositions.evidence_blocks[0].evidence_id])
     stage = InitialCaseReconstruction(
         domain_reviews=[review(RheumatologyDomain.SOURCE_AND_EVALUABILITY), review(RheumatologyDomain.AUTOIMMUNE_PHENOTYPE)],
         case_orientation=item(reference),
     )
-    with pytest.raises(ValueError, match="不能直接支持风湿科诊断性判断"):
-        validate_initial_stage(stage, case)
+    validate_initial_stage(stage, case)
 
 
 def test_ipaf_classification_requires_a_working_label():

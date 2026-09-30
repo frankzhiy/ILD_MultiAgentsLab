@@ -9,6 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
+from src.agents.common.team_synthesis import ConditionalContribution, JudgmentTimeframe
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 
 
@@ -145,23 +146,6 @@ ProfessionalLevel = Literal[
 ]
 
 
-class JudgmentTimeframe(BaseModel):
-    """The time interval for which a specialty judgment is intended to hold."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal[
-        "current",
-        "historical",
-        "longitudinal",
-        "specified_period",
-        "unknown",
-    ] = "current"
-    start: str = ""
-    end: str = ""
-    description: str = "基于当前病例所提供的资料。"
-
-
 class JudgmentEvidenceScope(BaseModel):
     """Program-resolved evidence scope; the model cannot invent evidence IDs."""
 
@@ -211,6 +195,10 @@ class SpecialtyAssessment(BaseModel):
     )
     statement: str = Field(min_length=1)
     status: AssessmentStatus
+    assessability: Assessability
+    direction: Literal["supports", "against", "indeterminate"]
+    confidence: Literal["high", "moderate", "low", "unknown"]
+    clinical_role: Literal["primary", "competing_explanation", "acute_contributor", "comorbidity", "unexplained_finding", "boundary"]
     medical_basis: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
     claims: list[SpecialtyAtomicClaim] = Field(min_length=1)
@@ -218,6 +206,12 @@ class SpecialtyAssessment(BaseModel):
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     conditions: JudgmentConditions = Field(default_factory=JudgmentConditions)
+
+    @model_validator(mode="after")
+    def consistent_assessability(self):
+        if self.assessability == "not_assessable" and self.confidence != "unknown":
+            raise ValueError("An unassessable judgment cannot have diagnostic confidence")
+        return self
 
 
 _PROFESSIONAL_LEVEL_BY_ASSESSMENT_TYPE: dict[str, ProfessionalLevel] = {
@@ -313,6 +307,7 @@ class SpecialtyAssessments(BaseModel):
     )
     evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
     boundaries: list[str] = Field(min_length=1)
+    conditional_contributions: list[ConditionalContribution] = Field(default_factory=list)
 
 
 class InterspecialtyQuestions(BaseModel):

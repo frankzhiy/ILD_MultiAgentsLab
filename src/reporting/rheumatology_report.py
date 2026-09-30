@@ -4,7 +4,6 @@ from html import escape
 from pathlib import Path
 
 from src.agents.rheumatology.models import (
-    RheumatologyDiscussionResponse,
     RheumatologyInitialAssessment,
 )
 from src.reporting.specialty_report_common import (
@@ -17,12 +16,11 @@ from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
 def render_rheumatology_report(
-    result: RheumatologyInitialAssessment | RheumatologyDiscussionResponse,
+    result: RheumatologyInitialAssessment,
     case_input: SpecialtyCaseInput,
     output_path: str | Path,
 ) -> Path:
-    initial = isinstance(result, RheumatologyInitialAssessment)
-    state = result if initial else result.updated_state
+    state = result
     roles = {
         unit.graph_unit.graph_unit_id: unit.evidence_role.value
         for segment in case_input.segments
@@ -42,13 +40,7 @@ def render_rheumatology_report(
         _section("数据缺口", [_gap(item) for item in state.missing_data], anchor="gaps"),
         _section("专科问题", [_item(question.specialty, question.question) for question in state.specialist_dependencies], anchor="collaboration"),
     ]
-    if not initial:
-        sections.extend([
-            _section("状态变化", [_item(change.domain, f"{change.initial_view} → {change.updated_view}；{change.reason}") for change in result.domain_changes]),
-            _section("主席问题回答", [_item(answer.question_id, answer.answer) for answer in result.chair_answers]),
-            _section("未解决冲突", [_assessment(item) for item in result.unresolved_conflicts]),
-        ])
-    title = "首轮评估" if initial else "会中响应"
+    title = "首轮评估"
     path = Path(output_path)
     summary = case_input.summary
     audit = render_reasoning_audit(result, roles, path) + render_guideline_audit(result, path)

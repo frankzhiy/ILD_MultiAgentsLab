@@ -1,3 +1,4 @@
+protocol_version: expert.v1
 provider: apiyi
 model: gpt-6-luna
 base_url: https://api.apiyi.com/v1
@@ -9,7 +10,7 @@ supports_json_schema: true
 timeout_seconds: 300
 temperature: 0.0
 max_tokens: 12000
-max_attempts: 2
+max_attempts: 4
 retry_backoff_seconds: 2
 initial_specimen_reconstruction_prompt: src/prompts/pathology/initial_specimen_reconstruction.md
 initial_morphologic_assessment_prompt: src/prompts/pathology/initial_morphologic_assessment.md

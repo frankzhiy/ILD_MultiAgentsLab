@@ -248,6 +248,11 @@ def present(
     scope: Literal["specialties", "chair", "discussion", "report"],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    # The expert snapshot is already the published wording and its hash is auditable.
+    # Legacy artifacts retain their existing meaning-checked presentation path.
+    if any(isinstance(payload.get(key), dict) and payload[key].get("team_synthesis")
+           for key in ("result", "latest_chair_result", "final_report")):
+        return {**payload, "presentation_status": "original"}
     if scope in {"chair", "discussion"} and payload.get("status") == "running":
         return payload
     records = _records(scope, payload)

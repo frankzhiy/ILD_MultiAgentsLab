@@ -1,3 +1,4 @@
+protocol_version: expert.v2
 provider: apiyi
 model: gpt-6-luna
 base_url: https://api.apiyi.com/v1
@@ -9,10 +10,9 @@ supports_json_schema: true
 timeout_seconds: 300
 temperature: 0.0
 max_tokens: 24000
-max_attempts: 3
+max_attempts: 4
 retry_backoff_seconds: 2
-ledger_prompt: src/prompts/mdt_chair/semantic_ledger.md
-prompt: src/prompts/mdt_chair/initial_synthesis.md
+prompt: src/prompts/mdt_chair/expert_synthesis.md
 guideline_retrieval:
   enabled: true
   directory: data/guidelines

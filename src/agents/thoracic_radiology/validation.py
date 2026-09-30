@@ -5,31 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 import re
 
-from src.agents.common.validation import (
-    case_units,
-    iter_evidence_pointers,
-    require_specialty_input,
-    validate_chair_question_order,
-)
+from src.agents.common.validation import case_units, iter_evidence_pointers, require_specialty_input
 from src.agents.thoracic_radiology.evidence_projection import (
     RadiologyWorkingInput,
     build_radiology_working_input,
 )
-from src.agents.thoracic_radiology.models import (
-    ChairAnswer,
-    DiscussionEvidenceMap,
-    DiscussionUpdateAndConsult,
-    EvidencePointer,
-    InitialCaseReconstruction,
-    InitialConsultFormulation,
-    RadiologyTask,
-    RadiologyTaskAssessment,
-    ResolvedPropositionQuote,
-    SpecialistOpinion,
-    ThoracicRadiologyDiscussionInput,
-    ThoracicRadiologyDiscussionResponse,
-    ThoracicRadiologyInitialAssessment,
-)
+from src.agents.thoracic_radiology.models import EvidencePointer, InitialCaseReconstruction, InitialConsultFormulation, RadiologyTask, RadiologyTaskAssessment, ResolvedPropositionQuote, SpecialistOpinion, ThoracicRadiologyInitialAssessment
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
@@ -166,127 +147,12 @@ def validate_initial_assessment(
     return result
 
 
-def validate_specialist_opinions(
-    discussion_input: ThoracicRadiologyDiscussionInput,
-) -> None:
-    resolve_proposition_pointers(discussion_input.specialist_opinions, discussion_input.case_input)
-    units = case_units(discussion_input.case_input)
-    opinion_ids = [item.opinion_id for item in discussion_input.specialist_opinions]
-    _require_unique(opinion_ids, "specialist opinion")
-    for opinion in discussion_input.specialist_opinions:
-        for claim in opinion.claims:
-            for pointer in claim.evidence:
-                unit = units[pointer.graph_unit_id]
-                specialties = unit.graph_unit.mdt_specialty
-                if (
-                    opinion.specialty not in specialties
-                    and MdtSpecialty.SHARED_CONTEXT not in specialties
-                ):
-                    raise ValueError(
-                        f"Opinion {opinion.opinion_id} cites unit {pointer.graph_unit_id} "
-                        f"outside {opinion.specialty}'s evidence scope"
-                    )
 
 
-def validate_evidence_map(
-    result: DiscussionEvidenceMap,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-) -> DiscussionEvidenceMap:
-    resolve_proposition_pointers(result, discussion_input.case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    _require_known_unique(result.specialist_opinions_used, opinions, "used opinion")
-    working = build_radiology_working_input(discussion_input.case_input)
-    for item in result.mapped_findings:
-        opinion = opinions.get(item.opinion_id)
-        if opinion is None:
-            raise ValueError(f"Unknown mapped opinion_id: {item.opinion_id}")
-        if item.target_layer == "reported_content":
-            if opinion.specialty != MdtSpecialty.THORACIC_RADIOLOGY:
-                raise ValueError(
-                    "Only a thoracic radiology opinion may target reported_content"
-                )
-            _validate_projection_pointers(item.evidence, working)
-        _validate_authorized_by_opinions(
-            item.evidence, [item.opinion_id], opinions
-        )
-    mapped_ids = {item.opinion_id for item in result.mapped_findings}
-    if not mapped_ids.issubset(result.specialist_opinions_used):
-        raise ValueError("specialist_opinions_used must include every mapped opinion_id")
-    return result
 
 
-def validate_update_and_consult(
-    result: DiscussionUpdateAndConsult,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-) -> DiscussionUpdateAndConsult:
-    resolve_proposition_pointers(result, discussion_input.case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    working = build_radiology_working_input(discussion_input.case_input)
-    _validate_reported_content_update(result, opinions, working)
-    _require_unique([str(item.task) for item in result.task_updates], "task update")
-    for update in result.task_updates:
-        if update.updated_assessment.task != update.task:
-            raise ValueError("Task update task must match updated_assessment.task")
-        _validate_task_assessment(
-            update.updated_assessment,
-            discussion_input.initial_assessment.reconstruction,
-            working,
-            opinions,
-        )
-        _validate_authorized_by_opinions(
-            update.supporting_evidence,
-            update.specialist_opinion_ids,
-            opinions,
-        )
-    _validate_chair_answers(result.chair_answers, discussion_input, opinions)
-    return result
 
 
-def validate_discussion_response(
-    result: ThoracicRadiologyDiscussionResponse,
-    discussion_input: ThoracicRadiologyDiscussionInput,
-    clinical_rules: dict | None = None,
-) -> ThoracicRadiologyDiscussionResponse:
-    del clinical_rules
-    if result.case_id != discussion_input.case_input.case_id:
-        raise ValueError(
-            f"Discussion case_id {result.case_id} does not match "
-            f"{discussion_input.case_input.case_id}"
-        )
-    resolve_proposition_pointers(result, discussion_input.case_input)
-    opinions = {item.opinion_id: item for item in discussion_input.specialist_opinions}
-    _require_known_unique(result.specialist_opinions_used, opinions, "used opinion")
-    working = build_radiology_working_input(discussion_input.case_input)
-    _validate_reconstruction(
-        result.updated_assessment.reconstruction,
-        discussion_input.case_input,
-        working,
-    )
-    _validate_formulation(
-        result.updated_assessment,
-        result.updated_assessment.reconstruction,
-        discussion_input.case_input,
-        working,
-        opinions,
-    )
-    _require_unique([str(item.task) for item in result.task_changes], "task change")
-    _validate_chair_answers(result.chair_answers, discussion_input, opinions)
-    used_by_result = {
-        opinion_id
-        for update in result.task_changes
-        for opinion_id in update.specialist_opinion_ids
-    }
-    used_by_result.update(item.opinion_id for item in result.mapped_findings)
-    used_by_result.update(
-        opinion_id
-        for answer in result.chair_answers
-        for opinion_id in answer.specialist_opinion_ids
-    )
-    if not used_by_result.issubset(result.specialist_opinions_used):
-        raise ValueError(
-            "specialist_opinions_used omits opinions used by the discussion response"
-        )
-    return result
 
 
 def _pointer_unit(pointer, units, evidence_to_unit):
@@ -559,52 +425,8 @@ def _validate_authorized_by_opinions(
             )
 
 
-def _validate_reported_content_update(result, opinions, working) -> None:
-    if not result.added_examinations and not result.added_reported_statements:
-        if result.reported_content_opinion_ids:
-            raise ValueError(
-                "reported_content_opinion_ids supplied without reported-content update"
-            )
-        return
-    _require_known_unique(
-        result.reported_content_opinion_ids, opinions, "reported-content opinion"
-    )
-    if not result.reported_content_opinion_ids or any(
-        opinions[item].specialty != MdtSpecialty.THORACIC_RADIOLOGY
-        for item in result.reported_content_opinion_ids
-    ):
-        raise ValueError(
-            "New examinations or reported statements require a formal thoracic radiology opinion"
-        )
-    pointers = [
-        pointer
-        for exam in result.added_examinations
-        for pointer in exam.source_evidence
-    ] + [
-        pointer
-        for statement in result.added_reported_statements
-        for pointer in statement.evidence
-    ]
-    _validate_projection_pointers(pointers, working)
-    _validate_authorized_by_opinions(
-        pointers, result.reported_content_opinion_ids, opinions
-    )
 
 
-def _validate_chair_answers(
-    answers: list[ChairAnswer],
-    discussion_input: ThoracicRadiologyDiscussionInput,
-    opinions: dict[str, SpecialistOpinion],
-) -> None:
-    validate_chair_question_order(answers, discussion_input.chair_questions)
-    for answer in answers:
-        _validate_authorized_by_opinions(
-            answer.supporting_evidence,
-            answer.specialist_opinion_ids,
-            opinions,
-        ) if answer.specialist_opinion_ids else _validate_all_pointers(
-            answer.supporting_evidence
-        )
 
 
 def _validate_core_pe_wording(

@@ -66,3 +66,36 @@ def test_batch_limits_case_concurrency_and_keeps_other_cases_running(monkeypatch
     assert maximum == 2
     assert [item["status"] for item in batch["items"]] == ["completed", "failed", "completed"]
     assert batch["summary"]["failed"] == 1
+
+
+def test_stopped_queued_case_is_skipped_without_affecting_other_cases(monkeypatch, tmp_path):
+    import json
+    cases = tmp_path / 'data/raw_cases'
+    cases.mkdir(parents=True)
+    for case in ('case-a', 'case-b'):
+        (cases / f'{case}.txt').write_text('case')
+        directory = tmp_path / f'outputs/runs/{case}'
+        directory.mkdir(parents=True)
+        (directory / '.workbench_run.json').write_text(json.dumps({'case_id': case, 'status': 'queued'}))
+    runner = RunOrchestrator(tmp_path, RunCatalog(tmp_path), EventStore(tmp_path / 'events.sqlite3'))
+    monkeypatch.setattr(runner, 'prepare', lambda request: (request['case_id'], cases / f"{request['case_id']}.txt"))
+    entered, release = asyncio.Event(), asyncio.Event()
+    started = []
+    async def start(run_id, _input):
+        started.append(run_id)
+        entered.set()
+        await release.wait()
+    monkeypatch.setattr(runner, 'start', start)
+    monkeypatch.setattr(runner.catalog, 'run_summary', lambda _: {'status': 'completed', 'discussion_complete': True})
+    async def exercise():
+        batch = runner.create_batch({'kind': 'run', 'case_ids': ['case-a', 'case-b'],
+                                     'max_case_concurrency': 1, 'max_request_concurrency': 1})
+        await entered.wait()
+        runner.stop_run('case-b')
+        release.set()
+        await runner.batch_tasks[batch['id']]
+        return runner.batch(batch['id'])
+    batch = asyncio.run(exercise())
+    assert started == ['case-a']
+    assert [item['status'] for item in batch['items']] == ['completed', 'stopped']
+    assert batch['summary']['stopped'] == 1

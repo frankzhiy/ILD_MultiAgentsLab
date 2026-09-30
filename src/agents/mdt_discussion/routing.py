@@ -32,102 +32,32 @@ def build_discussion_tasks(
     previous_rounds: list[DiscussionRound],
     decision_state: MultiSpecialtyDecisionState | None = None,
 ) -> list[DiscussionTask]:
-    """Route open chair issues directly to their declared specialties."""
+    """Route the current synthesis directly; never reconstruct legacy chair sections."""
+    from src.agents.common.team_synthesis import MDTChairResult
+    from src.agents.mdt_chair.agent import build_semantic_evidence_catalog
 
-    proposition_index = _proposition_index(clinical_propositions)
-    graph_index = _graph_index(local_graphs)
+    team = MDTChairResult.model_validate(chair_result).team_synthesis
+    propositions = _proposition_index(clinical_propositions)
+    graphs = _graph_index(local_graphs)
     prior_answers = _prior_answers(previous_rounds)
-    tasks: list[DiscussionTask] = []
-
-    for question in chair_result.get("questions") or []:
-        issue_id = str(question.get("question_id") or "")
-        if not issue_id or question.get("discussion_status") in {
-            "closed_this_round",
-            "waiting_for_new_evidence",
-            "awaiting_requester_review",
-            "awaiting_conflict_assessment",
-        }:
-            continue
-        answer_status = question.get("answer_status")
-        if answer_status is None:
-            answer_status = {
-                "resolved": "answered",
-                "partially_resolved": "partially_answered",
-                "unresolved": "unanswered",
-                "blocked_by_evidence": "blocked_by_evidence",
-                "disputed": "answered",
-            }.get(question.get("resolution_status"))
-        if answer_status in {"answered", "boundary_answered", "blocked_by_evidence"}:
-            continue
-        awaiting = _valid_specialties(question.get("awaiting_specialties") or [])
-        partial = _valid_specialties(
-            answer.get("specialty")
-            for answer in question.get("answers") or []
-            if answer.get("relation") == "partial_answer"
-        )
-        targets = _valid_specialties([*awaiting, *partial])
-        if not targets:
-            targets = _valid_specialties(question.get("target_specialties") or [])
-        for specialty in targets:
-            tasks.append(
-                _task(
-                    round_number=round_number,
-                    issue_type="question",
-                    issue_id=issue_id,
-                    specialty=specialty,
-                    prompt=str(question.get("question") or ""),
-                    current_result=str(question.get("answer_summary") or ""),
-                    remaining=str(question.get("remaining_clarification") or ""),
-                    why=str(question.get("why_it_matters") or ""),
-                    issue=question,
-                    propositions=proposition_index,
-                    graphs=graph_index,
-                    prior_answers=prior_answers.get(issue_id, []),
-                    active_judgments=_active_judgment_view(decision_state, specialty),
-                )
-            )
-
-    for conflict in chair_result.get("conflicts") or []:
-        issue_id = str(conflict.get("conflict_id") or "")
-        if not issue_id:
-            continue
-        targets = _valid_specialties(conflict.get("specialties") or [])
-        if not targets:
-            targets = _valid_specialties(
-                position.get("specialty")
-                for position in conflict.get("positions") or []
-            )
-        prompt = "\n".join(
-            value
-            for value in (
-                str(
-                    conflict.get("comparison_target")
-                    or conflict.get("shared_claim")
-                    or ""
-                ),
-                str(conflict.get("why_incompatible") or ""),
-            )
-            if value
-        )
-        for specialty in targets:
-            tasks.append(
-                _task(
-                    round_number=round_number,
-                    issue_type="conflict",
-                    issue_id=issue_id,
-                    specialty=specialty,
-                    prompt=prompt or str(conflict.get("topic") or ""),
-                    current_result=str(conflict.get("topic") or ""),
-                    remaining=str(conflict.get("resolution_requirement") or ""),
-                    why=str(conflict.get("decision_impact") or ""),
-                    issue=conflict,
-                    propositions=proposition_index,
-                    graphs=graph_index,
-                    prior_answers=prior_answers.get(issue_id, []),
-                    active_judgments=_active_judgment_view(decision_state, specialty),
-                )
-            )
-    return tasks
+    catalog = build_semantic_evidence_catalog(clinical_propositions, local_graphs)
+    evidence = _evidence_candidates({"evidence": [
+        dict(evidence_ref=ref, graph_unit_id=ref, segment_id=item["segment_id"],
+             evidence_ids=list(item["evidence_blocks"]), quote="\n".join(item["evidence_blocks"].values()))
+        for ref, item in catalog.items() if item["evidence_blocks"]
+    ]}, propositions, graphs)
+    return [DiscussionTask(
+        task_id=f"R{round_number:02d}-{issue.issue_id}-{assignment.specialty}",
+        round_number=round_number, issue_type="question", issue_id=issue.issue_id,
+        specialty=assignment.specialty, prompt=assignment.question,
+        origin=issue.origin, raised_by=issue.raised_by,
+        remaining_clarification=issue.closure_criterion, why_it_matters=issue.decision_impact,
+        affected_specialties=issue.affected_specialties,
+        prior_answers=prior_answers.get(issue.issue_id, []),
+        specialty_context=[team.source_catalog[ref] for ref in issue.source_refs],
+        evidence_candidates=evidence,
+        active_judgments=_active_judgment_view(decision_state, assignment.specialty),
+    ) for issue in team.issues for assignment in issue.assignments]
 
 
 def group_tasks_by_specialty(
@@ -137,41 +67,6 @@ def group_tasks_by_specialty(
     for task in tasks:
         grouped.setdefault(task.specialty, []).append(task)
     return grouped
-
-
-def _task(
-    *,
-    round_number: int,
-    issue_type: str,
-    issue_id: str,
-    specialty: str,
-    prompt: str,
-    current_result: str,
-    remaining: str,
-    why: str,
-    issue: dict[str, Any],
-    propositions: dict[str, list[DiscussionProposition]],
-    graphs: dict[str, dict[str, Any]],
-    prior_answers: list[dict[str, Any]],
-    active_judgments: list[dict[str, Any]],
-) -> DiscussionTask:
-    evidence = _evidence_candidates(issue, propositions, graphs)
-    task_id = f"R{round_number:02d}-{issue_id}-{specialty}"
-    return DiscussionTask(
-        task_id=task_id,
-        round_number=round_number,
-        issue_type=issue_type,
-        issue_id=issue_id,
-        specialty=specialty,
-        prompt=prompt,
-        current_result=current_result,
-        remaining_clarification=remaining,
-        why_it_matters=why,
-        prior_answers=prior_answers,
-        specialty_context=_specialty_context(issue),
-        evidence_candidates=evidence,
-        active_judgments=active_judgments,
-    )
 
 
 def _active_judgment_view(
@@ -186,6 +81,11 @@ def _active_judgment_view(
             "version_id": item.version_id,
             "statement": item.assessment.statement,
             "status": item.assessment.status,
+            "assessability": item.assessment.assessability,
+            "direction": item.assessment.direction,
+            "confidence": item.assessment.confidence,
+            "clinical_role": item.assessment.clinical_role,
+
             "medical_basis": item.assessment.medical_basis,
             "limitations": item.assessment.limitations,
             "conditions": item.assessment.conditions.model_dump(mode="json"),

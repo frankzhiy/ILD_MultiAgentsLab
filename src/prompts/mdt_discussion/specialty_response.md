@@ -12,7 +12,7 @@
 9. 指南只规定解释规则，不能补造患者事实。指南适用前提不足时明确说明；若某个 claim 直接依赖指南解释规则，把指南放入该 claim 的 `guideline_evidence`。只填写对应 chunk 中连续的 `quote_unit_ids`，精确 `quote` 和字符偏移由程序从指南原文回填。
 10. 缺失信息不等于阴性信息；报告未描述不等于明确未见；模式不等于疾病诊断。
 11. 需要补充的影像、报告、标本、检查或病史只能写入 `evidence_gaps`，不能替代本轮医学回答；这些缺口只是供原提问专科复核，不能自行触发下一轮。
-12. `new_questions` 保持为空。是否基于现有材料继续追问，只能由原提问专科在复核时决定，并沿用原议题 ID。
+12. 回答中发现真正新的、可由现有资料推进且影响决定的问题时，可写入 `new_questions`，由主持人审核去向。原问题澄清仍沿用原议题 ID，避免同义重复。
 13. `remaining_limitation` 描述本轮判断边界；只有通过共同判断协议筛选的资料需求才写入 `evidence_gaps`。
 14. `evidence_gaps[].related_evidence[].evidence_ids` 只能逐字选择本轮 `evidence_candidates[].evidence_ids` 中的 Evidence ID；不得填写 `evidence_ref`、Graph Unit ID 或 proposition ID。
 

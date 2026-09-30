@@ -20,6 +20,8 @@ def assessment(assessment_id="pulm_001"):
         "assessment_type": "working_diagnosis",
         "statement": "现有资料支持纤维化性间质性肺病。",
         "status": "favored",
+        "assessability": "partially_assessable", "direction": "supports",
+        "confidence": "moderate", "clinical_role": "primary",
         "medical_basis": "病例记录存在纤维化相关描述。",
         "decision_impact": "进入病因和模式层面的进一步整合。",
         "claims": [{"statement": "存在纤维化性间质性肺病。"}],

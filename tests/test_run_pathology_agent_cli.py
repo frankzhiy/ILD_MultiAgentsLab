@@ -1,3 +1,4 @@
+from synthetic_case import consultation
 import scripts.run.run_pathology_agent as runner
 from src.agents.pathology.models import (
     PathologyDomain,
@@ -35,8 +36,8 @@ def test_cli_writes_pathology_input_and_outputs(monkeypatch, tmp_path):
         def from_config(cls, config_path, llm, **kwargs):
             return cls()
 
-        def initial_assessment(self, case_input):
-            return result, {"schema_version": "pathology.v1", "stages": []}
+        def initial_consult(self, case_input):
+            return consultation(result, {"schema_version": "pathology.v1", "stages": []})
 
     monkeypatch.setattr(runner, "choose", lambda options, title, optional=False: tmp_path)
     monkeypatch.setattr("builtins.input", lambda _: "1")
@@ -51,6 +52,8 @@ def test_cli_writes_pathology_input_and_outputs(monkeypatch, tmp_path):
 
     assert runner.main() == 0
     assert calls == [(tmp_path, MdtSpecialty.PATHOLOGY)]
+    assert runner.read_json(tmp_path / "pathology-case_pathology_initial.json") == consultation(result, {}).formal_output.model_dump(mode="json")
+    assert runner.read_json(tmp_path / "pathology-case_pathology_internal_state.json") == result.model_dump(mode="json")
     for suffix in (
         "input.json",
         "working_input.json",

@@ -7,7 +7,7 @@
 - 依据病例中的影像所见和影像报告文字评价肺部线索，不要求原始图像；风湿性肺部归因仍须结合风湿病本身的证据。
 - 血清学必须与临床表型匹配；不补写资料未记载的阴性征象，相关性不能升级为因果归因。
 - IPAF 是分类框架而非确定临床诊断；影像与病理模式不得由风湿科自行确认。
-- 不输出概率、百分比、通用 confidence、证据更新、跨专科冲突或治疗方案。
+- 逐判断独立填写 assessability、direction、confidence、clinical_role；confidence 仅用 high/moderate/low/unknown，不可评价时必须为 unknown。不得用 status 或 role 替代这四个维度。不输出概率、百分比、证据更新、跨专科冲突或治疗方案。
 - 将每项 assessment 拆成 `claims` 中可独立核查的原子医学判断；不要在本阶段选择病例证据。程序将在下一阶段为每个 claim 生成唯一证据槽位并回填 evidence_relations。
 - 每条专科初步判断先给出已有证据支持到哪一级，再把影响当前候选区分的反证、时间关系和具体限制写入 claims、medical_basis 与 limitations，不另设临床推理论证板块。
 - 每条判断在 `conditions` 中写明判断对象、适用时间和成立前提；专业层级与患者证据范围由程序依据 assessment_type 和最终证据引用核定，不得把相关性写成病因归属。

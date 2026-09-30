@@ -66,7 +66,9 @@ class DocumentClassifier:
             max_tokens=max_tokens,
             max_attempts=max_attempts,
             retry_backoff_seconds=retry_backoff_seconds,
-            response_format_mode="json_object",
+            response_format_mode=(
+                "json_schema" if getattr(llm, "supports_json_schema", False) else "json_object"
+            ),
         )
 
     def classify(self, input_text: str) -> tuple[DocumentClassification, dict]:

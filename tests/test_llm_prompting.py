@@ -4,7 +4,7 @@ import urllib.error
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from src.agents.common.initial_output import (
     EvidenceBundle,
@@ -104,6 +104,51 @@ def test_semantic_retry_cannot_replace_an_entire_section():
             {"question_routes": [{"source_refs": ["S003"]}]},
             {"edits": [{"op": "replace", "path": "/question_routes", "value": []}]},
         )
+
+
+def test_repair_uses_candidate_that_produced_schema_error():
+    class Ledger(BaseModel):
+        issues: list[str]
+        outcome: str
+
+        @model_validator(mode="after")
+        def unique_issues(self):
+            if len(self.issues) != len(set(self.issues)):
+                raise ValueError("Duplicate issue_id")
+            return self
+
+    responses = iter([
+        {"issues": ["I3"], "outcome": "bounded"},
+        {"edits": [{"op": "append", "path": "/issues", "value": "I3"}]},
+        {"edits": [{"op": "remove_indices", "path": "/issues", "value": [1]}]},
+        {"edits": [{"op": "remove_indices", "path": "/issues", "value": [0]}]},
+    ])
+    prompts = []
+
+    class FakeLLM:
+        def complete(self, messages, **kwargs):
+            prompts.append(messages)
+            return LLMResponse(content=json.dumps(next(responses)), raw={})
+
+    def validate(ledger):
+        if ledger.outcome == "bounded" and ledger.issues:
+            raise ValueError("Closed issue I3 is still present in issues")
+        return ledger
+
+    result, trace = StructuredLLMGenerator(
+        FakeLLM(), temperature=0, max_tokens=1000, max_attempts=4,
+    ).generate(
+        schema_model=Ledger, schema_name="ledger", system_prompt="system", user_prompt="user",
+        extra_validation=validate, repair_on_validation_error=True,
+    )
+
+    assert result.issues == []
+    assert result.outcome == "bounded"
+    assert json.loads(prompts[2][-2].content)["issues"] == ["I3", "I3"]
+    assert json.loads(prompts[3][-2].content)["issues"] == ["I3"]
+    assert "Duplicate issue_id" in trace["attempts"][1]["validation_error"]
+    assert "Closed issue" in trace["attempts"][2]["validation_error"]
+    assert trace["attempts"][3]["validated"]
 
 
 def test_semantic_retry_can_replace_atomic_claim_selection():

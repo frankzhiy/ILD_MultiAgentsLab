@@ -32,6 +32,8 @@ export const api = {
   runChair: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/chair`, { method: 'POST' }).then(json),
   discussion: (runId, presented = false) => fetch(`/api/runs/${encodeURIComponent(runId)}/discussion${presented ? '/presented' : ''}`, presented ? { method: 'POST' } : undefined).then(json),
   report: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/report/presented`, { method: 'POST' }).then(json),
+  stopRun: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }).then(json),
+  runReport: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/report`, { method: 'POST' }).then(json),
   runDiscussion: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/discussion`, { method: 'POST' }).then(json),
   artifacts: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/artifacts`).then(json),
   errors: (runId) => fetch(`/api/runs/${encodeURIComponent(runId)}/errors`).then(json),

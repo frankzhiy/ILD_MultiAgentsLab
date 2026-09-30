@@ -1,3 +1,4 @@
+from synthetic_case import consultation
 from pathlib import Path
 
 import scripts.run.run_rheumatology_agent as runner
@@ -6,7 +7,7 @@ from src.agents.rheumatology.models import DomainReview, RheumatologyInitialAsse
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 
 
-RUN_DIR = Path("outputs/runs/20260714_163246_76-IPF_step2_step3")
+RUN_DIR = Path("outputs/runs/20260714_163246_synthetic-case_step2_step3")
 
 
 def test_cli_writes_rheumatology_input_and_outputs(monkeypatch, tmp_path):
@@ -22,8 +23,8 @@ def test_cli_writes_rheumatology_input_and_outputs(monkeypatch, tmp_path):
         def from_config(cls, config_path, llm, **kwargs):
             return cls()
 
-        def initial_assessment(self, case_input):
-            return result, {"stages": []}
+        def initial_consult(self, case_input):
+            return consultation(result, {"stages": []})
 
     monkeypatch.setattr(runner, "choose", lambda options, title, optional=False: tmp_path)
     monkeypatch.setattr("builtins.input", lambda _: "1")
@@ -34,8 +35,10 @@ def test_cli_writes_rheumatology_input_and_outputs(monkeypatch, tmp_path):
 
     assert runner.main() == 0
     assert calls == [(tmp_path, MdtSpecialty.RHEUMATOLOGY)]
+    assert runner.read_json(tmp_path / "synthetic-case_rheumatology_initial.json") == consultation(result, {}).formal_output.model_dump(mode="json")
+    assert runner.read_json(tmp_path / "synthetic-case_rheumatology_internal_state.json") == result.model_dump(mode="json")
     for suffix in ("input.json", "initial.json", "initial_trace.json", "initial.html"):
-        assert (tmp_path / f"76-IPF_rheumatology_{suffix}").exists()
+        assert (tmp_path / f"synthetic-case_rheumatology_{suffix}").exists()
 
 
 def test_cli_discovers_semantic_run_directory():

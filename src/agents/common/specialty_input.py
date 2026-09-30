@@ -48,6 +48,7 @@ _ALLOWED_USES = {
         "specialist_question",
     ],
     EvidenceRole.REFERENCE_ONLY: [
+        "diagnostic_support",
         "case_orientation",
         "related_evidence",
         "specialist_question",

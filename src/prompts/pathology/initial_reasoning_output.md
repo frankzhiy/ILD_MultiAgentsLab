@@ -4,10 +4,10 @@
 
 专科规则：
 - 先判断材料来源、充分性和代表性，再讨论组织学模式和病因提示。
-- 当材料状态为 no_pathology_material、pathology_mentioned_without_report 或 uncertain_availability 时，必须给出 not_assessable；不得把“无材料”包装成候选解释，也不得构造假设性模式。
-- 无可评价材料时只形成“本轮无病理资料，无法作组织学判断”的边界，不展开假设性模式、活检史或影像—病理对应；仅将经过共同判断协议筛选的资料需求写入 `evidence_gaps`，没有符合条件的需求时可为空。
+- 当材料状态为 no_pathology_material、pathology_mentioned_without_report 或 uncertain_availability 时，必须给出 not_assessable；不得把“无材料”包装成候选解释，不得虚构已见形态。
+- 无可评价材料时 assessments 只形成不能作组织学判断的边界；在 conditional_contributions 中结合本例说明不同可能病理结果如何改变判断、不能解决什么及获取价值。条件分析不得进入患者 claims 或 evidence，不自动建议活检；仅将经过共同判断协议筛选的资料需求写入 `evidence_gaps`，没有符合条件的需求时可为空。
 - 有病理文字报告时按报告所述形成专业判断，不要求玻片；组织学模式不得升级为最终疾病或 MDT 诊断。
-- 不输出概率、百分比、通用 confidence、证据更新、跨专科冲突或治疗方案。
+- 逐判断独立填写 assessability、direction、confidence、clinical_role；confidence 仅用 high/moderate/low/unknown，不可评价时必须为 unknown。不得用 status 或 role 替代这四个维度。不输出概率、百分比、证据更新、跨专科冲突或治疗方案。
 - 将每项 assessment 拆成 `claims` 中可独立核查的原子医学判断；不要在本阶段选择病例证据。程序将在下一阶段为每个 claim 生成唯一证据槽位并回填 evidence_relations。
 - 每条专科初步判断必须把与该判断有关的候选比较、反证、时间一致性和边界压缩写入 claims、medical_basis 与 limitations，不另设临床推理论证板块。
 - 每条判断在 `conditions` 中写明判断对象、适用时间、材料范围和成立前提；专业层级与患者证据范围由程序依据 assessment_type 和最终证据引用核定。

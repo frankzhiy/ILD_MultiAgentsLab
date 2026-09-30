@@ -23,25 +23,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.agent_input.prepare_specialty_input import (  # noqa: E402
-    build_specialty_case_input,
-)
-from src.agents.common.evidence_projection import (  # noqa: E402
-    build_specialty_evidence_prompt_input,
-    build_specialty_working_input,
-)
-from src.agents.pulmonology.agent import PulmonologyAgent  # noqa: E402
-from src.agents.pulmonology.models import (  # noqa: E402
-    PulmonologyDiscussionInput,
-    PulmonologyInitialAssessment,
-    SpecialistOpinion,
-)
-from src.llm.factory import build_llm_client  # noqa: E402
-from src.llm.prompting import llm_value  # noqa: E402
-from src.llm.structured import StructuredGenerationError  # noqa: E402
-from src.reporting.pulmonology_report import render_pulmonology_report  # noqa: E402
-from src.schemas.semantic_graphing.graph_unit import MdtSpecialty  # noqa: E402
-from src.utils.config import load_yaml  # noqa: E402
+from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
+from src.agents.common.evidence_projection import build_specialty_evidence_prompt_input, build_specialty_working_input
+from src.agents.pulmonology.agent import PulmonologyAgent
+from src.llm.factory import build_llm_client
+from src.llm.prompting import llm_value
+from src.llm.structured import StructuredGenerationError
+from src.reporting.pulmonology_report import render_pulmonology_report
+from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.utils.config import load_yaml
 
 
 CONFIG_PATH = ROOT / "configs/agents/pulmonology/agent.yaml"
@@ -51,9 +41,6 @@ STAGE_LABELS = {
     "initial_foundation": "首轮 1/3：建立临床基础",
     "initial_pulmonary_assessment": "首轮 2/3：肺部客观评估",
     "initial_diagnostic_formulation": "首轮 3/3：诊断综合",
-    "discussion_evidence_mapping": "会中 1/3：专科证据映射",
-    "discussion_state_update": "会中 2/3：八问状态更新",
-    "discussion_consult_response": "会中 3/3：会诊响应",
 }
 
 
@@ -183,20 +170,6 @@ def write_failure_trace(
     return path
 
 
-def choose_phase() -> str:
-    print("\n请选择呼吸科 Agent 运行阶段：")
-    print("  [1] 首轮评估")
-    print("  [2] 会中响应")
-    while True:
-        try:
-            choice = input("请输入序号 [1-2]：").strip()
-        except (EOFError, KeyboardInterrupt) as exc:
-            raise SystemExit("\n已中止。") from exc
-        if choice == "1":
-            return "initial"
-        if choice == "2":
-            return "discussion"
-        print("  ✗ 无效输入，请输入 1 或 2。\n")
 
 
 def choose_file(paths: list[Path], title: str, *, optional: bool = False) -> Path | None:
@@ -229,7 +202,8 @@ def choose_file(paths: list[Path], title: str, *, optional: bool = False) -> Pat
         print("  ✗ 无效输入，请输入列表中的序号。\n")
 
 
-def discover_files(pattern: str, root: Path = RUNS_DIR) -> list[Path]:
+def discover_files(pattern: str, root: Path | None = None) -> list[Path]:
+    root = root or RUNS_DIR
     if not root.exists():
         return []
     return sorted(
@@ -250,7 +224,6 @@ def discover_semantic_run_dirs() -> list[Path]:
 
 def main() -> int:
     load_env_file()
-    phase = choose_phase()
     run_dir = choose_file(
         discover_semantic_run_dirs(),
         "semantic_graphing 运行目录",
@@ -296,65 +269,22 @@ def main() -> int:
         )
     output_stem = f"{case_input.case_id}_pulmonology"
 
-    if phase == "initial":
-        try:
-            with progress.step("LLM 按三阶段生成呼吸科首轮评估"):
-                result, trace = agent.initial_assessment(case_input)
-        except StructuredGenerationError as exc:
-            failure_path = write_failure_trace(run_dir, output_stem, "initial", exc)
-            progress.log(f"失败 trace：{failure_path.resolve()}")
-            raise
-        suffix = "initial"
-    else:
-        initial_path = choose_file(
-            discover_files(
-                f"{case_input.case_id}_pulmonology_initial.json",
-                run_dir,
-            ),
-            "呼吸科首轮评估文件",
-        )
-        assert initial_path is not None
-        initial = PulmonologyInitialAssessment.model_validate_json(
-            initial_path.read_text(encoding="utf-8")
-        )
-        opinions_path = choose_file(
-            discover_files("*specialist_opinions*.json", run_dir),
-            "其他专科意见文件",
-            optional=True,
-        )
-        chair_questions_path = choose_file(
-            discover_files("*chair_questions*.json", run_dir),
-            "主席问题文件",
-            optional=True,
-        )
-        opinions = [
-            SpecialistOpinion.model_validate(item)
-            for item in (read_json(opinions_path) if opinions_path else [])
-        ]
-        chair_questions = read_json(chair_questions_path) if chair_questions_path else []
-        if not isinstance(chair_questions, list):
-            raise ValueError("chair questions JSON must be a list")
-        try:
-            with progress.step("LLM 按三阶段生成呼吸科会中响应"):
-                result, trace = agent.discussion_response(
-                    PulmonologyDiscussionInput(
-                        case_input=case_input,
-                        initial_assessment=initial,
-                        specialist_opinions=opinions,
-                        chair_questions=chair_questions,
-                    )
-                )
-        except StructuredGenerationError as exc:
-            failure_path = write_failure_trace(run_dir, output_stem, "discussion", exc)
-            progress.log(f"失败 trace：{failure_path.resolve()}")
-            raise
-        suffix = "discussion"
+    try:
+        with progress.step("LLM 按三阶段生成呼吸科首轮评估"):
+            consultation = agent.initial_consult(case_input)
+            result, trace = consultation.internal_state, consultation.trace
+    except StructuredGenerationError as exc:
+        failure_path = write_failure_trace(run_dir, output_stem, "initial", exc)
+        progress.log(f"失败 trace：{failure_path.resolve()}")
+        raise
+    suffix = "initial"
 
     output = run_dir / f"{output_stem}_{suffix}.json"
     trace_output = run_dir / f"{output_stem}_{suffix}_trace.json"
     report_output = run_dir / f"{output_stem}_{suffix}.html"
     with progress.step("写入 JSON、trace 和 HTML 报告"):
-        write_json(output, result.model_dump(mode="json"))
+        write_json(output, consultation.formal_output.model_dump(mode="json"))
+        write_json(run_dir / f"{case_input.case_id}_pulmonology_internal_state.json", result.model_dump(mode="json"))
         write_json(trace_output, trace)
         render_pulmonology_report(result, case_input, report_output)
     progress.log(f"JSON 结果：{output.resolve()}")

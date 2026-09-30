@@ -32,14 +32,14 @@ def statement(working, unit_id, proposition_id):
 def test_0714_keeps_all_units_for_orientation_but_projects_exact_ct_propositions():
     case, working = project(RUN_0714)
 
-    assert working.summary.orientation_unit_count == case.summary.unit_count == 11
+    assert working.summary.orientation_unit_count == case.summary.unit_count == 5
     assert working.summary.radiology_candidate_unit_count == 2
     assert working.summary.thoracic_evidence_unit_count == 2
 
     finding = statement(working, "seg_003_gu_003", "prop_006")
     assert finding.thoracic_imaging_eligible is True
     assert finding.kind == ProjectedStatementKind.REPORTED_FINDING
-    assert finding.quote == "双肺间质增粗纹理走形杂乱"
+    assert finding.quote == "胸部CT示双肺间质增粗纹理走形杂乱"
     assert "抗感染治疗后" not in finding.quote
 
     report_impression = statement(working, "seg_003_gu_003", "prop_010")
@@ -58,7 +58,7 @@ def test_0714_keeps_all_units_for_orientation_but_projects_exact_ct_propositions
 def test_0715_excludes_misrouted_echo_pft_and_limb_ultrasound_unit():
     case, working = project(RUN_0715)
 
-    assert working.summary.orientation_unit_count == case.summary.unit_count == 18
+    assert working.summary.orientation_unit_count == case.summary.unit_count == 5
     assert working.summary.radiology_candidate_unit_count == 2
     assert working.summary.thoracic_evidence_unit_count == 1
     assert [item.graph_unit_id for item in working.excluded_radiology_candidates] == [

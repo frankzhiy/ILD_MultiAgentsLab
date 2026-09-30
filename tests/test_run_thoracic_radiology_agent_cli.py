@@ -1,3 +1,4 @@
+from synthetic_case import consultation
 from pathlib import Path
 
 import scripts.run.run_thoracic_radiology_agent as runner
@@ -15,7 +16,7 @@ from src.llm.structured import StructuredGenerationError
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 
 
-RUN_DIR = Path("outputs/runs/20260714_163246_76-IPF_step2_step3")
+RUN_DIR = Path("outputs/runs/20260714_163246_synthetic-case_step2_step3")
 
 
 def minimal_assessment(case):
@@ -83,11 +84,10 @@ def test_main_uses_shared_input_builder_with_radiology_target(monkeypatch, tmp_p
         def from_config(cls, config_path, llm, **kwargs):
             return cls()
 
-        def initial_assessment(self, case_input):
+        def initial_consult(self, case_input):
             assert case_input == case
-            return result, {"schema_version": "thoracic_radiology.v2", "stages": []}
+            return consultation(result, {"schema_version": "thoracic_radiology.v2", "stages": []})
 
-    monkeypatch.setattr(runner, "choose_phase", lambda: "initial")
     monkeypatch.setattr(runner, "discover_semantic_run_dirs", lambda: [tmp_path])
     monkeypatch.setattr(runner, "choose_file", lambda paths, title, optional=False: paths[0])
     monkeypatch.setattr(runner, "build_specialty_case_input", fake_build)
@@ -97,11 +97,12 @@ def test_main_uses_shared_input_builder_with_radiology_target(monkeypatch, tmp_p
 
     assert runner.main() == 0
     assert calls == [(tmp_path, MdtSpecialty.THORACIC_RADIOLOGY)]
-    assert (tmp_path / "76-IPF_thoracic_radiology_input.json").exists()
-    assert (tmp_path / "76-IPF_thoracic_radiology_working_input.json").exists()
-    assert (tmp_path / "76-IPF_thoracic_radiology_initial.json").exists()
-    assert (tmp_path / "76-IPF_thoracic_radiology_initial_trace.json").exists()
-    report = tmp_path / "76-IPF_thoracic_radiology_initial.html"
+    assert (tmp_path / "synthetic-case_thoracic_radiology_input.json").exists()
+    assert (tmp_path / "synthetic-case_thoracic_radiology_working_input.json").exists()
+    assert runner.read_json(tmp_path / "synthetic-case_thoracic_radiology_initial.json") == consultation(result, {}).formal_output.model_dump(mode="json")
+    assert runner.read_json(tmp_path / "synthetic-case_thoracic_radiology_internal_state.json") == result.model_dump(mode="json")
+    assert (tmp_path / "synthetic-case_thoracic_radiology_initial_trace.json").exists()
+    report = tmp_path / "synthetic-case_thoracic_radiology_initial.html"
     assert report.exists()
     html = report.read_text(encoding="utf-8")
     assert "当前影像问题" in html

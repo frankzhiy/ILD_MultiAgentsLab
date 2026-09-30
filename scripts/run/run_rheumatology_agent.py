@@ -19,23 +19,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.agent_input.prepare_specialty_input import build_specialty_case_input  # noqa: E402
-from src.agents.common.evidence_projection import (  # noqa: E402
-    build_specialty_evidence_prompt_input,
-    build_specialty_working_input,
-)
-from src.agents.rheumatology.agent import RheumatologyAgent  # noqa: E402
-from src.agents.rheumatology.models import (  # noqa: E402
-    RheumatologyDiscussionInput,
-    RheumatologyInitialAssessment,
-    SpecialistOpinion,
-)
-from src.llm.factory import build_llm_client  # noqa: E402
-from src.llm.prompting import llm_value  # noqa: E402
-from src.llm.structured import StructuredGenerationError  # noqa: E402
-from src.reporting.rheumatology_report import render_rheumatology_report  # noqa: E402
-from src.schemas.semantic_graphing.graph_unit import MdtSpecialty  # noqa: E402
-from src.utils.config import load_yaml  # noqa: E402
+from scripts.agent_input.prepare_specialty_input import build_specialty_case_input
+from src.agents.common.evidence_projection import build_specialty_evidence_prompt_input, build_specialty_working_input
+from src.agents.rheumatology.agent import RheumatologyAgent
+from src.llm.factory import build_llm_client
+from src.llm.prompting import llm_value
+from src.llm.structured import StructuredGenerationError
+from src.reporting.rheumatology_report import render_rheumatology_report
+from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.utils.config import load_yaml
 
 
 CONFIG_PATH = ROOT / "configs/agents/rheumatology/agent.yaml"
@@ -45,9 +37,6 @@ STAGE_LABELS = {
     "initial_case_reconstruction": "首轮 1/3：自身免疫病例重建",
     "initial_autoimmune_assessment": "首轮 2/3：自身免疫诊断评估",
     "initial_consult_formulation": "首轮 3/3：风湿科诊断综合",
-    "discussion_evidence_mapping": "会中 1/3：专科证据映射",
-    "discussion_state_update": "会中 2/3：风湿状态更新",
-    "discussion_consult_response": "会中 3/3：会诊响应",
 }
 
 
@@ -177,9 +166,6 @@ def write_failure_trace(run_dir: Path, stem: str, phase: str, error: StructuredG
 
 def main() -> int:
     load_env_file()
-    phase = input("运行阶段 [1] 首轮评估 [2] 会中响应：").strip()
-    if phase not in {"1", "2"}:
-        raise ValueError("阶段必须为 1 或 2")
     run_dir = choose(discover_semantic_run_dirs(), "semantic_graphing 运行目录")
     assert run_dir is not None
     progress = ProgressReporter()
@@ -209,37 +195,21 @@ def main() -> int:
             CONFIG_PATH, build_llm_client(config), event_callback=progress.generation_event
         )
     stem = f"{case.case_id}_rheumatology"
-    if phase == "1":
-        try:
-            with progress.step("LLM 按三阶段生成风湿科首轮评估"):
-                result, trace = agent.initial_assessment(case)
-        except StructuredGenerationError as error:
-            failure_path = write_failure_trace(run_dir, stem, "initial", error)
-            progress.log(f"失败 trace：{failure_path.resolve()}")
-            raise
-        suffix = "initial"
-    else:
-        initial_path = choose(sorted(run_dir.glob(f"{stem}_initial.json")), "风湿科首轮评估文件")
-        opinions_path = choose(sorted(run_dir.glob("*specialist_opinions*.json")), "其他专科意见文件", optional=True)
-        questions_path = choose(sorted(run_dir.glob("*chair_questions*.json")), "主席问题文件", optional=True)
-        initial = RheumatologyInitialAssessment.model_validate_json(initial_path.read_text(encoding="utf-8"))
-        opinions = [SpecialistOpinion.model_validate(item) for item in (read_json(opinions_path) if opinions_path else [])]
-        questions = read_json(questions_path) if questions_path else []
-        if not isinstance(questions, list):
-            raise ValueError("chair questions JSON must be a list")
-        try:
-            with progress.step("LLM 按三阶段生成风湿科会中响应"):
-                result, trace = agent.discussion_response(RheumatologyDiscussionInput(case_input=case, initial_assessment=initial, specialist_opinions=opinions, chair_questions=questions))
-        except StructuredGenerationError as error:
-            failure_path = write_failure_trace(run_dir, stem, "discussion", error)
-            progress.log(f"失败 trace：{failure_path.resolve()}")
-            raise
-        suffix = "discussion"
+    try:
+        with progress.step("LLM 按三阶段生成风湿科首轮评估"):
+            consultation = agent.initial_consult(case)
+            result, trace = consultation.internal_state, consultation.trace
+    except StructuredGenerationError as error:
+        failure_path = write_failure_trace(run_dir, stem, "initial", error)
+        progress.log(f"失败 trace：{failure_path.resolve()}")
+        raise
+    suffix = "initial"
     output = run_dir / f"{stem}_{suffix}.json"
     trace_output = run_dir / f"{stem}_{suffix}_trace.json"
     report_output = run_dir / f"{stem}_{suffix}.html"
     with progress.step("写入 JSON、trace 和 HTML 报告"):
-        write_json(output, result.model_dump(mode="json"))
+        write_json(output, consultation.formal_output.model_dump(mode="json"))
+        write_json(run_dir / f"{case.case_id}_rheumatology_internal_state.json", result.model_dump(mode="json"))
         write_json(trace_output, trace)
         render_rheumatology_report(result, case, report_output)
     progress.log(f"JSON 结果：{output.resolve()}")

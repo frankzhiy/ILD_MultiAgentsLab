@@ -2,14 +2,18 @@ import { Tag } from 'antd'
 
 const STATUS = {
   completed: ['已完成', 'success'],
+  incomplete: ['未完成', 'warning'],
   specialists_running: ['专科运行中', 'processing'],
   routing_pending: ['待分发', 'warning'],
   semantic_running: ['语义处理中', 'processing'],
   failed: ['失败', 'error'],
   queued: ['排队中', 'default'],
   running: ['运行中', 'processing'],
+  stopping: ['正在停止', 'warning'],
+  stopped: ['用户已停止', 'default'],
   cancelled: ['已取消', 'default'],
   pending: ['等待中', 'default'],
+  waiting: ['等待中', 'default'],
   unavailable: ['不可运行', 'default'],
   outdated: ['需要重跑', 'warning'],
   prepared: ['已分发', 'success'],

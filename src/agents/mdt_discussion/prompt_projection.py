@@ -64,7 +64,10 @@ def build_specialty_discussion_prompt_view(
                 "version_id",
                 "statement",
                 "status",
-                "certainty",
+                "assessability",
+                "direction",
+                "confidence",
+                "clinical_role",
                 "medical_basis",
                 "limitations",
                 "conditions",
@@ -81,26 +84,12 @@ def build_issue_chair_prompt_view(
 ) -> dict[str, Any]:
     """Project only the current chair issue and its directly linked evidence needs."""
 
-    issue = next(
-        (
-            item
-            for collection in ("questions", "conflicts")
-            for item in chair_result.get(collection, [])
-            if item.get("question_id") == issue_id or item.get("conflict_id") == issue_id
-        ),
-        None,
-    )
-    if issue is None:
-        return {}
-    related_ids = set(issue.get("related_evidence_need_ids") or [])
-    return {
-        "issue": _project_value(issue),
-        "related_evidence_needs": [
-            _project_value(item)
-            for item in chair_result.get("evidence_needs", [])
-            if item.get("need_id") in related_ids
-        ],
-    }
+    team = chair_result.get("team_synthesis")
+    if not team:
+        raise ValueError("MDT discussion requires the current team synthesis")
+    issue = next((i for i in team["issues"] if i["issue_id"] == issue_id), None)
+    return {"issue": issue, "judgment_boundaries": team["judgment_boundaries"],
+            "disagreements": team["disagreements"], "evidence_needs": team["evidence_needs"]}
 
 
 def _project_value(value: Any) -> Any:

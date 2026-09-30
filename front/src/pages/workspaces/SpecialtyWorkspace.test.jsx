@@ -33,7 +33,7 @@ function formalOutput(question = '判断疾病层面的首轮工作诊断') {
         role: 'primary',
         assessment_type: 'working_diagnosis',
         statement: '倾向慢性纤维化性间质性肺病',
-        status: 'favored',
+        status: 'favored', assessability: 'partially_assessable', direction: 'supports', confidence: 'moderate', clinical_role: 'primary',
         medical_basis: '病程和现有肺部资料形成连贯解释。',
         decision_impact: '影响后续病因审阅。',
         evidence: {
@@ -44,11 +44,11 @@ function formalOutput(question = '判断疾病层面的首轮工作诊断') {
           }],
         },
         guideline_evidence: [{ guideline_id: 'guide-1', source_file: 'guide.pdf', page: 3 }],
-        limitations: ['缺少原始影像。'],
+        limitations: ['报告未记载病变分布。'],
       }],
       evidence_gaps: [{
         available_information: '仅有影像报告摘录。',
-        missing_information: '缺少原始薄层 CT。',
+        missing_information: '报告未记载蜂窝征。',
         why_it_matters: '不能可靠判断形态模式。',
         decision_unlocked: '完成影像模式判断。',
         related_assessment_ids: ['assessment-1'], related_evidence: [pointer],
@@ -135,6 +135,7 @@ describe('SpecialtyWorkspace', () => {
     renderWorkspace({ run: { status: 'completed' }, drawer: true })
 
     expect(await screen.findByText('专科初步判断')).toBeInTheDocument()
+    for (const label of ['可评价性：部分可评价', '方向：支持', '信度：中等把握度', '临床角色：主要解释']) expect(screen.getAllByText(label).length).toBeGreaterThan(0)
     expect(screen.getAllByText('需其他专科回答的问题').length).toBeGreaterThan(0)
     ;['专科问题定位', '初步判断', '决策相关证据缺口', '本专科判断边界'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('临床推理论证')).not.toBeInTheDocument()

@@ -47,6 +47,10 @@ class JudgmentContent(BaseModel):
     assessment_type: AssessmentType
     statement: str = Field(min_length=1)
     status: AssessmentStatus
+    assessability: Literal["assessable", "partially_assessable", "not_assessable"]
+    direction: Literal["supports", "against", "indeterminate"]
+    confidence: Literal["high", "moderate", "low", "unknown"]
+    clinical_role: Literal["primary", "competing_explanation", "acute_contributor", "comorbidity", "unexplained_finding", "boundary"]
     medical_basis: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
     claims: list[SpecialtyAtomicClaim] = Field(min_length=1)
@@ -54,6 +58,12 @@ class JudgmentContent(BaseModel):
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     conditions: JudgmentConditions = Field(default_factory=JudgmentConditions)
+
+    @model_validator(mode="after")
+    def consistent_assessability(self):
+        if self.assessability == "not_assessable" and self.confidence != "unknown":
+            raise ValueError("An unassessable judgment cannot have diagnostic confidence")
+        return self
 
     @classmethod
     def from_assessment(cls, assessment: SpecialtyAssessment) -> "JudgmentContent":
@@ -217,6 +227,7 @@ def initialize_decision_state(
             "assessability": assessments_block.get("assessability", "not_assessable"),
             "evidence_gaps": deepcopy(assessments_block.get("evidence_gaps") or []),
             "boundaries": deepcopy(assessments_block.get("boundaries") or []),
+            "conditional_contributions": deepcopy(assessments_block.get("conditional_contributions") or []),
             "questions": deepcopy(
                 (raw.get("interspecialty_questions") or {}).get("questions") or []
             ),
@@ -293,6 +304,7 @@ def project_active_specialty_outputs(
                 "assessments": assessments,
                 "evidence_gaps": deepcopy(context["evidence_gaps"]),
                 "boundaries": deepcopy(context["boundaries"]),
+                "conditional_contributions": deepcopy(context.get("conditional_contributions", [])),
             },
             "interspecialty_questions": {
                 "questions": deepcopy(context["questions"]),
@@ -496,6 +508,12 @@ def record_discussion_answers(
     for response in responses:
         bucket = result.discussion_answers.setdefault(response.specialty, [])
         for answer in response.answers:
+            context = result.specialty_context[response.specialty]
+            for question in answer.new_questions:
+                item = question.model_dump(mode="json")
+                item["_discussion_round"] = round_number
+                if not any(q.get("question") == item["question"] and q.get("target_specialty") == item["target_specialty"] for q in context["questions"]):
+                    context["questions"].append(item)
             relations = []
             for use in answer.evidence_uses:
                 effect = use.effect
@@ -610,11 +628,17 @@ def _validate_change_kind(change_type, previous, current, fields) -> None:
         forbidden = {
             "role", "assessment_type", "statement", "status", "decision_impact",
             "claims", "limitations",
+            "assessability", "direction", "confidence", "clinical_role",
         }.intersection(fields)
         if forbidden:
             raise ValueError(f"supplement changed core judgment fields: {sorted(forbidden)}")
         _validate_supplement_conditions(previous.conditions, current.conditions)
     elif change_type == "qualify":
+        confidence_rank = {None: 0, "unknown": 0, "low": 1, "moderate": 2, "high": 3}
+        if confidence_rank[current.confidence] > confidence_rank[previous.confidence]:
+            raise ValueError("qualify cannot strengthen diagnostic confidence")
+        if current.direction != previous.direction or current.clinical_role != previous.clinical_role:
+            raise ValueError("qualify cannot change direction or clinical role; use revise")
         if previous.assessment_type != current.assessment_type:
             raise ValueError("qualify cannot change assessment_type")
         if previous.conditions.subject != current.conditions.subject:

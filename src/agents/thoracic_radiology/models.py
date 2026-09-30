@@ -10,7 +10,6 @@ from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
-from src.schemas.specialty_agent_input import SpecialtyCaseInput
 
 
 ImagingConfidence = Literal["very_high", "high", "moderate", "low", "unknown"]
@@ -337,126 +336,22 @@ class SpecialistOpinion(BaseModel):
     unresolved_questions: list[str] = Field(default_factory=list)
 
 
-class ChairQuestion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    question_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
 
 
-class ThoracicRadiologyDiscussionInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    case_input: SpecialtyCaseInput
-    initial_assessment: ThoracicRadiologyInitialAssessment
-    specialist_opinions: list[SpecialistOpinion] = Field(default_factory=list)
-    chair_questions: list[ChairQuestion] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_string_questions(cls, value):
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        migrated["chair_questions"] = [
-            (
-                {"question_id": f"chair_q_{index:03d}", "question": item}
-                if isinstance(item, str)
-                else item
-            )
-            for index, item in enumerate(value.get("chair_questions") or [], start=1)
-        ]
-        return migrated
 
 
-class MappedSpecialistFinding(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    opinion_id: str = Field(min_length=1)
-    relationship: Literal["concordant", "supplementary", "conflicting", "unresolved"]
-    target_layer: Literal["reported_content", "interpretation", "decision_gap"]
-    affected_tasks: list[RadiologyTask] = Field(min_length=1)
-    imaging_effect: str = Field(min_length=1)
-    evidence: list[EvidencePointer] = Field(default_factory=list)
 
 
-class RadiologyConflict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    issue: str = Field(min_length=1)
-    impact: str = Field(min_length=1)
-    confidence: ImagingConfidence = "unknown"
-    evidence: list[EvidencePointer] = Field(default_factory=list)
-    specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
-class DiscussionEvidenceMap(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    specialist_opinions_used: list[str] = Field(default_factory=list)
-    mapped_findings: list[MappedSpecialistFinding] = Field(default_factory=list)
-    unresolved_conflicts: list[RadiologyConflict] = Field(default_factory=list)
 
 
-class TaskUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    task: RadiologyTask
-    change: Literal["updated", "unchanged", "resolved", "newly_activated"]
-    previous_summary: str = Field(min_length=1)
-    updated_assessment: RadiologyTaskAssessment
-    reason: str = Field(min_length=1)
-    supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
-    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
-class ChairAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    question_id: str = Field(min_length=1)
-    answer: str = Field(min_length=1)
-    confidence: ImagingConfidence
-    reasoning_summary: str = "回答依据见支持证据和相关指南。"
-    supporting_evidence: list[EvidencePointer] = Field(default_factory=list)
-    guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    specialist_opinion_ids: list[str] = Field(default_factory=list)
 
 
-class DiscussionUpdateAndConsult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    added_examinations: list[ImagingExamination] = Field(default_factory=list)
-    added_reported_statements: list[ReportedImagingStatement] = Field(default_factory=list)
-    reported_content_opinion_ids: list[str] = Field(default_factory=list)
-    task_updates: list[TaskUpdate] = Field(default_factory=list)
-    updated_core_answer: CoreConsultAnswer
-    review_coverage: list[ReviewDomainCoverage] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("review_coverage", "guide_coverage"),
-    )
-    specialist_questions: list[SpecialistQuestion] = Field(default_factory=list)
-    action_items: list[RadiologyActionItem] = Field(default_factory=list)
-    chair_answers: list[ChairAnswer] = Field(default_factory=list)
-    unresolved_conflicts: list[RadiologyConflict] = Field(default_factory=list)
-    imaging_recommendations: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
 
 
-class ThoracicRadiologyDiscussionResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["thoracic_radiology.v2"] = "thoracic_radiology.v2"
-    case_id: str = Field(min_length=1)
-    phase: Literal["discussion_response"] = "discussion_response"
-    updated_assessment: ThoracicRadiologyInitialAssessment
-    task_changes: list[TaskUpdate] = Field(default_factory=list)
-    specialist_opinions_used: list[str] = Field(default_factory=list)
-    mapped_findings: list[MappedSpecialistFinding] = Field(default_factory=list)
-    chair_answers: list[ChairAnswer] = Field(default_factory=list)
-    unresolved_conflicts: list[RadiologyConflict] = Field(default_factory=list)
-    imaging_recommendations: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
 
 
 def _require_unique(values: list[str], label: str) -> None:

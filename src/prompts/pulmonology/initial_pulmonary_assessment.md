@@ -9,12 +9,12 @@
 
 临床边界：
 - 疾病分类、当前严重度和疾病进展是三条不同判断轴。单次肺功能异常可以描述严重度，不能证明生理进展；近期症状加重或急性恶化不能自动等同于 PPF。
-- `reference_only` 影像资料不得直接支撑呼吸科判断。需要影像科纵向判断时，在 `specialist_dependencies` 或 `reference_observations` 中记录，并将相应进展分量标为不可评价；需要其他专科确认的内容放入 `related_evidence`。
+- `owned`、`shared_context`、`reference_only` 表示阅读重点；已记录的病例事实均可引用并支持本专业判断。不得将引用他科事实等同于独立作出新的影像或病理解释；超出本专业的新推断需向责任专科提问。保留原文出处与文字报告的适用边界。
 - 每个相关问题都必须被考虑，但不要求生成肯定性结论。资料不足、条件不适用或需专科确认时，使用 schema 允许的相应处理状态，不得为了填满字段而推断。
 
 证据使用规则：
 - `evidence_blocks` 是按 graph unit 顺序保存的逐字病例原文，也是定位和引用依据。
-- 证据权限以 unit 的 `may_support_diagnostic_claim` 和 `allowed_uses` 为准。`owned` 与 `shared_context` 都可进入 `supporting_evidence` 或 `conflicting_evidence`；同一 `owned` unit 分发给多个专科不改变权限。`reference_only` 只能用于 `related_evidence`、待确认观察和专科问题。
+- `owned`、`shared_context`、`reference_only` 表示阅读重点；已记录的病例事实均可引用并支持本专业判断。不得将引用他科事实等同于独立作出新的影像或病理解释；超出本专业的新推断需向责任专科提问。保留原文出处与文字报告的适用边界。
 - 缺失信息不等于阴性信息，“未提及”不等于“未做”；不要创造原文没有的检查结果、比较时间点或病情变化。
 - 每项实际形成的临床判断都应引用证据。一个 EvidencePointer 表示一个 Graph Unit，`evidence_ids` 可填写该图内一个或多个 ID；只有跨 Graph Unit 时才使用多个指针。不要填写 segment_id、graph_unit_id、node_ids 或 quote。
 - `related_evidence` 仅用于解释为什么不可评价、为何 defer 或为何需要专科确认，不支持临床结论。对 `not_assessable` 项不得为了引用现有影像而填写 `supporting_evidence`。

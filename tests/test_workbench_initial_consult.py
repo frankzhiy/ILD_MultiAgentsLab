@@ -82,7 +82,7 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     results = catalog.specialties("run-1")["results"]
     chair = catalog.chair("run-1")
 
-    assert summary["status"] == "completed"
+    assert summary["status"] == "incomplete"
     assert summary["chair_complete"] is False
     assert chair["status"] == "unavailable"
     assert "clinical propositions" in chair["error"]
@@ -108,17 +108,9 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     assert catalog.chair("run-1")["status"] == "outdated"
     assert catalog.run_summary(run_dir)["chair_complete"] is False
 
-    write_json(
-        run_dir / "case-1_mdt_chair_integration.json",
-        {
-            "schema_version": "mdt_chair.v9",
-            "integrated_conclusions": [],
-            "assessment_boundaries": [],
-            "conflicts": [],
-            "questions": [],
-            "evidence_needs": [],
-        },
-    )
+    from test_expert_protocol import setup_case, run_expert
+    _, bundle, payload = setup_case()
+    write_json(run_dir / "case-1_mdt_chair_integration.json", run_expert(bundle, [payload]).model_dump(mode="json"))
     assert catalog.chair("run-1")["status"] == "completed"
     assert catalog.run_summary(run_dir)["chair_complete"] is True
 
@@ -131,6 +123,9 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
             "status_updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+    # A newly written stage result must not win over the active pipeline status.
+    baseline_path = run_dir / "case-1_mdt_chair_integration.json"
+    write_json(baseline_path, json.loads(baseline_path.read_text()))
     assert catalog.run_summary(run_dir)["status"] == "running"
 
     write_json(run_dir / "case-1_mdt_decision_state.json", {"judgments": ["initial"]})
@@ -149,13 +144,13 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
         {"error": "first run attempt failed"},
     )
     write_json(run_dir / "case-1_mdt_chair_integration.json", json.loads(baseline_path.read_text()))
-    assert catalog.run_summary(run_dir)["status"] == "completed"
+    assert catalog.run_summary(run_dir)["status"] == "incomplete"
     assert not any(item["current"] for item in catalog.errors("run-1"))
 
     write_json(
         run_dir / "case-1_mdt_discussion_state.json",
         {
-            "schema_version": "mdt_discussion.v2",
+            "schema_version": "mdt_discussion.v4",
             "case_id": "case-1",
             "baseline_sha256": sha256(baseline_path.read_bytes()).hexdigest(),
             "status": "running",
@@ -208,7 +203,8 @@ def test_web_orchestrator_and_workflow_include_chair_without_html_reporting():
 
 
 @pytest.mark.parametrize("discussion_complete", [True, False])
-def test_full_run_executes_discussion_after_chair(monkeypatch, tmp_path, discussion_complete):
+@pytest.mark.parametrize("start_stage", ["semantic_graphing", "mdt_chair", "mdt_discussion", "mdt_report"])
+def test_every_entry_runs_through_report(monkeypatch, tmp_path, discussion_complete, start_stage):
     run_dir = tmp_path / "outputs/runs/run-1"
     run_dir.mkdir(parents=True)
     input_path = tmp_path / "case-1.txt"
@@ -227,67 +223,15 @@ def test_full_run_executes_discussion_after_chair(monkeypatch, tmp_path, discuss
     stages = []
 
     async def record_stage(_run_id, _run_dir, agent_id, stage, *_args):
+        assert json.loads((run_dir / ".workbench_run.json").read_text())["status"] == "running"
         stages.append((agent_id, stage))
 
     monkeypatch.setattr(orchestrator, "_stage", record_stage)
-    monkeypatch.setattr(orchestrator, "_discussion_configs", lambda _run_dir: {})
     monkeypatch.setattr(orchestrator.catalog, "run_summary", lambda _run_dir: {"discussion_complete": discussion_complete})
-    asyncio.run(orchestrator._execute("run-1", input_path))
+    asyncio.run(orchestrator._execute("run-1", input_path, start_stage=start_stage))
 
-    assert stages[-1] == ("mdt_discussion", "team_discussion")
-    assert stages[-2] == ("mdt_chair", "cross_specialty_integration")
-    assert {agent for agent, _stage in stages[-6:-2]} == set(SPECIALTIES)
+    expected = ["semantic_graphing", *SPECIALTIES, "mdt_chair", "mdt_discussion", "mdt_report"]
+    assert [agent for agent, _ in stages] == expected[expected.index(start_stage):]
     assert json.loads((run_dir / ".workbench_run.json").read_text())["status"] == (
         "completed" if discussion_complete else "failed"
     )
-
-
-def test_successful_manual_chair_rerun_updates_failed_manifest(monkeypatch, tmp_path):
-    run_dir = tmp_path / "outputs/runs/run-1"
-    run_dir.mkdir(parents=True)
-    manifest_path = run_dir / ".workbench_run.json"
-    write_json(manifest_path, {"case_id": "case-1", "status": "failed", "error": "old"})
-    orchestrator = RunOrchestrator(
-        tmp_path, RunCatalog(tmp_path), EventStore(tmp_path / "events.sqlite3")
-    )
-
-    async def successful_stage(*_args):
-        return None
-
-    monkeypatch.setattr(orchestrator, "_stage", successful_stage)
-    asyncio.run(orchestrator._execute_chair("run-1", run_dir, tmp_path / "chair.yaml"))
-
-    manifest = json.loads(manifest_path.read_text())
-    assert manifest["status"] == "completed"
-    assert manifest["error"] is None
-
-
-def test_manual_discussion_updates_overall_manifest(monkeypatch, tmp_path):
-    run_dir = tmp_path / "outputs/runs/run-1"
-    run_dir.mkdir(parents=True)
-    manifest_path = run_dir / ".workbench_run.json"
-    write_json(manifest_path, {"case_id": "case-1", "status": "completed"})
-    orchestrator = RunOrchestrator(
-        tmp_path, RunCatalog(tmp_path), EventStore(tmp_path / "events.sqlite3")
-    )
-
-    async def failed_stage(*_args):
-        raise RuntimeError("discussion failed")
-
-    monkeypatch.setattr(orchestrator, "_stage", failed_stage)
-    asyncio.run(orchestrator._execute_discussion("run-1", run_dir, {}))
-    failed_manifest = json.loads(manifest_path.read_text())
-    assert failed_manifest["status"] == "failed"
-    assert failed_manifest["status_source"] == "mdt_discussion"
-    assert orchestrator.catalog.run_summary(run_dir)["status"] == "failed"
-
-    async def successful_stage(*_args):
-        return None
-
-    monkeypatch.setattr(orchestrator, "_stage", successful_stage)
-    asyncio.run(orchestrator._execute_discussion("run-1", run_dir, {}))
-    manifest = json.loads(manifest_path.read_text())
-    assert manifest["status"] == "completed"
-    assert manifest["status_source"] == "mdt_discussion"
-    assert manifest["error"] is None
-    assert orchestrator.catalog.run_summary(run_dir)["status"] == "completed"

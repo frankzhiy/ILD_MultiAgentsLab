@@ -19,12 +19,13 @@ def llm_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
         visible = _llm_fields(type(value))
         return {
-            name: llm_value(getattr(value, name))
+            name: ("case" if name in {"case_id", "source_run_dir"} else llm_value(getattr(value, name)))
             for name in type(value).model_fields
             if name in visible
         }
     if isinstance(value, dict):
-        return {key: llm_value(item) for key, item in value.items()}
+        # Clinical filenames can encode a diagnosis. Preserve artifact IDs locally only.
+        return {key: ("case" if key in {"case_id", "source_run_dir"} else llm_value(item)) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [llm_value(item) for item in value]
     if isinstance(value, Enum):

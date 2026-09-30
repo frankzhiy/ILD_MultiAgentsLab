@@ -14,35 +14,8 @@ from src.agents.thoracic_radiology.evidence_projection import (
     build_radiology_evidence_prompt_input,
     build_radiology_working_input,
 )
-from src.agents.thoracic_radiology.models import (
-    CaseOrientation,
-    ChairAnswer,
-    CoreConsultAnswer,
-    DiscussionEvidenceMap,
-    DiscussionUpdateAndConsult,
-    EvidencePointer,
-    ReviewDomainCoverage,
-    ImagingExamination,
-    InitialCaseReconstruction,
-    InitialConsultFormulation,
-    MappedSpecialistFinding,
-    RadiologyActionItem,
-    RadiologyTask,
-    RadiologyTaskAssessment,
-    ReportedImagingStatement,
-    SpecialistClaim,
-    SpecialistOpinion,
-    TaskPlanItem,
-    TaskUpdate,
-    ThoracicRadiologyDiscussionInput,
-    ThoracicRadiologyDomain,
-    ThoracicRadiologyInitialAssessment,
-)
-from src.agents.thoracic_radiology.validation import (
-    resolve_proposition_pointers,
-    validate_case_reconstruction,
-    validate_update_and_consult,
-)
+from src.agents.thoracic_radiology.models import CaseOrientation, CoreConsultAnswer, EvidencePointer, ReviewDomainCoverage, ImagingExamination, InitialCaseReconstruction, InitialConsultFormulation, RadiologyActionItem, RadiologyTask, RadiologyTaskAssessment, ReportedImagingStatement, TaskPlanItem, ThoracicRadiologyDomain, ThoracicRadiologyInitialAssessment
+from src.agents.thoracic_radiology.validation import resolve_proposition_pointers, validate_case_reconstruction
 from src.llm.base import LLMResponse
 from src.llm.structured import StructuredLLMGenerator
 from src.reporting.thoracic_radiology_report import render_thoracic_radiology_report
@@ -316,7 +289,7 @@ def assessment_0714():
     reconstruction = reconstruction_0714()
     formulation = formulation_0714()
     return ThoracicRadiologyInitialAssessment(
-        case_id="76-IPF",
+        case_id="synthetic-case",
         reconstruction=reconstruction,
         task_assessments=formulation.task_assessments,
         core_answer=formulation.core_answer,
@@ -406,7 +379,7 @@ def assessment_0715():
         decision_impact="慢性背景可影响低氧解释，但不能由本摘录确认IPF。",
     )
     return ThoracicRadiologyInitialAssessment(
-        case_id="77-IPF",
+        case_id="synthetic-case",
         reconstruction=reconstruction,
         task_assessments=[pe, ild],
         core_answer=CoreConsultAnswer(
@@ -438,7 +411,7 @@ def test_initial_assessment_runs_two_problem_oriented_stages():
     assert len(llm.prompts) == 2
     assert "local_graph" not in llm.prompts[0][1].content
     resolved = result.reconstruction.reported_statements[0].evidence[0]
-    assert resolved.quote == "双肺间质增粗纹理走形杂乱"
+    assert resolved.quote == "胸部CT示双肺间质增粗纹理走形杂乱"
     assert resolved.node_ids == ["seg_003_gu_003::prop_006"]
 
 
@@ -494,102 +467,6 @@ def test_missing_active_task_assessment_retries_formulation(monkeypatch):
     assert trace["attempts"][1]["validated"] is True
 
 
-def test_legacy_initial_can_enter_v2_discussion_without_old_route_errors():
-    legacy = ThoracicRadiologyInitialAssessment.model_validate(
-        {
-            "schema_version": "thoracic_radiology.v1",
-            "case_id": "77-IPF",
-            "source_state": {
-                "reasoning_summary": "旧版来源重建。",
-                "examinations": [
-                    {
-                        "exam_id": "exam_echo",
-                        "temporal_anchor": "2025-10-10",
-                        "modality": "other",
-                        "source_authority": "clinician_paraphrase",
-                        "description_sufficiency": "partial",
-                        "assessment": "超声心动图结果。",
-                        "supporting_evidence": [
-                            {
-                                "graph_unit_id": "seg_003_gu_001",
-                                "evidence_ids": ["seg_003_gu_001_ev_002"],
-                            }
-                        ],
-                    },
-                    {
-                        "exam_id": "exam_ctpa",
-                        "temporal_anchor": "2025-10-19",
-                        "modality": "ct",
-                        "source_authority": "report_excerpt",
-                        "description_sufficiency": "partial",
-                        "assessment": "肺动脉CT报告摘录。",
-                        "supporting_evidence": [
-                            {
-                                "graph_unit_id": "seg_004_gu_003",
-                                "evidence_ids": [
-                                    "seg_004_gu_003_ev_001",
-                                    "seg_004_gu_003_ev_003",
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            },
-            "observation_state": {
-                "observations": [
-                    {
-                        "finding": "CTPA未见明确中央型肺栓塞直接征象",
-                        "status": "reported_absent",
-                        "confidence": "high",
-                        "supporting_evidence": [
-                            {
-                                "graph_unit_id": "seg_004_gu_003",
-                                "evidence_ids": ["seg_004_gu_003_ev_001"],
-                            }
-                        ],
-                    },
-                    {
-                        "finding": "双肺间质纤维化",
-                        "status": "reported_present",
-                        "confidence": "high",
-                        "supporting_evidence": [
-                            {
-                                "graph_unit_id": "seg_004_gu_003",
-                                "evidence_ids": ["seg_004_gu_003_ev_003"],
-                            }
-                        ],
-                    },
-                ]
-            },
-            "interpretation_state": {
-                "morphologic_pattern": {
-                    "classification_status": "not_assessable",
-                    "confidence": "moderate",
-                    "reasoning_summary": "文字不足以完成形态分型。",
-                    "supporting_evidence": [
-                        {
-                            "graph_unit_id": "seg_004_gu_003",
-                            "evidence_ids": ["seg_004_gu_003_ev_003"],
-                        }
-                    ],
-                }
-            },
-        }
-    )
-
-    migrated = validate_initial_assessment(legacy, case_0715())
-
-    assert migrated.legacy_import is True
-    assert [item.exam_id for item in migrated.reconstruction.examinations] == [
-        "exam_ctpa"
-    ]
-    assert len(migrated.reconstruction.reported_statements) == 2
-    assert all(
-        pointer.proposition_ids
-        for item in migrated.reconstruction.reported_statements
-        for pointer in item.evidence
-    )
-    assert "legacy_import" not in migrated.model_dump(mode="json")
 
 
 def test_direct_image_review_can_never_be_claimed():
@@ -610,7 +487,7 @@ def test_misrouted_echo_proposition_cannot_enter_thoracic_exam():
     case = case_0715()
     reconstruction = assessment_0715().reconstruction.model_copy(deep=True)
     reconstruction.examinations[0].source_evidence = [
-        pointer("seg_003_gu_001", "prop_007")
+        pointer("seg_003_gu_001", "prop_001")
     ]
 
     with pytest.raises(ValueError, match="non-thoracic or ineligible"):
@@ -665,126 +542,8 @@ def test_unknown_proposition_id_is_rejected():
         resolve_proposition_pointers(evidence, case)
 
 
-def test_non_radiology_opinion_cannot_add_reported_content():
-    case = case_0714()
-    initial = validate_initial_assessment(assessment_0714(), case)
-    rheum_unit = next(
-        unit
-        for segment in case.segments
-        for unit in segment.units
-        if MdtSpecialty.RHEUMATOLOGY in unit.graph_unit.mdt_specialty
-    )
-    prop_id = rheum_unit.clinical_propositions.propositions[0].proposition_id
-    opinion = SpecialistOpinion(
-        specialty=MdtSpecialty.RHEUMATOLOGY,
-        opinion_id="rheum-001",
-        summary="正式风湿意见",
-        claims=[
-            SpecialistClaim(
-                claim="风湿背景补充",
-                evidence=[pointer(rheum_unit.graph_unit.graph_unit_id, prop_id)],
-            )
-        ],
-        confidence="moderate",
-    )
-    discussion_input = ThoracicRadiologyDiscussionInput(
-        case_input=case,
-        initial_assessment=initial,
-        specialist_opinions=[opinion],
-    )
-    update = DiscussionUpdateAndConsult(
-        added_examinations=[initial.reconstruction.examinations[0]],
-        reported_content_opinion_ids=[opinion.opinion_id],
-        updated_core_answer=initial.core_answer,
-    )
-
-    with pytest.raises(ValueError, match="formal thoracic radiology opinion"):
-        validate_update_and_consult(update, discussion_input)
 
 
-def test_discussion_updates_only_affected_interpretation_task():
-    case = case_0714()
-    initial = validate_initial_assessment(assessment_0714(), case)
-    rheum_unit = next(
-        unit
-        for segment in case.segments
-        for unit in segment.units
-        if MdtSpecialty.RHEUMATOLOGY in unit.graph_unit.mdt_specialty
-    )
-    prop_id = rheum_unit.clinical_propositions.propositions[0].proposition_id
-    evidence = pointer(rheum_unit.graph_unit.graph_unit_id, prop_id)
-    opinion = SpecialistOpinion(
-        specialty=MdtSpecialty.RHEUMATOLOGY,
-        opinion_id="rheum-001",
-        summary="正式风湿意见",
-        claims=[SpecialistClaim(claim="目前无明确CTD证据", evidence=[evidence])],
-        confidence="moderate",
-    )
-    discussion_input = ThoracicRadiologyDiscussionInput(
-        case_input=case,
-        initial_assessment=initial,
-        specialist_opinions=[opinion],
-        chair_questions=["风湿意见是否改变影像疾病关联？"],
-    )
-    evidence_map = DiscussionEvidenceMap(
-        specialist_opinions_used=[opinion.opinion_id],
-        mapped_findings=[
-            MappedSpecialistFinding(
-                opinion_id=opinion.opinion_id,
-                relationship="supplementary",
-                target_layer="interpretation",
-                affected_tasks=[RadiologyTask.ILD_MORPHOLOGIC_PATTERN],
-                imaging_effect="只影响疾病关联解释，不改变原报告内容。",
-                evidence=[evidence],
-            )
-        ],
-    )
-    updated_task = RadiologyTaskAssessment(
-        task=RadiologyTask.ILD_MORPHOLOGIC_PATTERN,
-        priority="conditional",
-        answerability="not_answerable",
-        conclusion="风湿意见未改变文字不足以分型的结论。",
-        confidence="high",
-        reasoning_summary="其他专科意见不能补写影像征象。",
-        supporting_evidence=[evidence],
-        specialist_opinion_ids=[opinion.opinion_id],
-        decision_impact="保留形态模式不可评价，疾病关联由MDT综合。",
-    )
-    update = DiscussionUpdateAndConsult(
-        task_updates=[
-            TaskUpdate(
-                task=RadiologyTask.ILD_MORPHOLOGIC_PATTERN,
-                change="updated",
-                previous_summary="文字不足以分型。",
-                updated_assessment=updated_task,
-                reason="整合正式风湿意见，但不改变影像事实。",
-                supporting_evidence=[evidence],
-                specialist_opinion_ids=[opinion.opinion_id],
-            )
-        ],
-        updated_core_answer=initial.core_answer,
-        chair_answers=[
-            ChairAnswer(
-                question_id="chair_q_001",
-                answer="不改变影像所见或形态不可评价结论，只影响疾病关联解释。",
-                confidence="moderate",
-                supporting_evidence=[evidence],
-                specialist_opinion_ids=[opinion.opinion_id],
-            )
-        ],
-    )
-    llm = FakeLLM([llm_payload(evidence_map), llm_payload(update)])
-    agent = ThoracicRadiologyAgent.from_config(CONFIG, llm, enable_guidelines=False)
-
-    result, trace = agent.discussion_response(discussion_input)
-
-    assert result.updated_assessment.reconstruction == initial.reconstruction
-    assert len(result.task_changes) == 1
-    assert result.chair_answers[0].question_id == "chair_q_001"
-    assert [item["stage"] for item in trace["stages"]] == [
-        "discussion_evidence_mapping",
-        "discussion_update_and_response",
-    ]
 
 
 def test_initial_report_leads_with_core_answer_and_keeps_guide_as_audit(tmp_path):
@@ -809,4 +568,4 @@ def test_initial_report_leads_with_core_answer_and_keeps_guide_as_audit(tmp_path
     assert "证据 ·" in html and pointer.evidence_ids[0] in html
     assert "节点 ·" in html and pointer.node_ids[0] in html
     assert "命题 ·" in html and pointer.proposition_ids[0] in html
-    assert pointer.quote in html
+    assert all(quote in html for quote in pointer.quote.splitlines())

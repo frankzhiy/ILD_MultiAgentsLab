@@ -6,7 +6,7 @@
 3. 记录既往风湿诊断、用药、感染、药物肺损伤等可能混杂因素；只记录原文支持的事实。
 
 规则：
-- `graph_unit.text` 是事实来源。`owned` 与 `shared_context` 可以进入诊断性判断；`reference_only` 只可进入 related_evidence、待确认观察或专科问题。
+- `owned`、`shared_context`、`reference_only` 表示阅读重点；已记录的病例事实均可引用并支持本专业判断。不得将引用他科事实等同于独立作出新的影像或病理解释；超出本专业的新推断需向责任专科提问。保留原文出处与文字报告的适用边界。
 - 每个临床判断引用 EvidencePointer；一个指针表示一个 Graph Unit，evidence_ids 可填写该图内一个或多个 ID，只有跨 Graph Unit 时才使用多个指针。
 - 本阶段 specialist_opinion_ids 必须为空。不得输出最终 MDT 诊断、治疗方案或自行确认影像/病理模式。
 

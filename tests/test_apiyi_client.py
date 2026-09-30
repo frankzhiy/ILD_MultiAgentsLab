@@ -1,10 +1,14 @@
 import json
+import socket
+import ssl
+import urllib.error
 
 import pytest
 
 from src.llm.apiyi_client import APIYIClient
 from src.llm.base import LLMMessage
 from src.llm.factory import build_llm_client
+from src.llm.structured import StructuredGenerationError, StructuredLLMGenerator
 from src.utils.config import load_yaml
 
 
@@ -124,3 +128,49 @@ def test_apiyi_rejects_non_mapping_request_options(monkeypatch):
                 "request_options": ["thinking"],
             }
         )
+
+
+@pytest.mark.parametrize(("error", "retryable", "recovers"), [
+    (ssl.SSLEOFError(8, "unexpected EOF"), True, True),
+    (urllib.error.URLError(ssl.SSLEOFError(8, "unexpected EOF")), True, True),
+    (urllib.error.URLError(socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")), True, True),
+    (ssl.SSLEOFError(8, "unexpected EOF"), True, False),
+    (urllib.error.HTTPError("https://apiyi.example/v1", 401, "Unauthorized", {}, None), False, False),
+    (urllib.error.URLError(ssl.SSLCertVerificationError("invalid certificate")), False, False),
+    (urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "unknown host")), False, False),
+    (urllib.error.URLError(PermissionError("operation not permitted")), False, False),
+])
+def test_apiyi_transport_retry_recovers_or_stops_within_budget(monkeypatch, error, retryable, recovers):
+    from pydantic import BaseModel
+
+    class Result(BaseModel):
+        ok: bool
+
+    calls = []
+
+    class Response(FakeHTTPResponse):
+        def read(self):
+            if len(calls) == 1 or not recovers:
+                raise error
+            return json.dumps({"choices": [{"message": {"content": '{"ok":true}'}}]}).encode()
+
+    def urlopen(*args, **kwargs):
+        calls.append(1)
+        return Response()
+
+    monkeypatch.setattr("src.llm.apiyi_client.urllib.request.urlopen", urlopen)
+    generator = StructuredLLMGenerator(
+        APIYIClient("secret", "model", "https://apiyi.example/v1"),
+        temperature=0, max_tokens=20, max_attempts=2,
+    )
+    request = dict(schema_model=Result, schema_name="probe", system_prompt="test", user_prompt="test")
+    if recovers:
+        result, trace = generator.generate(**request)
+        assert result.ok
+        assert "transport_error" in trace["attempts"][0]
+        assert trace["attempts"][1]["validated"]
+    else:
+        with pytest.raises(StructuredGenerationError) as failure:
+            generator.generate(**request)
+        assert len(failure.value.attempts) == len(calls)
+    assert len(calls) == (2 if retryable else 1)

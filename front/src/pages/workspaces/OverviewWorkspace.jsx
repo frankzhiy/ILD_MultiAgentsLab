@@ -21,7 +21,7 @@ function useRunEvents(runId) {
     const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`)
     source.onopen = () => setConnection('connected')
     source.onmessage = (event) => setEvents((current) => [...current, JSON.parse(event.data)].slice(-100))
-    ;['run_started', 'stage_started', 'stage_completed', 'agent_message', 'discussion_started', 'discussion_round_started', 'discussion_round_completed', 'discussion_report_started', 'discussion_completed', 'discussion_failed', 'run_completed', 'run_failed', 'run_cancelled', 'agent_error'].forEach((type) => {
+    ;['run_started', 'stage_started', 'stage_completed', 'agent_message', 'discussion_started', 'discussion_round_started', 'discussion_round_completed', 'discussion_report_started', 'discussion_completed', 'discussion_failed', 'run_stop_requested', 'run_stopped', 'discussion_stopped', 'discussion_report_completed', 'run_completed', 'run_failed', 'run_cancelled', 'agent_error'].forEach((type) => {
       source.addEventListener(type, (event) => setEvents((current) => [...current, JSON.parse(event.data)].slice(-100)))
     })
     source.onerror = () => setConnection('disconnected')
@@ -31,7 +31,7 @@ function useRunEvents(runId) {
 }
 
 export function OverviewWorkspace({ runId, run }) {
-  const terminal = ['completed', 'failed', 'cancelled'].includes(run?.status)
+  const terminal = ['completed', 'failed', 'cancelled', 'stopped', 'incomplete'].includes(run?.status)
   const specialties = useQuery({ queryKey: ['specialties', runId], queryFn: () => api.specialties(runId), refetchInterval: terminal ? false : 4000 })
   const semantic = useQuery({ queryKey: ['semantic', runId], queryFn: () => api.semantic(runId), refetchInterval: terminal ? false : 5000 })
   const chair = useQuery({ queryKey: ['chair', runId], queryFn: () => api.chair(runId), refetchInterval: terminal ? false : 4000 })
@@ -39,15 +39,15 @@ export function OverviewWorkspace({ runId, run }) {
   const { events, connection } = useRunEvents(runId)
   const chairStatus = chair.data?.status || 'pending'
   const discussionStatus = discussion.data?.status || 'pending'
-  const reportStatus = discussion.data?.final_report ? 'completed' : discussion.data?.report_status || 'waiting'
+  const reportStatus = discussionStatus === 'completed' ? discussion.data?.report_status || 'waiting' : 'waiting'
   const graph = useMemo(() => {
     const nodes = [
       { id: 'input', position: { x: 0, y: 365 }, data: { label: '病例原文' }, className: 'flow-source' },
-      { id: 'semantic', position: { x: 170, y: 365 }, data: { label: 'Semantic Graphing' }, className: run?.semantic_complete ? 'flow-success' : 'flow-active' },
+      { id: 'semantic', position: { x: 170, y: 365 }, data: { label: 'Semantic Graphing' }, className: stageClass(run?.semantic_complete, ['running', 'stopping'].includes(run?.status), run?.status === 'failed' && !run?.semantic_complete) },
       { id: 'router', position: { x: 390, y: 365 }, data: { label: '证据路由' }, className: 'flow-router' },
       ...specialtyNodes.map(([id, label, y]) => ({ id, position: { x: 600, y }, data: { label }, className: run?.completed_specialties?.includes(id) ? 'flow-success' : 'flow-pending' })),
-      { id: 'chair', position: { x: 820, y: 365 }, data: { label: '主持人整合' }, className: stageClass(run?.chair_complete, chairStatus === 'running', chairStatus === 'failed') },
-      { id: 'discussion', position: { x: 1030, y: 365 }, data: { label: 'MDT 团队讨论' }, className: stageClass(run?.discussion_complete, discussionStatus === 'running', discussionStatus === 'failed') },
+      { id: 'chair', position: { x: 820, y: 365 }, data: { label: 'MDT 会前整合' }, className: stageClass(run?.chair_complete, chairStatus === 'running', chairStatus === 'failed') },
+      { id: 'discussion', position: { x: 1030, y: 365 }, data: { label: 'MDT 团队讨论' }, className: stageClass(discussionStatus === 'completed', ['running', 'stopping'].includes(discussionStatus), discussionStatus === 'failed') },
       { id: 'report', position: { x: 1240, y: 365 }, data: { label: '最终报告' }, className: stageClass(reportStatus === 'completed', reportStatus === 'running', reportStatus === 'failed') },
     ]
     const arrow = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, animated: false }
@@ -66,19 +66,20 @@ export function OverviewWorkspace({ runId, run }) {
   const lifecycle = events.length ? events.map((item) => ({ color: item.type.includes('failed') || item.type.includes('error') ? 'red' : item.type.includes('completed') ? 'green' : 'blue', children: <><Text strong>{item.stage || item.agent_id || item.type}</Text><br /><Text type="secondary">{item.type}</Text></> })) : [
     { color: run?.semantic_complete ? 'green' : 'blue', children: '语义图产物' },
     { color: completed === 4 ? 'green' : 'gray', children: `专科初评 ${completed}/4` },
-    { color: run?.chair_complete ? 'green' : 'gray', children: '主持人整合' },
-    { color: run?.discussion_complete ? 'green' : discussionStatus === 'failed' ? 'red' : 'gray', children: `团队讨论 ${discussion.data?.current_round || 0} 轮` },
+    { color: run?.chair_complete ? 'green' : 'gray', children: 'MDT 会前整合' },
+    { color: discussionStatus === 'completed' ? 'green' : discussionStatus === 'failed' ? 'red' : 'gray', children: `团队讨论 ${discussion.data?.current_round || 0} 轮` },
     { color: reportStatus === 'completed' ? 'green' : reportStatus === 'failed' ? 'red' : 'gray', children: '最终报告' },
   ]
   return (
     <div>
       <div className="workspace-title"><div><Text className="eyebrow">RUN OVERVIEW</Text><Title level={3}>运行总览</Title></div><Tag icon={connection === 'connected' ? <ApiOutlined /> : <DisconnectOutlined />} color={connection === 'connected' ? 'success' : connection === 'connecting' ? 'processing' : 'error'}>{connection === 'connected' ? '事件流已连接' : connection === 'connecting' ? '连接事件流' : '事件流断开'}</Tag></div>
       {connection === 'disconnected' && <Alert type="warning" showIcon title="实时事件流已断开" description="历史产物仍可查看；浏览器会自动尝试重连。若持续失败，请到“错误与诊断”检查后端服务。" className="section-gap" />}
+      {run?.manifest?.case_version_id && <Card title="病例资料版本" className="section-card"><Text>本版：{run.manifest.case_version_id.slice(0, 12)}</Text>{run.manifest.parent_run_id && <Space><Text> · 前版：{run.manifest.parent_case_version_id?.slice(0, 12)}</Text><Link to={`/runs/${encodeURIComponent(run.manifest.parent_run_id)}/overview`}>查看前序会诊</Link></Space>}</Card>}
       <Row gutter={14} className="metric-row">
         <Col span={4}><Card><Statistic title="Discourse segments" value={semantic.data?.summary.segment_count || 0} /></Card></Col>
         <Col span={4}><Card><Statistic title="Graph units" value={semantic.data?.summary.unit_count || 0} /></Card></Col>
         <Col span={4}><Card><Statistic title="专科完成" value={completed} suffix="/ 4" /></Card></Col>
-        <Col span={4}><Card><Statistic title="主持人整合" value={run?.chair_complete ? '已完成' : chairStatus === 'failed' ? '失败' : '等待中'} /></Card></Col>
+        <Col span={4}><Card><Statistic title="MDT 会前整合" value={run?.chair_complete ? '已完成' : chairStatus === 'failed' ? '失败' : '等待中'} /></Card></Col>
         <Col span={4}><Card><Statistic title="讨论轮次" value={discussion.data?.current_round || 0} /></Card></Col>
         <Col span={4}><Card><Statistic title="最终报告" value={reportStatus === 'completed' ? '已完成' : reportStatus === 'failed' ? '失败' : '等待中'} /></Card></Col>
       </Row>
@@ -87,10 +88,10 @@ export function OverviewWorkspace({ runId, run }) {
       </Card>
       <Row gutter={14}>
         <Col span={15}><Card title="阶段状态" className="section-card"><div className="agent-status-list">{(specialties.data?.results || []).map((item) => <div className="agent-status-row" key={item.specialty}><div className="agent-status-icon">{item.status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{item.label}</Text><Text type="secondary">owned {item.input_summary?.owned_unit_count || 0} · shared {item.input_summary?.shared_context_unit_count || 0} · degraded {item.input_summary?.degraded_locator_count || 0}</Text></div><Tag color={item.status === 'completed' ? 'success' : 'default'}>{item.status === 'completed' ? '已完成' : '等待中'}</Tag></div>)}{[
-          ['chair', '主持人整合', run?.chair_complete ? 'completed' : chairStatus],
+          ['chair', 'MDT 会前整合', run?.chair_complete ? 'completed' : chairStatus],
           ['discussion', `MDT 团队讨论 · 第 ${discussion.data?.current_round || 0} 轮`, discussionStatus],
           ['report', '最终报告', reportStatus],
-        ].map(([id, label, status]) => <div className="agent-status-row" key={id}><div className="agent-status-icon">{status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{label}</Text></div><Tag color={status === 'completed' ? 'success' : status === 'failed' ? 'error' : status === 'running' ? 'processing' : 'default'}>{status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中'}</Tag></div>)}</div>{reportStatus === 'completed' && <Link to={`/runs/${encodeURIComponent(runId)}/report`}>查看最终报告</Link>}</Card></Col>
+        ].map(([id, label, status]) => <div className="agent-status-row" key={id}><div className="agent-status-icon">{status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{label}</Text></div><Tag color={status === 'completed' ? 'success' : status === 'failed' ? 'error' : status === 'running' ? 'processing' : 'default'}>{status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : status === 'stopped' ? '已停止' : status === 'stopping' ? '正在停止' : '等待中'}</Tag></div>)}</div>{reportStatus === 'completed' && <Link to={`/runs/${encodeURIComponent(runId)}/report`}>查看最终报告</Link>}</Card></Col>
         <Col span={9}><Card title="生命周期" className="section-card"><Timeline items={lifecycle} /></Card></Col>
       </Row>
     </div>

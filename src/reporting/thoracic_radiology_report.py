@@ -8,7 +8,6 @@ from typing import Any, Iterable
 
 from src.agents.thoracic_radiology.models import (
     EvidencePointer,
-    ThoracicRadiologyDiscussionResponse,
     ThoracicRadiologyInitialAssessment,
 )
 from src.reporting.specialty_report_common import (
@@ -32,7 +31,7 @@ DOMAIN_LABELS = {
 
 
 def render_thoracic_radiology_report(
-    result: ThoracicRadiologyInitialAssessment | ThoracicRadiologyDiscussionResponse,
+    result: ThoracicRadiologyInitialAssessment,
     case_input: SpecialtyCaseInput,
     output: str | Path,
 ) -> Path:
@@ -42,9 +41,8 @@ def render_thoracic_radiology_report(
         for segment in case_input.segments
         for unit in segment.units
     }
-    is_initial = isinstance(result, ThoracicRadiologyInitialAssessment)
-    state = result if is_initial else result.updated_assessment
-    phase = "首轮评估" if is_initial else "会中响应"
+    state = result
+    phase = "首轮评估"
     body = "".join(
         [
             _hero(case_input.case_id, phase, state, roles),
@@ -53,7 +51,6 @@ def render_thoracic_radiology_report(
             _source_section(state, roles),
             _reported_content_section(state, roles),
             _task_section(state, roles),
-            _discussion_section(result, roles) if not is_initial else "",
             _next_steps_section(state, roles),
             _coverage_section(state),
             render_reasoning_audit(result, roles, output),
@@ -195,36 +192,6 @@ def _task_section(state, roles) -> str:
     return _section("按当前问题激活的影像任务", f'<div class="cards">{cards}</div>')
 
 
-def _discussion_section(result, roles) -> str:
-    answers = "".join(
-        _card(
-            item.question_id,
-            _badges(item.confidence)
-            + f"<p>{escape(item.answer)}</p>"
-            + _evidence(item.supporting_evidence, roles),
-            wide=True,
-        )
-        for item in result.chair_answers
-    )
-    changes = "".join(
-        "<tr>"
-        f"<td>{escape(_label(item.task))}</td><td>{escape(_label(item.change))}</td>"
-        f"<td>{escape(item.previous_summary)}</td><td>{escape(item.updated_assessment.conclusion)}</td>"
-        f"<td>{escape(item.reason)}</td></tr>"
-        for item in result.task_changes
-    )
-    table = (
-        "<table><thead><tr><th>任务</th><th>变化</th><th>首轮</th><th>更新后</th><th>原因</th></tr></thead>"
-        f"<tbody>{changes}</tbody></table>"
-        if changes
-        else '<p class="muted">没有需要重写的影像任务。</p>'
-    )
-    return _section(
-        "会中选择性更新",
-        f'<div class="cards">{answers or _empty()}</div>{table}'
-        + _list("影像科建议", result.imaging_recommendations)
-        + _list("会中局限", result.limitations),
-    )
 
 
 def _next_steps_section(state, roles) -> str:

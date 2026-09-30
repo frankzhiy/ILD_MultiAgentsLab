@@ -30,6 +30,7 @@ class CreateRunRequest(BaseModel):
     source: str = "library"
     case_id: str
     raw_text: str | None = None
+    parent_run_id: str | None = None
     max_concurrency: int = Field(default=6, ge=1, le=16)
     agents: dict[str, AgentOverride] = Field(default_factory=dict)
 
@@ -79,13 +80,14 @@ def not_found(error: FileNotFoundError) -> HTTPException:
 
 def discussion_result(run_id: str, *, accepted: bool = False) -> dict:
     result = catalog.discussion(run_id)
-    running = accepted or (
-        orchestrator.discussion_running(run_id)
-        and catalog.run_summary(catalog.run_dir(run_id))["status"] == "running"
-    )
-    if running:
-        result["status"] = "running"
-        result["error"] = None
+    if accepted or orchestrator.discussion_running(run_id):
+        stop = orchestrator.workflow.stop_events.get(run_id)
+        if stop is not None and stop.is_set():
+            result["status"] = "stopping"
+            result["error"] = None
+        elif accepted or catalog.run_summary(catalog.run_dir(run_id))["status"] == "running":
+            result["status"] = "running"
+            result["error"] = None
     return result
 
 
@@ -276,8 +278,10 @@ def presented_discussion(run_id: str) -> dict:
 def presented_report(run_id: str) -> dict:
     try:
         orchestrator.workflow._load_env()
-        discussion = discussion_result(run_id)
-        report = {key: discussion[key] for key in ("case_id", "status", "report_status", "final_report", "error")}
+        report = catalog.report(run_id)
+        if run_id in orchestrator.active_reports:
+            report["status"] = report["report_status"] = "running"
+        report["runnable"] = report["runnable"] and not orchestrator._busy(run_id)
         return present(ROOT, catalog.run_dir(run_id), "report", report)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
@@ -288,6 +292,28 @@ async def run_discussion(run_id: str) -> dict:
     try:
         orchestrator.start_discussion(run_id)
         return discussion_result(run_id, accepted=True)
+    except FileNotFoundError as error:
+        raise not_found(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/runs/{run_id}/stop", status_code=202)
+async def stop_run(run_id: str) -> dict:
+    try:
+        orchestrator.stop_run(run_id)
+        return catalog.run_summary(catalog.run_dir(run_id))
+    except FileNotFoundError as error:
+        raise not_found(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/runs/{run_id}/report", status_code=202)
+async def run_report(run_id: str) -> dict:
+    try:
+        orchestrator.start_report(run_id)
+        return {**catalog.report(run_id), "status": "running", "report_status": "running"}
     except FileNotFoundError as error:
         raise not_found(error) from error
     except ValueError as error:

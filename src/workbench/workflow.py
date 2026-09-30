@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Callable
 
 from src.agents.common.specialty_input import build_specialty_case_input
@@ -19,12 +19,17 @@ from src.utils.config import load_yaml
 from src.workbench.events import EventStore
 
 
+class RunStopped(Exception):
+    """User-requested stop; completed artifacts remain available."""
+
+
 class WorkbenchWorkflow:
     """Application service that runs agents directly, independently of CLI scripts."""
 
     def __init__(self, root: Path, events: EventStore) -> None:
         self.root = root.resolve()
         self.events = events
+        self.stop_events: dict[str, Event] = {}
 
     def run_semantic(
         self,
@@ -41,6 +46,9 @@ class WorkbenchWorkflow:
         llm = build_llm_client(config)
         agent = SemanticGraphingAgent.from_config(config_path, llm)
         progress = self._progress(run_id, "semantic_graphing")
+        for component in (agent.classifier, agent.graph_unit_extractor,
+                          agent.primary_frame_selector, agent.clinical_proposition_extractor):
+            component.generator.event_callback = progress
         trace: dict[str, Any] = {
             "case_id": case_id,
             "model": getattr(llm, "model", config.get("model")),
@@ -116,6 +124,8 @@ class WorkbenchWorkflow:
         specialty: str,
         config_path: Path,
     ) -> None:
+        from src.utils.persistence import verify_protocol_snapshot
+        verify_protocol_snapshot(self.root, run_dir)
         self._load_env()
         enum = MdtSpecialty(specialty)
         case = build_specialty_case_input(run_dir, enum, case_id=case_id)
@@ -210,6 +220,8 @@ class WorkbenchWorkflow:
         case_id: str,
         config_path: Path,
     ) -> None:
+        from src.utils.persistence import verify_protocol_snapshot
+        verify_protocol_snapshot(self.root, run_dir, allow_stage_rerun=True)
         self._load_env()
         from src.agents.mdt_chair.agent import (
             MDTChairAgent,
@@ -258,6 +270,8 @@ class WorkbenchWorkflow:
             event_callback=self._progress(run_id, "mdt_chair"),
         )
         result, trace = agent.integrate(bundle)
+        from src.utils.persistence import verify_stage_snapshot
+        verify_stage_snapshot(self.root, run_dir, "mdt_chair")
         self._write(run_dir / f"{case_id}_mdt_chair_integration.json", result)
         self._write(
             run_dir / f"{case_id}_mdt_chair_integration_trace.json", trace
@@ -273,22 +287,18 @@ class WorkbenchWorkflow:
         max_rounds: int = 3,
     ) -> None:
         """Run only the MDT discussion, starting from an existing chair result."""
-
+        from src.utils.persistence import verify_protocol_snapshot
+        verify_protocol_snapshot(self.root, run_dir, allow_stage_rerun=True)
         self._load_env()
         from src.agents.mdt_chair.agent import (
             MDTChairAgent,
             build_chair_prompt_bundle,
             build_semantic_evidence_catalog,
-            rebase_integration_to_active_judgments,
         )
-        from src.agents.mdt_chair.models import MDTChairIntegration
-        from src.agents.mdt_discussion.final_report import FinalReportAgent
+        from src.agents.common.team_synthesis import MDTChairResult
         from src.agents.mdt_discussion.integration import (
-            apply_review_outcomes,
             build_judgment_update_inputs,
-            build_review_dispositions,
             decide_discussion_continuation,
-            stabilize_integration_ids,
         )
         from src.agents.mdt_discussion.models import (
             DiscussionRound,
@@ -314,7 +324,7 @@ class WorkbenchWorkflow:
 
         baseline_path = run_dir / f"{case_id}_mdt_chair_integration.json"
         baseline_bytes = baseline_path.read_bytes()
-        baseline = MDTChairIntegration.model_validate(json.loads(baseline_bytes))
+        baseline = MDTChairResult.model_validate(json.loads(baseline_bytes))
         clinical_propositions = read(run_dir / f"{case_id}_clinical_propositions.json")
         local_graphs = read(run_dir / f"{case_id}_local_graphs.json")
         semantic_evidence = build_semantic_evidence_catalog(
@@ -362,6 +372,7 @@ class WorkbenchWorkflow:
                 round_specialty_outputs = project_active_specialty_outputs(
                     state.decision_state
                 )
+                self._check_stop(run_id)
                 tasks = build_discussion_tasks(
                     chair_result=latest.model_dump(mode="json"),
                     clinical_propositions=clinical_propositions,
@@ -371,6 +382,8 @@ class WorkbenchWorkflow:
                     decision_state=state.decision_state,
                 )
                 if not tasks:
+                    latest.team_synthesis.stop_kind = "completed"
+                    state.latest_chair_result = latest.model_dump(mode="json")
                     state.stop_reason = (
                         "讨论前主持人基线没有仍需专科处理的问题或真实冲突。"
                         if round_number == 1
@@ -428,6 +441,7 @@ class WorkbenchWorkflow:
                     return datetime.now(timezone.utc).isoformat()
 
                 def run_task(task):
+                    self._check_stop(run_id)
                     with progress_lock:
                         progress = state.active_round["task_progress"][task.task_id]
                         progress["status"] = "running"
@@ -459,6 +473,9 @@ class WorkbenchWorkflow:
                             specialty_initial_output=round_specialty_outputs[task.specialty],
                             chair_result=latest.model_dump(mode="json"),
                         )
+                        self._check_stop(run_id)
+                    except RunStopped:
+                        raise
                     except Exception as error:
                         with progress_lock:
                             progress = state.active_round["task_progress"][task.task_id]
@@ -523,7 +540,7 @@ class WorkbenchWorkflow:
                     )
 
                 question_by_id = {
-                    question.question_id: question for question in latest.questions
+                    question.issue_id: question for question in latest.team_synthesis.issues
                 }
                 task_by_id = {task.task_id: task for task in tasks}
                 review_jobs = []
@@ -551,6 +568,7 @@ class WorkbenchWorkflow:
                 self._write(state_path, state)
 
                 def run_review(job) -> tuple[SpecialtyAnswerReview, dict[str, Any]]:
+                    self._check_stop(run_id)
                     review_id, reviewer, task, answer = job
                     with progress_lock:
                         progress = state.active_round["review_progress"][review_id]
@@ -581,6 +599,9 @@ class WorkbenchWorkflow:
                             task=task,
                             answer=answer,
                         )
+                        self._check_stop(run_id)
+                    except RunStopped:
+                        raise
                     except Exception as error:
                         with progress_lock:
                             progress = state.active_round["review_progress"][review_id]
@@ -643,6 +664,7 @@ class WorkbenchWorkflow:
                 judgment_updates = []
                 changed_issues_by_specialty: dict[str, set[str]] = {}
                 for specialty in sorted(update_inputs):
+                    self._check_stop(run_id)
                     material = update_inputs[specialty]
                     progress = state.active_round["judgment_update_progress"][specialty]
                     progress["status"] = "running"
@@ -677,11 +699,14 @@ class WorkbenchWorkflow:
                                 if review.reviewer_specialty == specialty
                             ],
                         )
+                        self._check_stop(run_id)
                         state.decision_state = apply_judgment_update(
                             state.decision_state,
                             update,
                             round_number=round_number,
                         )
+                    except RunStopped:
+                        raise
                     except Exception as error:
                         progress["status"] = "failed"
                         progress["completed_at"] = timestamp()
@@ -758,10 +783,9 @@ class WorkbenchWorkflow:
                     run_dir / f"{case_id}_mdt_round_{round_number:02d}_reviews.json",
                     [review.model_dump(mode="json") for review in reviews],
                 )
-                state.active_round["review_dispositions"] = build_review_dispositions(
-                    latest,
-                    reviews,
-                )
+                state.active_round["review_dispositions"] = {
+                    review.review_id: review.outcome for review in reviews
+                }
                 state.decision_state = record_discussion_answers(
                     state.decision_state,
                     responses,
@@ -786,10 +810,6 @@ class WorkbenchWorkflow:
                     source_seed=source_seed,
                 )
                 source_seed = bundle
-                rebased_previous = rebase_integration_to_active_judgments(
-                    latest,
-                    bundle,
-                )
                 chair_config = load_yaml(config_paths["mdt_chair"])
                 chair_llm = build_llm_client(chair_config)
                 chair = MDTChairAgent.from_config(
@@ -799,13 +819,11 @@ class WorkbenchWorkflow:
                 )
                 updated, chair_trace = chair.integrate(
                     bundle,
-                    discussion_previous=rebased_previous,
+                    discussion_previous=latest,
                     discussion_responses=responses,
                     discussion_reviews=reviews,
                 )
-                updated = stabilize_integration_ids(updated, rebased_previous)
-                updated = apply_review_outcomes(updated, reviews)
-                updated = stabilize_integration_ids(updated, rebased_previous)
+                self._check_stop(run_id)
                 round_decision = decide_discussion_continuation(
                     previous=latest,
                     current=updated,
@@ -847,47 +865,55 @@ class WorkbenchWorkflow:
                     self._write(state_path, state)
                     break
             else:
+                latest.team_synthesis.stop_kind = "budget"
+                state.latest_chair_result = latest.model_dump(mode="json")
                 state.stop_reason = f"已达到最多{max_rounds}轮团队讨论。"
 
             if not state.stop_reason:
                 state.stop_reason = "讨论已结束。"
-            state.report_status = "running"
-            self._write(state_path, state)
-            self.events.append(
-                run_id,
-                "discussion_report_started",
-                {"discussion_rounds": len(state.rounds)},
-                agent_id="mdt_chair",
-                stage="mdt_discussion",
-            )
-            report_config = load_yaml(config_paths["mdt_chair"])
-            report_llm = build_llm_client(report_config)
-            report_agent = FinalReportAgent.from_config(
-                config_paths["mdt_chair"],
-                report_llm,
-                event_callback=self._progress(run_id, "mdt_chair"),
-            )
-            report, report_trace = report_agent.generate(
-                case_id=case_id,
-                chair_result=latest.model_dump(mode="json"),
-                rounds=state.rounds,
-                stop_reason=state.stop_reason,
-                baseline_chair_result=baseline.model_dump(mode="json"),
-                decision_state=state.decision_state,
-            )
-            state.final_report = report
+            self._check_stop(run_id)
+            from src.utils.persistence import verify_stage_snapshot
+            verify_stage_snapshot(self.root, run_dir, "mdt_discussion")
+            # Each specialty explicitly reviews this sealed revision; silence is not acceptance.
+            from src.agents.common.team_synthesis import synthesis_acceptance_status
+            self.events.append(run_id, "synthesis_acceptance_started", {}, stage="mdt_discussion")
+            final_outputs = project_active_specialty_outputs(state.decision_state)
+            traces["acceptance"] = {}
+            for specialty, output in final_outputs.items():
+                self._check_stop(run_id)
+                config = load_yaml(config_paths[specialty])
+                agent = SpecialtyDiscussionAgent.from_config(
+                    config_paths[specialty], build_llm_client(config), specialty=specialty,
+                    event_callback=self._progress(run_id, specialty),
+                )
+                record, acceptance_trace = agent.review_synthesis(team=latest.team_synthesis, specialty_output=output)
+                self._check_stop(run_id)
+                latest.team_synthesis.acceptance_records.append(record)
+                latest.team_synthesis.acceptance = synthesis_acceptance_status(latest.team_synthesis)
+                traces["acceptance"][specialty] = acceptance_trace
+                state.latest_chair_result = latest.model_dump(mode="json")
+                self._write(state_path, state)
+                self._write(trace_path, traces)
+            verify_stage_snapshot(self.root, run_dir, "mdt_discussion")
             state.status = "completed"
-            state.report_status = "completed"
-            traces["final_report"] = report_trace
-            self._write(run_dir / f"{case_id}_mdt_final_report.json", report)
             self._write(state_path, state)
             self._write(trace_path, traces)
-            self.events.append(
-                run_id,
-                "discussion_completed",
-                {"discussion_rounds": len(state.rounds)},
-                stage="mdt_discussion",
-            )
+            self.events.append(run_id, "discussion_completed", {"discussion_rounds": len(state.rounds)}, stage="mdt_discussion")
+        except RunStopped:
+            state.status = "stopped"
+            state.stop_reason = "用户停止运行；已完成内容保留为阶段结果。"
+            state.error = ""
+            if state.active_round:
+                state.active_round["status"] = "stopped"
+                state.active_round["chair_status"] = "stopped"
+                for key in ("task_progress", "review_progress", "judgment_update_progress"):
+                    for progress in state.active_round[key].values():
+                        if progress["status"] != "completed":
+                            progress.update(status="stopped", error="")
+            self._write(state_path, state)
+            self._write(trace_path, traces)
+            self.events.append(run_id, "discussion_stopped", {}, stage="mdt_discussion")
+            raise
         except Exception as error:
             state.status = "failed"
             if state.active_round:
@@ -906,8 +932,54 @@ class WorkbenchWorkflow:
             )
             raise
 
+    def run_report(self, run_id: str, run_dir: Path, case_id: str, config_path: Path) -> None:
+        self._check_stop(run_id)
+        from src.utils.persistence import verify_stage_snapshot
+        verify_stage_snapshot(self.root, run_dir, "mdt_report")
+        from src.agents.mdt_discussion.models import MDTDiscussionState
+        from src.agents.mdt_discussion.final_report import project_team_report
+        state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
+        state = MDTDiscussionState.model_validate_json(state_path.read_text(encoding="utf-8"))
+        baseline_path = run_dir / f"{case_id}_mdt_chair_integration.json"
+        if state.status != "completed" or state.active_round:
+            raise ValueError("讨论尚未完成，不能生成最终统一报告。")
+        if state.baseline_sha256 != sha256(baseline_path.read_bytes()).hexdigest():
+            raise ValueError("会前整合已更新，请重新运行讨论后生成报告。")
+        state.report_status = "running"
+        state.final_report = None
+        state.error = ""
+        self._write(state_path, state)
+        self.events.append(run_id, "discussion_report_started", {}, stage="mdt_report")
+        try:
+            report, trace = project_team_report(
+                case_id, state.latest_chair_result, state.rounds, state.stop_reason,
+                json.loads(baseline_path.read_text()), state.decision_state,
+            )
+            self._check_stop(run_id)
+        except RunStopped:
+            state.report_status = "stopped"
+            self._write(state_path, state)
+            raise
+        except Exception as error:
+            state.report_status = "failed"
+            state.error = str(error)
+            self._write(state_path, state)
+            raise
+        state.final_report = report
+        state.report_status = "completed"
+        self._write(run_dir / f"{case_id}_mdt_final_report.json", report)
+        self._write(run_dir / f"{case_id}_mdt_final_report_trace.json", trace)
+        self._write(state_path, state)
+        self.events.append(run_id, "discussion_report_completed", {}, stage="mdt_report")
+
+    def _check_stop(self, run_id: str) -> None:
+        stop = self.stop_events.get(run_id)
+        if stop is not None and stop.is_set():
+            raise RunStopped("用户已请求停止运行")
+
     def _progress(self, run_id: str, agent_id: str) -> Callable[[str, dict], None]:
         def callback(event: str, payload: dict) -> None:
+            self._check_stop(run_id)
             safe_payload = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
             self.events.append(
                 run_id,
@@ -933,8 +1005,5 @@ class WorkbenchWorkflow:
 
     @staticmethod
     def _write(path: Path, value: Any) -> None:
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(mode="json")
-        path.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
-        )
+        from src.utils.persistence import write_json
+        write_json(path, value)

@@ -1,16 +1,16 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ApartmentOutlined, BugOutlined, DatabaseOutlined, FileSearchOutlined,
   FileTextOutlined, HomeOutlined, MedicineBoxOutlined, MenuFoldOutlined, MenuUnfoldOutlined,
   MessageOutlined, ShareAltOutlined, TeamOutlined,
 } from '@ant-design/icons'
-import { Button, Layout, Menu, Skeleton, Space, Typography } from 'antd'
+import { Alert, Button, Layout, Menu, Skeleton, Space, Typography } from 'antd'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Brand } from '../components/Brand'
 import { QueryError } from '../components/QueryState'
 import { StatusTag } from '../components/StatusTag'
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 
 const OverviewWorkspace = lazy(() => import('./workspaces/OverviewWorkspace').then((module) => ({ default: module.OverviewWorkspace })))
 const SemanticWorkspace = lazy(() => import('./workspaces/SemanticWorkspace').then((module) => ({ default: module.SemanticWorkspace })))
@@ -30,7 +30,7 @@ const ITEMS = [
   ['semantic', <ApartmentOutlined />, '语义图构建'],
   ['routing', <ShareAltOutlined />, '证据分发'],
   ['specialties', <MedicineBoxOutlined />, '专科工作区'],
-  ['chair', <TeamOutlined />, 'MDT 主持人'],
+  ['chair', <TeamOutlined />, 'MDT 会前整合'],
   ['discussion', <MessageOutlined />, 'MDT 团队讨论'],
   ['report', <FileTextOutlined />, '最终 MDT 统一报告'],
   ['artifacts', <DatabaseOutlined />, '产物审计'],
@@ -52,12 +52,24 @@ const WORKSPACES = {
 export function RunWorkspace() {
   const { runId, view } = useParams()
   const navigate = useNavigate()
+  const client = useQueryClient()
   const [collapsed, setCollapsed] = useState(false)
   const activeView = view || 'overview'
   const query = useQuery({
     queryKey: ['run', runId],
     queryFn: () => api.run(runId),
-    refetchInterval: (current) => ['completed', 'failed', 'cancelled'].includes(current.state.data?.status) ? false : 2500,
+    refetchInterval: (current) => ['queued', 'running', 'stopping'].includes(current.state.data?.status) ? 2000 : false,
+  })
+  const status = query.data?.status
+  useEffect(() => {
+    if (!status) return
+    ;['semantic', 'routing', 'specialties', 'chair', 'discussion', 'report', 'errors', 'artifacts'].forEach(key => {
+      client.invalidateQueries({ queryKey: [key, runId] })
+    })
+  }, [client, runId, status])
+  const stop = useMutation({
+    mutationFn: () => api.stopRun(runId),
+    onSuccess: (value) => client.setQueryData(['run', runId], value),
   })
   if (!view) return <Navigate to={`/runs/${encodeURIComponent(runId)}/overview`} replace />
   if (query.isError) return <QueryError error={query.error} retry={query.refetch} title="无法打开运行" />
@@ -80,9 +92,19 @@ export function RunWorkspace() {
             <Button type="text" icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setCollapsed((value) => !value)} />
             {query.isLoading ? <Skeleton.Input active size="small" /> : <><Text strong>{query.data.case_id}</Text><Text code className="run-code">{runId}</Text><StatusTag status={query.data.status} /></>}
           </Space>
-          <Space><Text type="secondary">本地科研运行</Text></Space>
+          <Space><Text type="secondary">本地科研运行</Text>
+            {['queued', 'running', 'stopping'].includes(status) && <Button danger loading={stop.isPending}
+              disabled={status === 'stopping'} onClick={() => stop.mutate()}>
+              {status === 'stopping' ? '正在停止' : '停止运行'}
+            </Button>}
+          </Space>
         </Header>
-        <Content className="workspace-content"><Suspense fallback={<Skeleton active paragraph={{ rows: 8 }} />}><Workspace runId={runId} run={query.data} /></Suspense></Content>
+        <Content className="workspace-content">
+          {status === 'stopping' && <Alert className="section-gap" type="warning" showIcon title="正在停止运行" description="不再派发新任务，正在等待已发送的请求退出。已完成结果会保留，后续阶段不会启动。" />}
+          {status === 'stopped' && <Alert className="section-gap" type="info" showIcon title="运行已停止" description="已保留完成的阶段结果。" />}
+          {stop.isError && <Alert className="section-gap" type="error" title="停止运行失败" description={stop.error.message} />}
+          <Suspense fallback={<Skeleton active paragraph={{ rows: 8 }} />}><Workspace runId={runId} run={query.data} /></Suspense>
+        </Content>
       </Layout>
     </Layout>
   )

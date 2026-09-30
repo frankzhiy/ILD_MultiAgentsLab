@@ -11,7 +11,7 @@ const { Title, Text } = Typography
 
 const AGENT_LABELS = {
   semantic_graphing: 'Semantic Graphing', pulmonology: '呼吸科', thoracic_radiology: '胸部影像科',
-  rheumatology: '风湿免疫科', pathology: '病理科', mdt_chair: 'MDT 主持人',
+  rheumatology: '风湿免疫科', pathology: '病理科', mdt_chair: 'MDT 会前整合',
 }
 
 export function NewRunPage() {
@@ -20,6 +20,10 @@ export function NewRunPage() {
   const { message } = App.useApp()
   const [agentConfig, setAgentConfig] = useState({})
   const { data: cases = [] } = useQuery({ queryKey: ['cases'], queryFn: api.cases })
+  const { data: runs = [] } = useQuery({ queryKey: ['runs'], queryFn: api.runs })
+  const caseId = Form.useWatch('case_id', form)
+  const mode = Form.useWatch('mode', form)
+  useEffect(() => { form.setFieldValue('parent_run_id', undefined) }, [caseId, form])
   const { data: modelData } = useQuery({ queryKey: ['models'], queryFn: api.models })
   const agents = modelData?.agents || []
   useEffect(() => {
@@ -27,7 +31,7 @@ export function NewRunPage() {
     setAgentConfig(Object.fromEntries(agents.map((item) => [item.agent_id, { model: item.model, reasoning_effort: item.reasoning_effort || 'none' }])))
   }, [modelData])
   const mutation = useMutation({
-    mutationFn: ({ mode, ...payload }) => mode === 'batch' ? api.createBatch({ ...payload, kind: 'run', source: 'library' }) : api.createRun(payload),
+    mutationFn: ({ mode, parent_run_id, ...payload }) => mode === 'batch' ? api.createBatch({ ...payload, kind: 'run', source: 'library' }) : api.createRun({ ...payload, parent_run_id }),
     onSuccess: (value) => navigate(value.kind === 'run' ? `/batches/${encodeURIComponent(value.id)}` : `/runs/${encodeURIComponent(value.id)}/overview`),
     onError: (error) => message.error(`启动失败：${error.message}`),
   })
@@ -44,7 +48,7 @@ export function NewRunPage() {
       <Header className="global-header"><Brand /><Button icon={<ArrowLeftOutlined />}><Link to="/runs">返回运行列表</Link></Button></Header>
       <Content className="page-content narrow-content">
         <div className="page-heading"><div><Text className="eyebrow">NEW EXPERIMENT</Text><Title level={2}>配置一次 MDT 运行</Title><Text type="secondary">病例原文保持只读；每个 Agent 的模型设置与最终产物一起记录。</Text></div></div>
-        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="完整流程依次执行 Semantic Graphing、四个并行专科、MDT 主持人整合、团队讨论和最终报告；批量运行中单个病例失败不会中断其他病例。" />
+        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="完整流程依次执行 Semantic Graphing、四个并行专科、MDT 会前整合整合、团队讨论和最终报告；批量运行中单个病例失败不会中断其他病例。" />
         <Form form={form} layout="vertical" initialValues={{ mode: 'single', source: 'library', max_concurrency: 6, max_case_concurrency: 2, max_request_concurrency: 6 }} onFinish={(values) => mutation.mutate({ ...values, agents: agentConfig })}>
           <Form.Item name="mode" label="运行方式"><Radio.Group options={[{ value: 'single', label: '单个病例' }, { value: 'batch', label: '批量病例库运行' }]} /></Form.Item>
           <Card title={<Space><FileTextOutlined />病例输入</Space>} className="section-card">
@@ -56,13 +60,14 @@ export function NewRunPage() {
                   : <><Form.Item name="case_id" label="病例 ID" rules={[{ required: true, pattern: /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/ }]}><Input placeholder="例如 pilot-001" /></Form.Item><Form.Item name="raw_text" label="病例原文" rules={[{ required: true }]}><Input.TextArea rows={10} placeholder="粘贴去标识化病例原文" /></Form.Item></>}</>}
             </Form.Item>
             <Form.Item name="max_concurrency" label="Semantic Graphing 最大并发" tooltip="仅影响语义图阶段的并行任务数"><InputNumber min={1} max={16} /></Form.Item>
+            {mode !== 'batch' && <Form.Item name="parent_run_id" label="前序会诊（后续资料时选择）" extra="新运行保存本次完整病例快照，并关联前序会诊；请提供包含补充信息的完整病例原文。"><Select allowClear disabled={!caseId} placeholder="独立运行，无前序关联" options={runs.filter(r => r.case_id === caseId).map(r => ({ value: r.id, label: r.id }))} /></Form.Item>}
             <Form.Item noStyle shouldUpdate={(before, after) => before.mode !== after.mode}>{({ getFieldValue }) => getFieldValue('mode') === 'batch' && <Row gutter={16}><Col span={12}><Form.Item name="max_case_concurrency" label="批次病例并发" tooltip="同时执行完整流程的病例数"><InputNumber min={1} max={16} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="max_request_concurrency" label="全局模型请求并发" tooltip="本批次所有阶段的在途模型请求上限"><InputNumber min={1} max={64} style={{ width: '100%' }} /></Form.Item></Col></Row>}</Form.Item>
           </Card>
           <Card title={<Space><SettingOutlined />Agent 模型矩阵</Space>} className="section-card">
             <Table rowKey="agent_id" columns={columns} dataSource={agents} pagination={false} size="middle" />
           </Card>
           <Card className="section-card">
-            <Row gutter={24} align="middle"><Col flex="auto"><Title level={5}>启动完整 MDT 流程</Title><Text type="secondary">Semantic Graphing → unit 分发 → 四专科并行评估 → 主持人整合 → 团队讨论 → 最终报告</Text></Col><Col><Button type="primary" htmlType="submit" size="large" loading={mutation.isPending}>开始运行</Button></Col></Row>
+            <Row gutter={24} align="middle"><Col flex="auto"><Title level={5}>启动完整 MDT 流程</Title><Text type="secondary">Semantic Graphing → unit 分发 → 四专科并行评估 → MDT 会前整合 → 团队讨论 → 最终报告</Text></Col><Col><Button type="primary" htmlType="submit" size="large" loading={mutation.isPending}>开始运行</Button></Col></Row>
           </Card>
         </Form>
       </Content>

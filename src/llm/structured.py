@@ -1,5 +1,7 @@
 import json
+import socket
 import ssl
+import http.client
 import time
 import urllib.error
 from copy import deepcopy
@@ -128,6 +130,7 @@ class StructuredLLMGenerator:
             )
             try:
                 with request_throttle.slot():
+                    self._emit("llm_request_ready", {"stage": schema_name})
                     response = self.llm.complete(
                         messages,
                         temperature=self.temperature,
@@ -219,7 +222,6 @@ class StructuredLLMGenerator:
                 )
             validation_started = time.perf_counter()
             candidate = None
-            schema_validated = False
             try:
                 parsed = parse_llm_json(response.content)
                 candidate = (
@@ -230,7 +232,6 @@ class StructuredLLMGenerator:
                 validated = schema_model.model_validate(candidate)
                 if repair_on_validation_error:
                     candidate = validated.model_dump(mode="json")
-                schema_validated = True
                 if extra_validation:
                     validated = extra_validation(validated)
                 validation_duration = time.perf_counter() - validation_started
@@ -282,7 +283,7 @@ class StructuredLLMGenerator:
                     repair_on_validation_error
                     and _finish_reason(response.raw) != "length"
                     and (
-                        (schema_validated and isinstance(candidate, dict))
+                        isinstance(candidate, dict)
                         or repair_base is not None
                     )
                 ):
@@ -292,7 +293,8 @@ class StructuredLLMGenerator:
                         if repair_base is not None
                         else ""
                     )
-                    if schema_validated and isinstance(candidate, dict):
+                    # Keep the exact candidate that produced this error, including schema errors.
+                    if isinstance(candidate, dict):
                         repair_base = candidate
                     response_format = {"type": "json_object"}
                     messages = [
@@ -315,6 +317,7 @@ class StructuredLLMGenerator:
                                 "保留其他所有字段及数组成员。返回一个 JSON 对象，格式为 "
                                 '{"edits":[{"op":"replace","path":"/items/0/status",'
                                 '"value":"boundary"}]}。'
+                                "所有 path 和数组下标以上面的当前 JSON 为准，不要重复应用已有修改。"
                                 "path 是从 0 开始的 JSON Pointer；replace 可替换已存在的标量字段"
                                 "或标量数组（例如 atomic_claim_ids），也可把可空对象改为 null；"
                                 "不能替换为新的对象或对象数组。若把判断改为 maintain，"
@@ -512,14 +515,17 @@ def _finish_reason(raw: dict[str, Any]) -> str | None:
 
 def _is_retryable_transport_error(exc: RuntimeError) -> bool:
     cause = exc.__cause__
-    if isinstance(cause, urllib.error.URLError) and isinstance(
-        cause.reason, (ssl.SSLEOFError, ConnectionResetError, BrokenPipeError)
-    ):
+    if isinstance(cause, (http.client.RemoteDisconnected, http.client.IncompleteRead, ConnectionError, TimeoutError, ssl.SSLEOFError)):
         return True
+    if isinstance(cause, urllib.error.URLError):
+        if isinstance(cause.reason, (ssl.SSLEOFError, ConnectionResetError, BrokenPipeError)):
+            return True
+        if isinstance(cause.reason, socket.gaierror):
+            return cause.reason.errno == socket.EAI_AGAIN
     message = str(exc).lower()
     return any(
         marker in message
-        for marker in ("http 429", "http 503", "timed out", "timeout", "temporarily unavailable")
+        for marker in ("http 429", "http 502", "http 503", "http 504", "timed out", "timeout", "temporarily unavailable")
     )
 
 

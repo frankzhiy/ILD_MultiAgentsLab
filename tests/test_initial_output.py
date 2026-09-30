@@ -32,6 +32,10 @@ def assessment(
         "assessment_type": assessment_type,
         "statement": "当前倾向未分类间质性肺病工作判断。",
         "status": status,
+        "assessability": "not_assessable" if status == "not_assessable" else "partially_assessable",
+        "direction": "indeterminate" if status == "not_assessable" else "supports",
+        "confidence": "unknown" if status == "not_assessable" else "moderate",
+        "clinical_role": "boundary" if status == "not_assessable" else "primary",
         "medical_basis": "病程与现有肺部资料形成连贯解释，替代病因仍需限定。",
         "decision_impact": "决定后续跨专科核对方向。",
         "evidence": evidence_bundle(),
@@ -247,12 +251,11 @@ def test_formal_output_rejects_cross_specialty_conflict(monkeypatch):
         )
 
 
-def test_formal_output_schema_forbids_confidence_result_fields():
+def test_formal_output_accepts_independent_confidence():
     payload = output_payload()
     payload["specialty_assessments"]["assessments"][0]["confidence"] = "high"
 
-    with pytest.raises(ValidationError, match="confidence"):
-        SpecialtyInitialOutput.model_validate(payload)
+    assert SpecialtyInitialOutput.model_validate(payload).specialty_assessments.assessments[0].confidence == "high"
 
 
 def test_same_graph_unit_relations_are_merged_with_all_locators(monkeypatch):

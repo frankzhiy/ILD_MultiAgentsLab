@@ -11,7 +11,7 @@
 证据规则：
 - 病例逐字原文和 evidence ID 是唯一病例事实来源。
 - 每项实际来源或标本判断应引用对应 evidence；一个 EvidencePointer 表示一个 Graph Unit，可填写该图内一个或多个 evidence ID，只有跨 Graph Unit 时才使用多个指针。
-- reference_only 资料只能放入 related_evidence、待确认观察或专科问题，不能直接支撑首轮病理结论。
+- `owned`、`shared_context`、`reference_only` 表示阅读重点；已记录的病例事实均可引用并支持本专业判断。不得将引用他科事实等同于独立作出新的影像或病理解释；超出本专业的新推断需向责任专科提问。保留原文出处与文字报告的适用边界。
 - “资料未附病理材料”属于可评价性说明，可以不引用病例证据；不得推断患者的活检史。
 - 本轮没有正式专科意见，所有 specialist_opinion_ids 为空。
 - 只输出简短、可审计理由，不输出隐藏思维链。

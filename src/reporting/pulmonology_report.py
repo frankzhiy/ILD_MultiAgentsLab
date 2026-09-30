@@ -6,7 +6,6 @@ from typing import Any
 
 from src.agents.pulmonology.models import (
     EvidencePointer,
-    PulmonologyDiscussionResponse,
     PulmonologyInitialAssessment,
 )
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
@@ -103,7 +102,7 @@ VALUE_LABELS = {
 
 
 def render_pulmonology_report(
-    result: PulmonologyInitialAssessment | PulmonologyDiscussionResponse,
+    result: PulmonologyInitialAssessment,
     case_input: SpecialtyCaseInput,
     output_path: str | Path,
 ) -> Path:
@@ -112,9 +111,8 @@ def render_pulmonology_report(
         for segment in case_input.segments
         for unit in segment.units
     }
-    is_initial = isinstance(result, PulmonologyInitialAssessment)
-    phase_label = "首轮评估" if is_initial else "会中响应"
-    body = _render_initial(result, roles) if is_initial else _render_discussion(result, roles)
+    phase_label = "首轮评估"
+    body = _render_initial(result, roles)
     body += render_reasoning_audit(result, roles, output_path)
     body += render_guideline_audit(result, output_path)
     html = _page(result.case_id, phase_label, case_input, body)
@@ -382,88 +380,6 @@ def _render_initial(result: PulmonologyInitialAssessment, roles: dict[str, str])
     )
 
 
-def _render_discussion(result: PulmonologyDiscussionResponse, roles: dict[str, str]) -> str:
-    state = result.updated_state
-    overview = "".join(
-        _result_card(f"主席问题 · {item.question_id}", item.answer, item.confidence)
-        for item in result.chair_answers
-    )
-    formulation = state.diagnostic_formulation
-    if formulation:
-        overview += _result_card(
-            "更新后的呼吸科工作诊断",
-            formulation.leading_diagnosis or "当前不足以形成主导诊断",
-            formulation.confidence,
-            wide=True,
-        )
-    differentials = "".join(
-        _rank_item(item) for item in (formulation.differential_diagnoses if formulation else [])
-    )
-    recommendations = _list_block("诊断性建议", result.diagnostic_recommendations)
-    reasoning = "".join(
-        [
-            _detail_section(
-                "对主席问题的回应",
-                [_chair_answer_card(item, roles) for item in result.chair_answers],
-            ),
-            _detail_section(
-                "正式专科意见映射",
-                [_mapped_finding_card(item, roles) for item in result.mapped_findings],
-            ),
-            _detail_section(
-                "更新后的鉴别诊断",
-                [
-                    _differential_detail(item, roles)
-                    for item in (formulation.differential_diagnoses if formulation else [])
-                ],
-            ),
-            _detail_section(
-                "八问状态变化",
-                [_change_card(item, roles) for item in result.domain_changes],
-            ),
-            _detail_section(
-                "未解决冲突",
-                [_clinical_detail(item, roles) for item in result.unresolved_conflicts],
-            ),
-        ]
-    )
-    gaps = "".join(_gap_card(item, roles) for item in state.missing_data)
-    collaboration = "".join(
-        [
-            _list_block("采用的专科意见 ID", result.specialist_opinions_used),
-            recommendations,
-            _list_block("局限性", result.limitations),
-        ]
-    )
-    return "".join(
-        [
-            _zone(
-                "results",
-                "结果",
-                "核心结果",
-                "优先呈现会中更新后的判断与建议。",
-                f'<div class="result-grid">{overview or _empty()}</div>{_rank_block(differentials)}{recommendations}',
-            ),
-            _zone(
-                "reasoning", "依据", "推理与证据", "将观点变化、分歧和证据与结果分开。", reasoning
-            ),
-            _zone(
-                "gaps",
-                "下一步",
-                "数据缺口",
-                "补充数据前不能解决的关键问题。",
-                f'<div class="gap-stack">{gaps or _empty()}</div>',
-            ),
-            _zone(
-                "collaboration",
-                "协作",
-                "MDT 协作信息",
-                "本轮采用的专科意见和提交给主席的建议。",
-                collaboration,
-            ),
-            _coverage_zone(state.domain_reviews),
-        ]
-    )
 
 
 def _zone(anchor: str, eyebrow: str, title: str, note: str, content: str) -> str:

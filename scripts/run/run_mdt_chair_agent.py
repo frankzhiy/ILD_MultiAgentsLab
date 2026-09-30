@@ -19,6 +19,7 @@ from src.agents.mdt_chair.agent import (  # noqa: E402
     build_chair_prompt_bundle,
     build_semantic_evidence_catalog,
 )
+from src.agents.common.decision_state import initialize_decision_state, project_active_specialty_outputs  # noqa: E402
 from src.llm.factory import build_llm_client  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.utils.config import load_yaml  # noqa: E402
@@ -99,6 +100,7 @@ def _event(event: str, payload: dict) -> None:
 
 
 def main() -> int:
+    started = time.perf_counter()
     parser = argparse.ArgumentParser(description="Generate the ILD MDT chair integration.")
     parser.add_argument("--run-dir", help="Directory containing four specialty initial JSON files.")
     args = parser.parse_args()
@@ -115,26 +117,22 @@ def main() -> int:
         specialty: read_json(_single(run_dir, f"*_{specialty}_initial.json"))
         for specialty in SPECIALTIES
     }
-    case_ids = {str(value.get("case_id") or "") for value in outputs.values()}
-    case_ids.discard("")
+    case_ids = {
+        _single(run_dir, f"*_{specialty}_initial.json").name.removesuffix(f"_{specialty}_initial.json")
+        for specialty in SPECIALTIES
+    }
     if len(case_ids) != 1:
         raise ValueError(f"Specialty outputs do not share one case_id: {sorted(case_ids)}")
     case_id = case_ids.pop()
-    input_summaries = {}
-    for specialty in SPECIALTIES:
-        candidates = sorted(run_dir.glob(f"{case_id}_{specialty}_input.json"))
-        if candidates:
-            input_summaries[specialty] = read_json(candidates[0]).get("summary", {})
-
-    started = time.perf_counter()
+    decision_state = initialize_decision_state(case_id, outputs)
+    write_json(run_dir / f"{case_id}_mdt_decision_state.json", decision_state.model_dump(mode="json"))
     semantic_evidence = build_semantic_evidence_catalog(
         read_json(_single(run_dir, f"{case_id}_clinical_propositions.json")),
         read_json(_single(run_dir, f"{case_id}_local_graphs.json")),
     )
     bundle = build_chair_prompt_bundle(
         case_id,
-        outputs,
-        input_summaries,
+        project_active_specialty_outputs(decision_state),
         semantic_evidence,
     )
     compact_path = run_dir / f"{case_id}_mdt_chair_prompt_input.json"
@@ -160,7 +158,7 @@ def main() -> int:
         write_json(
             failure,
             {
-                "schema_version": "mdt_chair.v5",
+                "schema_version": "mdt_chair.v11",
                 "failed_stage": error.stage,
                 "error": str(error),
                 "attempts": error.attempts,

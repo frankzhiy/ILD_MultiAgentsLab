@@ -84,6 +84,12 @@ class RunCatalog:
             self._json(run_dir / f"{case_id}_mdt_chair_integration.json", None)
         )
         discussion = self.discussion(run_dir.name)
+        report = self.report(run_dir.name)
+        discussion_complete = (
+            discussion["status"] == "completed"
+            and report["report_status"] == "completed"
+            and report["final_report"] is not None
+        )
         completed_specialties = [
             specialty
             for specialty in SPECIALTIES
@@ -92,7 +98,7 @@ class RunCatalog:
         has_error = any(name.endswith("_error.json") or "failure_trace" in name for name in names)
         candidates = []
         manifest_status = manifest.get("status")
-        if manifest_status in {"queued", "running", "completed", "cancelled", "failed"}:
+        if manifest_status in {"queued", "running", "stopping", "completed", "cancelled", "failed", "stopped"}:
             timestamp = 0.0
             for field in ("status_updated_at", "finished_at", "started_at", "created_at"):
                 if manifest.get(field):
@@ -116,7 +122,7 @@ class RunCatalog:
             run_dir / f"{case_id}_mdt_discussion_team_discussion_failure_trace.json"
         )
         if discussion_state_path.exists() and discussion["status"] in {
-            "running", "completed", "failed", "cancelled"
+            "running", "completed", "failed", "cancelled", "stopped"
         }:
             candidates.append(
                 (discussion_state_path.stat().st_mtime, discussion["status"], "mdt_discussion")
@@ -126,18 +132,18 @@ class RunCatalog:
                 (discussion_failure_path.stat().st_mtime, "failed", "mdt_discussion")
             )
 
-        if candidates:
+        if manifest_status in {"queued", "running", "stopping"}:
+            status, status_source = manifest_status, "run"
+        elif candidates:
             _, status, status_source = max(candidates, key=lambda item: item[0])
-        elif len(completed_specialties) == len(SPECIALTIES):
-            status, status_source = "completed", "specialties"
-        elif completed_specialties:
-            status, status_source = "specialists_running", "specialties"
-        elif semantic_complete:
-            status, status_source = "routing_pending", "semantic_graphing"
         elif has_error:
             status, status_source = "failed", "run"
         else:
-            status, status_source = "semantic_running", "semantic_graphing"
+            status, status_source = "incomplete", "run"
+        if status == "completed" and not discussion_complete:
+            status = "incomplete"
+        if status == "incomplete" and report["report_status"] in {"failed", "stopped"}:
+            status, status_source = report["report_status"], "mdt_report"
         stat = run_dir.stat()
         return {
             "id": run_dir.name,
@@ -146,11 +152,7 @@ class RunCatalog:
             "status_source": status_source,
             "semantic_complete": semantic_complete,
             "chair_complete": chair_complete,
-            "discussion_complete": (
-                discussion["status"] == "completed"
-                and discussion["report_status"] == "completed"
-                and discussion["final_report"] is not None
-            ),
+            "discussion_complete": discussion_complete,
             "completed_specialties": completed_specialties,
             "has_error_artifact": has_error,
             "orchestrated": bool(manifest),
@@ -326,7 +328,8 @@ class RunCatalog:
             "case_id": case_id,
             "status": status,
             "runnable": runnable,
-            "result": result,
+            "result": result if current_result else None,
+            "has_previous_result": result is not None,
             "error": failure.get("error") or readiness_error,
         }
 
@@ -354,7 +357,8 @@ class RunCatalog:
             if baseline_path.exists()
             else None
         )
-        current = bool(state and state.get("baseline_sha256") == baseline_hash)
+        current = bool(state and state.get("schema_version") == "mdt_discussion.v4"
+                       and chair["status"] == "completed" and state.get("baseline_sha256") == baseline_hash)
         latest_failure = failure_path.exists() and (
             not state_path.exists() or failure_path.stat().st_mtime > state_path.stat().st_mtime
         )
@@ -376,17 +380,35 @@ class RunCatalog:
                 or len((state or {}).get("rounds", []))
             ),
             "max_rounds": (state or {}).get("max_rounds", 3),
-            "rounds": (state or {}).get("rounds", []),
-            "active_round": (state or {}).get("active_round"),
+            "rounds": (state or {}).get("rounds", []) if (state or {}).get("schema_version") == "mdt_discussion.v4" else [],
+            "active_round": (state or {}).get("active_round") if (state or {}).get("schema_version") == "mdt_discussion.v4" else None,
             "report_status": (state or {}).get("report_status", "waiting"),
-            "latest_chair_result": (state or {}).get("latest_chair_result"),
+            "latest_chair_result": (state or {}).get("latest_chair_result") if (state or {}).get("schema_version") == "mdt_discussion.v4" else None,
             "decision_state": decision_state,
             "stop_reason": (state or {}).get("stop_reason"),
-            "final_report": (state or {}).get("final_report"),
+            "final_report": (state or {}).get("final_report") if (state or {}).get("schema_version") == "mdt_discussion.v4" else None,
             "error": (
                 failure.get("error") or (state or {}).get("error") or readiness_error
             ),
         }
+
+    def report(self, run_id: str) -> dict[str, Any]:
+        discussion = self.discussion(run_id)
+        runnable = discussion["status"] == "completed" and not discussion["active_round"]
+        status = discussion["report_status"] if runnable else discussion["status"]
+        run_dir = self.run_dir(run_id)
+        case = discussion["case_id"]
+        failure_path = run_dir / f"{case}_mdt_report_final_report_failure_trace.json"
+        report_path = run_dir / f"{case}_mdt_final_report.json"
+        failure = self._json(failure_path, {}) if failure_path.exists() and (
+            not report_path.exists() or failure_path.stat().st_mtime > report_path.stat().st_mtime
+        ) else {}
+        if failure and runnable:
+            status = "failed"
+        return {"case_id": discussion["case_id"], "status": status,
+                "report_status": status, "runnable": runnable,
+                "final_report": discussion["final_report"] if runnable and status == "completed" else None,
+                "error": (failure.get("error") or discussion["error"] if runnable else "请先完成当前版本的 MDT 团队讨论；停止的讨论仅为阶段结果。")}
 
     def artifacts(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self.run_dir(run_id)
@@ -503,25 +525,18 @@ class RunCatalog:
 
     @staticmethod
     def _is_current_chair_output(value: Any) -> bool:
-        if (
-            not isinstance(value, dict)
-            or value.get("schema_version") != "mdt_chair.v9"
-        ):
+        from src.agents.common.team_synthesis import MDTChairResult
+        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v11":
             return False
-        return all(
-            isinstance(value.get(field), list)
-            for field in (
-                "integrated_conclusions",
-                "assessment_boundaries",
-                "conflicts",
-                "questions",
-                "evidence_needs",
-            )
-        )
+        try:
+            MDTChairResult.model_validate(value)
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _error_agent(filename: str) -> str:
-        for specialty in (*SPECIALTIES, "mdt_chair", "mdt_discussion", "semantic_graphing"):
+        for specialty in (*SPECIALTIES, "mdt_chair", "mdt_discussion", "mdt_report", "semantic_graphing"):
             if specialty in filename:
                 return specialty
         return "semantic_graphing"

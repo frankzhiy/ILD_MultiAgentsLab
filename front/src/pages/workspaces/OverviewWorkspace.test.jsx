@@ -31,9 +31,10 @@ it('restores the chair, discussion, and final report stages after refresh', asyn
   api.chair.mockResolvedValue({ status: 'completed' })
   api.discussion.mockResolvedValue({ status: 'completed', current_round: 1, report_status: 'completed', final_report: { primary_conclusion: '工作诊断' } })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<MemoryRouter><QueryClientProvider client={client}><OverviewWorkspace runId="run-1" run={{ status: 'completed', semantic_complete: true, completed_specialties: ['pulmonology', 'thoracic_radiology', 'rheumatology', 'pathology'], chair_complete: true, discussion_complete: true }} /></QueryClientProvider></MemoryRouter>)
+  render(<MemoryRouter><QueryClientProvider client={client}><OverviewWorkspace runId="run-1" run={{ manifest: { case_version_id: 'current-version', parent_case_version_id: 'previous-version', parent_run_id: 'prior-consultation' }, status: 'completed', semantic_complete: true, completed_specialties: ['pulmonology', 'thoracic_radiology', 'rheumatology', 'pathology'], chair_complete: true, discussion_complete: true }} /></QueryClientProvider></MemoryRouter>)
 
   await waitFor(() => expect(screen.getByRole('link', { name: '查看最终报告' })).toHaveAttribute('href', '/runs/run-1/report'))
+  expect(screen.getByRole('link', { name: '查看前序会诊' })).toHaveAttribute('href', '/runs/prior-consultation/overview')
   const nodes = JSON.parse(screen.getByTestId('flow').dataset.nodes)
   expect(nodes.filter((node) => ['chair', 'discussion', 'report'].includes(node.id)).map((node) => node.className)).toEqual(['flow-success', 'flow-success', 'flow-success'])
 })

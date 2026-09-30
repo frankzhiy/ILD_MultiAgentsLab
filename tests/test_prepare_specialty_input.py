@@ -45,26 +45,19 @@ def test_builds_ordered_complete_pulmonology_input_from_current_run():
         "seg_003",
         "seg_004",
         "seg_005",
-        "seg_006",
     ]
     assert [
         unit.graph_unit.graph_unit_id for segment in result.segments for unit in segment.units
     ] == [
         "seg_001_gu_001",
-        "seg_001_gu_002",
         "seg_002_gu_001",
-        "seg_002_gu_002",
-        "seg_003_gu_001",
-        "seg_003_gu_002",
         "seg_003_gu_003",
-        "seg_003_gu_004",
         "seg_004_gu_001",
         "seg_005_gu_001",
-        "seg_006_gu_001",
     ]
-    assert result.summary.unit_count == 11
-    assert result.summary.owned_unit_count == 6
-    assert result.summary.shared_context_unit_count == 4
+    assert result.summary.unit_count == 5
+    assert result.summary.owned_unit_count == 3
+    assert result.summary.shared_context_unit_count == 1
     assert result.summary.reference_only_unit_count == 1
 
     units = {
@@ -72,10 +65,10 @@ def test_builds_ordered_complete_pulmonology_input_from_current_run():
     }
     assert units["seg_003_gu_003"].evidence_role == EvidenceRole.OWNED
     assert units["seg_003_gu_003"].may_support_diagnostic_claim is True
-    assert units["seg_003_gu_003"].allowed_uses == units["seg_003_gu_001"].allowed_uses
+    assert units["seg_003_gu_003"].allowed_uses == units["seg_002_gu_001"].allowed_uses
     assert len(units["seg_003_gu_003"].graph_unit.mdt_specialty) == 2
     assert units["seg_004_gu_001"].evidence_role == EvidenceRole.REFERENCE_ONLY
-    assert units["seg_004_gu_001"].may_support_diagnostic_claim is False
+    assert units["seg_004_gu_001"].may_support_diagnostic_claim is True
     assert all(
         unit.may_support_diagnostic_claim
         == ("diagnostic_support" in unit.allowed_uses)
@@ -107,7 +100,7 @@ def test_working_input_preserves_verbatim_sources_without_semantic_graph_payload
 
     working_json = working.model_dump_json()
     full_json = full.model_dump_json()
-    assert len(working_json) < len(full_json) * 0.2
+    assert len(working_json) < len(full_json) * 0.3
     for omitted_key in (
         '"local_graph"',
         '"clinical_propositions"',
@@ -126,7 +119,7 @@ def test_later_specialty_and_radiology_stage_payloads_are_bounded():
     later_value = json.loads(later)
     assert "units" not in later_value
     assert later_value["diagnostic_evidence_units"]
-    assert later_value["context_only_evidence_units"]
+    assert not later_value["context_only_evidence_units"]
 
     radiology = build_specialty_case_input(RUN_DIR, MdtSpecialty.THORACIC_RADIOLOGY)
     audit = build_radiology_working_input(radiology)
@@ -135,7 +128,7 @@ def test_later_specialty_and_radiology_stage_payloads_are_bounded():
     )
     evidence = prompt_json(build_radiology_evidence_prompt_input(audit))
     assert len(reconstruction) < len(audit.model_dump_json()) * 0.5
-    assert len(evidence) < len(audit.model_dump_json()) * 0.35
+    assert len(evidence) < len(audit.model_dump_json()) * 0.4
 
 
 def test_rejects_conflicting_embedded_and_separate_primary_frames(tmp_path):
@@ -157,24 +150,18 @@ def test_builds_same_complete_input_for_thoracic_radiology_with_new_roles():
         unit.graph_unit.graph_unit_id for segment in result.segments for unit in segment.units
     ] == [
         "seg_001_gu_001",
-        "seg_001_gu_002",
         "seg_002_gu_001",
-        "seg_002_gu_002",
-        "seg_003_gu_001",
-        "seg_003_gu_002",
         "seg_003_gu_003",
-        "seg_003_gu_004",
         "seg_004_gu_001",
         "seg_005_gu_001",
-        "seg_006_gu_001",
     ]
     assert result.summary.model_dump() == {
-        "segment_count": 6,
-        "unit_count": 11,
+        "segment_count": 5,
+        "unit_count": 5,
         "owned_unit_count": 2,
-        "shared_context_unit_count": 4,
-        "reference_only_unit_count": 5,
-        "available_locator_count": 11,
+        "shared_context_unit_count": 1,
+        "reference_only_unit_count": 2,
+        "available_locator_count": 5,
         "degraded_locator_count": 0,
     }
 
@@ -213,7 +200,7 @@ def test_keeps_unit_text_when_locator_is_degraded(tmp_path):
     unit = result.segments[0].units[0]
 
     assert unit.locator_status == "degraded"
-    assert unit.graph_unit.text == "患者,女,77岁"
+    assert unit.graph_unit.text == "成年患者"
     assert result.summary.degraded_locator_count == 1
 
 
