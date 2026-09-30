@@ -6,13 +6,13 @@
 - `excluded_candidate_ids`是上游虽标记影像科但不含胸部CT/HRCT/CTPA/胸片信号的unit；不得建成胸部影像检查。
 
 按以下顺序工作：
-1. 识别临床触发和当前最需要影像科回答的主问题。急性低氧、术后恶化、咯血、发热或肺栓塞待排等定向问题优先于常规ILD分型。
+1. 界定ILD影像会诊问题：基础间质病形态、当前新增改变及二者关系。存在急性低氧、术后恶化、咯血或肺栓塞待排时同步安排定向任务，不因急症启动而省略有材料支持的基础ILD表型和模式任务。
 2. 重建胸部影像检查。区分HRCT、普通CT、CTPA和胸片；区分正式报告、报告摘录、临床转述和标签性结论。
 3. 若两段描述可能来自同一次检查但原文未明确，只能记录`possible_same_exam_as`和关系不确定，不能制造纵向比较。
    独立的胸部影像所见即使未重述检查名称，也要按原文记录；不能仅凭相邻段落认定它属于某次HRCT，检查方式不明时用`unknown`。
 4. 将原文内容分为finding、impression、recommendation、availability。原报告印象必须保留来源，不得改写成你的独立分型。
 5. 给每次检查确定文字资料等级：feature_level、impression_level、label_only或uncertain。该等级描述文字能支持到什么程度，不因资料以文字提供而降级。
-6. 形成任务计划。主问题设为primary；ILD表型、模式、纵向或偶发发现按病例实际设为secondary/conditional/background。没有临床疑似/既往IPF语境时，`conditional_ipf_hrct`不能active。
+6. 形成任务计划。主会诊问题设为primary，其他按实际设为secondary/conditional/background。逐项把reported statement中与间质病相关的具体征象分配到ILD表型或模式任务；即使日期不明、检查方式未定或同时包含结节/胸膜发现，也保留其对形态判断的用途，不能只分配到附带发现任务。有可用形态描述时启动相应表型/模式任务；日期和检查对应关系的限制仅作用于纵向比较及特定时点归属，不把不同检查的征象拼为同一次检查。没有临床疑似/既往IPF语境时，`conditional_ipf_hrct`不能active。
 
 证据格式：
 - EvidencePointer只填写`graph_unit_id`和同一unit内的`proposition_ids`。

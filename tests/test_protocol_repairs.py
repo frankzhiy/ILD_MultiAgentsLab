@@ -86,12 +86,50 @@ def test_duplicate_judgment_review_is_locally_repaired_without_rewriting_synthes
 
     result, trace = StructuredLLMGenerator(LLM(), temperature=0, max_tokens=1000).generate(
         schema_model=TeamSynthesis, schema_name='team', system_prompt='system',
-        user_prompt='user', repair_on_validation_error=True)
+        user_prompt='user', repair_on_validation_error=True,
+        string_field_constraints={'JudgmentReview': {'source_ref': {'S1'}}})
     assert len(result.judgment_reviews) == 1
     assert result.problems[0].statement == original['problems'][0]['statement']
     assert "'S1': [0, 1]" in prompts[1][-1].content
+    assert '/judgment_reviews' in prompts[1][-1].content
+    assert 'Do not rename duplicate IDs' in prompts[1][-1].content
+    assert '"JudgmentReview": {"source_ref": ["S1"]}' in prompts[1][-1].content
     assert 'edits' in prompts[1][0].content
     assert trace['attempts'][1]['validated']
+
+
+def test_duplicate_errors_report_all_affected_arrays_together():
+    from copy import deepcopy
+    import pytest
+    from src.agents.common.team_synthesis import TeamSynthesis
+    payload = team_payload()
+    payload['judgment_reviews'].append(deepcopy(payload['judgment_reviews'][0]))
+    disposition = dict(issue_id='Q1', outcome='covered', rationale='现有意见覆盖')
+    payload['issue_dispositions'] = [disposition, deepcopy(disposition)]
+    with pytest.raises(ValueError) as error:
+        TeamSynthesis.model_validate(payload)
+    assert '/judgment_reviews: Duplicate source_ref' in str(error.value)
+    assert '/issue_dispositions: Duplicate issue_id' in str(error.value)
+
+
+def test_obsolete_review_repair_preserves_active_ids_and_clinical_content():
+    import json
+    from copy import deepcopy
+    from test_expert_protocol import setup_case, Responses
+    from src.agents.mdt_chair.agent import MDTChairAgent
+    _, bundle, original = setup_case()
+    payload = deepcopy(original)
+    payload['judgment_reviews'].append({**payload['judgment_reviews'][0], 'source_ref': 'S999'})
+    llm = Responses([payload, {'edits': [dict(op='remove_indices', path='/judgment_reviews', value=[4])]}])
+    agent = MDTChairAgent(llm, prompt_path='src/prompts/mdt_chair/expert_synthesis.md', max_attempts=2)
+    result, trace = agent.integrate(bundle)
+    assert [r.source_ref for r in result.team_synthesis.judgment_reviews] == [r['source_ref'] for r in original['judgment_reviews']]
+    assert result.team_synthesis.problems[0].statement == original['problems'][0]['statement']
+    error = trace['attempts'][0]['validation_error']
+    assert 'obsolete indexes=[4]' in error
+    assert 'missing=[]' in error
+    assert 'do not rename or renumber' in error
+    assert json.loads(trace['attempts'][1]['content'])['edits'][0]['value'] == [4]
 
 
 def test_invalid_issue_link_names_exact_path_and_keeps_valid_links():

@@ -76,7 +76,12 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         guideline_trace["used_chunk_ids"] = resolve_guideline_evidence(team, allowed_guidelines)
         reviewed = {review.source_ref for review in team.judgment_reviews}
         if reviewed != set(current):
-            raise ValueError(f"Review every active formal judgment exactly once; missing={sorted(set(current)-reviewed)}, obsolete={sorted(reviewed-set(current))}")
+            obsolete = [index for index, review in enumerate(team.judgment_reviews)
+                        if review.source_ref not in current]
+            raise ValueError(f"Review every active formal judgment exactly once; missing={sorted(set(current)-reviewed)}, obsolete={sorted(reviewed-set(current))}; "
+                             f"/judgment_reviews obsolete indexes={obsolete}; allowed source_ref={sorted(current)}. "
+                             "If missing is empty, merge any distinct information into the correct active review "
+                             "and remove obsolete entries; do not rename or renumber other reviews.")
         def walk(value):
             if isinstance(value, dict):
                 for key, items in value.items():
@@ -204,7 +209,8 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     team, trace = agent.generator.generate(
         schema_model=TeamSynthesis, schema_name="mdt_expert_synthesis",
         system_prompt=judgment_system_prompt("你是有完整肺部疾病诊断能力的资深MDT主持人，ILD是你的强项。审查专业判断并对综合负责，只返回JSON。"),
-        user_prompt=prompt, extra_validation=validate, repair_on_validation_error=True,
+        user_prompt=prompt + "\n当前正式判断审阅编号（每项恰好一次，不连续、不重编号；原始问题与资料需求不进入 judgment_reviews）：\n" + prompt_json(sorted(current)),
+        extra_validation=validate, repair_on_validation_error=True,
         string_field_constraints=constraints,
         pointer_field_constraints=guideline_evidence_schema_constraints(allowed_guidelines),
     )

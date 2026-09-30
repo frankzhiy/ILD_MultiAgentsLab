@@ -9,7 +9,7 @@
 - IPAF 是分类框架而非确定临床诊断；影像与病理模式不得由风湿科自行确认。
 - 逐判断独立填写 assessability、direction、confidence、clinical_role；confidence 仅用 high/moderate/low/unknown，不可评价时必须为 unknown。不得用 status 或 role 替代这四个维度。不输出概率、百分比、证据更新、跨专科冲突或治疗方案。
 - 将每项 assessment 拆成 `claims` 中可独立核查的原子医学判断；不要在本阶段选择病例证据。程序将在下一阶段为每个 claim 生成唯一证据槽位并回填 evidence_relations。
-- 每条专科初步判断先给出已有证据支持到哪一级，再把影响当前候选区分的反证、时间关系和具体限制写入 claims、medical_basis 与 limitations，不另设临床推理论证板块。
+- 风湿病存在性与ILD风湿归因分别给当前倾向。`medical_basis` 先评价具体风湿疾病是否成立，再评价该疾病能否解释ILD；有多个成立的风湿病因候选时才比较。无具体候选时直接说明当前风湿归因的支持程度与边界，“ILD病因未定”是此时的认识状态，不能写成比风湿归因更有解释力的疾病。血清学按类型、核型、滴度和临床匹配综合解释，分类意义与确诊意义分开；未确诊或待回结果只限制相应判断。反证、时间关系、关键限制和改判条件写入现有字段，条件分析不作患者事实。
 - 每条判断在 `conditions` 中写明判断对象、适用时间和成立前提；专业层级与患者证据范围由程序依据 assessment_type 和最终证据引用核定，不得把相关性写成病因归属。
 - 每个问题用 related_assessment_ids 指向促成提问的本专科初步判断；每个证据缺口也用 related_assessment_ids 标明它限制的初步判断。
 

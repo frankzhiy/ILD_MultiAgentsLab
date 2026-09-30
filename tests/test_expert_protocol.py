@@ -95,6 +95,34 @@ def test_unopposed_judgment_still_requires_review_and_response():
     assert result.team_synthesis.acceptance == 'chair_adjudicated'
 
 
+@pytest.mark.parametrize('has_preference', [True, False])
+def test_low_confidence_candidates_survive_dissent_and_sealed_report(has_preference):
+    state, bundle, payload = setup_case()
+    original_state = state.model_dump(mode='json')
+    problem = payload['problems'][0]
+    problem.update(confidence='low',
+        statement='当前更支持解释A' if has_preference else '现有文字不能区分解释A和B',
+        rationale='解释A较符合时间关系' if has_preference else '缺少区分A和B的病程记录')
+    problem['candidates'] = [dict(
+        diagnosis='解释' + name,
+        position=('preferred' if index == 0 else 'alternative') if has_preference else 'unresolved',
+        confidence='low', rationale=problem['rationale'], source_refs=problem['source_refs'],
+        limitations=['具体病因未证实'],
+    ) for index, name in enumerate(('A', 'B'))]
+    payload['dissent'] = ['某专科保留不同倾向，主持人维持上述工作判断。']
+    result = run_expert(bundle, [payload])
+    result.team_synthesis.stop_kind = 'completed'
+    report, _ = project_team_report('100-IPF', result.model_dump(mode='json'), [],
+        '现有资料讨论完成', None, state)
+    candidates = report.team_synthesis.problems[0].candidates
+    assert [c.diagnosis for c in candidates] == ['解释A', '解释B']
+    assert sum(c.position == 'preferred' for c in candidates) == int(has_preference)
+    assert all(c.confidence == 'low' for c in candidates)
+    assert report.team_synthesis.acceptance == 'explicit_dissent'
+    assert report.team_synthesis.problems == result.team_synthesis.problems
+    assert state.model_dump(mode='json') == original_state
+
+
 def test_requests_must_change_decision_and_hypotheses_are_separate():
     with pytest.raises(ValueError,match='actual decisions'):
         KeyEvidenceNeed(need_id='N1', status='missing', available_information='', missing_information='病理', action='obtain_new', problem_id='P1',information='病理',source_refs=['S1'],

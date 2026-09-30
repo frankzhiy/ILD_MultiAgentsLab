@@ -284,14 +284,20 @@ class TeamSynthesis(StrictModel):
         for facet in self.diagnostic_facets:
             if facet.status in {"not_assessable", "not_applicable"} and facet.confidence != ("unknown" if facet.status == "not_assessable" else "not_applicable"):
                 raise ValueError("Facet assessability and confidence disagree")
-        for items, key in ((self.issues, "issue_id"), (self.judgment_reviews, "source_ref"), (self.issue_dispositions, "issue_id"), (self.judgment_boundaries, "boundary_id"), (self.disagreements, "disagreement_id"), (self.evidence_needs, "need_id")):
+        duplicate_errors = []
+        for field, key in (("issues", "issue_id"), ("judgment_reviews", "source_ref"), ("issue_dispositions", "issue_id"), ("judgment_boundaries", "boundary_id"), ("disagreements", "disagreement_id"), ("evidence_needs", "need_id")):
+            items = getattr(self, field)
             values = [getattr(item, key) for item in items]
             if len(values) != len(set(values)):
                 positions = {}
                 for index, value in enumerate(values):
                     positions.setdefault(value, []).append(index)
                 duplicates = {value: indexes for value, indexes in positions.items() if len(indexes) > 1}
-                raise ValueError(f"Duplicate {key}: {duplicates}; keep one entry per ID and merge any distinct information")
+                duplicate_errors.append(f"/{field}: Duplicate {key}: {duplicates}")
+        if duplicate_errors:
+            raise ValueError("; ".join(duplicate_errors) +
+                             "; merge distinct information into the retained entry, then use "
+                             "remove_indices to delete redundant entries. Do not rename duplicate IDs.")
         return self
 
 
