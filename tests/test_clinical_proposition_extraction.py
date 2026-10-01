@@ -397,6 +397,68 @@ def test_extractor_accepts_coordinated_findings_with_shared_prefix_evidence():
     assert result.propositions[1].evidence.quote == "胸部CT提示双肺肺气肿、肺纤维化"
 
 
+@pytest.mark.parametrize(
+    "source,concepts,status,proposition_type",
+    [
+        ("无发热、寒战", ["无发热", "无寒战"], "absent", "symptom"),
+        ("无口干、眼干", ["无口干", "无眼干"], "absent", "symptom"),
+        (
+            "无心悸、胸痛、阵发性呼吸困难等",
+            ["无心悸", "无胸痛", "无阵发性呼吸困难"],
+            "absent",
+            "symptom",
+        ),
+        (
+            "超声提示左房、右室增大",
+            ["超声提示左房增大", "超声提示右室增大"],
+            "present",
+            "finding",
+        ),
+        (
+            "考虑病毒或细菌感染",
+            ["考虑病毒感染", "考虑细菌感染"],
+            "possible",
+            "diagnosis_assertion",
+        ),
+    ],
+)
+def test_shared_words_expand_concepts_but_not_source_quotes(
+    source, concepts, status, proposition_type
+):
+    invalid = {
+        "propositions": [
+            {
+                "proposition_type": proposition_type,
+                "concept_text": concept,
+                "status": status,
+                "certainty": "high",
+                "attribution": None,
+                "modifiers": [],
+                "evidence": ref(concept),
+            }
+            for concept in concepts
+        ]
+    }
+    corrected = {
+        "propositions": [
+            {**item, "evidence": ref(source)} for item in invalid["propositions"]
+        ]
+    }
+    extractor = ClinicalPropositionExtractor(
+        SequencedLLM([invalid, corrected]),
+        "src/prompts/semantic_graphing/clinical_proposition_extraction.md",
+        temperature=0,
+        max_tokens=1000,
+    )
+
+    result, trace = extractor.extract_unit(make_unit(source), make_frame())
+
+    assert [attempt["validated"] for attempt in trace["attempts"]] == [False, True]
+    assert [item.concept_text for item in result.propositions] == concepts
+    assert all(item.status == status for item in result.propositions)
+    assert all(item.evidence.quote == source for item in result.propositions)
+
+
 def test_extractor_derives_contiguous_owned_evidence_ids_from_source_text():
     text = "主因胸闷1年余。入院。\n患者诉1年前出现胸闷。"
     response = {

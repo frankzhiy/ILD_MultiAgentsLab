@@ -106,6 +106,25 @@ def test_semantic_retry_cannot_replace_an_entire_section():
         )
 
 
+def test_object_array_repair_explains_append_and_missing_indexes():
+    from src.llm.structured import _apply_repair_edits
+
+    original = {"branches": [{"result": "existing"}]}
+    for patch in (
+        {"edits": [{"op": "replace", "path": "/branches", "value": [{"result": "new"}]}]},
+        {"edits": [{"op": "replace", "path": "/branches/1/result", "value": "new"}]},
+    ):
+        with pytest.raises(ValueError) as error:
+            _apply_repair_edits(original, patch)
+        assert "append" in str(error.value)
+    assert "array has 1 items" in str(error.value)
+    repaired = _apply_repair_edits(original, {
+        "edits": [{"op": "append", "path": "/branches", "value": {"result": "new"}}],
+    })
+    assert [item["result"] for item in repaired["branches"]] == ["existing", "new"]
+    assert original == {"branches": [{"result": "existing"}]}
+
+
 def test_repair_uses_candidate_that_produced_schema_error():
     class Ledger(BaseModel):
         issues: list[str]
@@ -149,6 +168,49 @@ def test_repair_uses_candidate_that_produced_schema_error():
     assert "Duplicate issue_id" in trace["attempts"][1]["validation_error"]
     assert "Closed issue" in trace["attempts"][2]["validation_error"]
     assert trace["attempts"][3]["validated"]
+
+
+def test_invalid_repair_preserves_result_error_and_current_candidate():
+    from src.agents.common.team_synthesis import KeyEvidenceNeed
+
+    class Result(BaseModel):
+        evidence_needs: list[KeyEvidenceNeed]
+
+    original = {"evidence_needs": [{
+        "need_id": "N1", "problem_id": "P1", "information": "recorded finding",
+        "source_refs": ["S1"], "status": "available", "available_information": "partial record",
+        "missing_information": "detail absent", "action": "retain_boundary",
+        "feasibility_and_burden": "no new request", "if_unavailable": "retain boundary",
+    }]}
+    responses = iter([
+        original,
+        {"edits": [{"op": "replace", "path": "/evidence_needs/0.status", "value": "partially_available"}]},
+        {"edits": []},
+        {"edits": [{"op": "replace", "path": "/evidence_needs/0/status", "value": "partially_available"}]},
+    ])
+    prompts = []
+
+    class FakeLLM:
+        def complete(self, messages, **kwargs):
+            prompts.append(messages)
+            return LLMResponse(content=json.dumps(next(responses)), raw={})
+
+    result, trace = StructuredLLMGenerator(
+        FakeLLM(), temperature=0, max_tokens=1000, max_attempts=4,
+    ).generate(
+        schema_model=Result, schema_name="result", system_prompt="system", user_prompt="user",
+        repair_on_validation_error=True,
+    )
+
+    assert result.evidence_needs[0].status == "partially_available"
+    assert result.evidence_needs[0].missing_information == "detail absent"
+    for messages in prompts[2:]:
+        assert "Available evidence cannot have missing information" in messages[-1].content
+        assert "/evidence_needs/0" in messages[-1].content
+        assert json.loads(messages[-2].content) == original
+    assert "Repair edit path does not exist" in prompts[2][-1].content
+    assert "Repair response must contain at least one edit" in prompts[3][-1].content
+    assert trace["attempts"][-1]["validated"]
 
 
 def test_semantic_retry_can_replace_atomic_claim_selection():

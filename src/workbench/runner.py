@@ -43,7 +43,6 @@ class RunOrchestrator:
         self.active_reports: set[str] = set()
         self.active_chairs: set[str] = set()
         self.active_discussions: set[str] = set()
-        self._recover_batches()
 
     def prepare(self, request: dict[str, Any], *, retry_run_id: str | None = None) -> tuple[str, Path]:
         case_id = str(request.get("case_id") or "").strip()

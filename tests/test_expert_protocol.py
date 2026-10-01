@@ -271,3 +271,45 @@ def test_new_schema_rejects_self_answer_and_legacy_chair_fields():
     payload['judgment_boundaries'] = []
     with pytest.raises(StructuredGenerationError, match='judgment boundary'):
         run_expert(bundle, [payload])
+
+
+def test_facet_confidence_errors_identify_every_invalid_array_item():
+    from pydantic import ValidationError
+    _, _, payload = setup_case()
+    payload['diagnostic_facets'] = [dict(
+        dimension=dimension, problem_id='P1', statement='当前资料不足',
+        status=status, confidence='low', rationale='现有资料限制', source_refs=['S001'],
+    ) for dimension, status in (
+        ('radiologic_pattern', 'not_assessable'),
+        ('histopathologic_pattern', 'not_applicable'),
+    )]
+    with pytest.raises(ValidationError) as failure:
+        TeamSynthesis.model_validate(payload)
+    assert [error['loc'] for error in failure.value.errors()] == [
+        ('diagnostic_facets', 0), ('diagnostic_facets', 1),
+    ]
+    for facet, confidence in zip(payload['diagnostic_facets'], ('unknown', 'not_applicable')):
+        facet['confidence'] = confidence
+    assert TeamSynthesis.model_validate(payload).diagnostic_facets[0].confidence == 'unknown'
+
+
+def test_chair_reports_missing_reviews_needs_and_boundaries_together():
+    state, _, payload = setup_case()
+    outputs = project_active_specialty_outputs(state)
+    outputs['pulmonology']['specialty_assessments']['evidence_gaps'] = [dict(
+        missing_information='病原结果', available_information='症状记录',
+        why_it_matters='确定病原', decision_unlocked='病因归属')]
+    bundle = build_chair_prompt_bundle('100-IPF', outputs)
+    refs = [s['specialty_assessments'][0]['source_ref'] for s in bundle.prompt_input['specialties']]
+    for review, ref in zip(payload['judgment_reviews'], refs):
+        review['source_ref'] = ref
+    payload['problems'][0]['source_refs'] = refs
+    payload['judgment_reviews'].pop()
+    payload['judgment_boundaries'] = []
+    with pytest.raises(StructuredGenerationError) as failure:
+        run_expert(bundle, [payload])
+    error = failure.value.attempts[0]['validation_error']
+    assert 'Review every active formal judgment' in error
+    assert 'Every specialty evidence need' in error
+    assert next(iter(bundle.evidence_need_refs_to_classify)) in error
+    assert 'judgment boundary for problem P1' in error

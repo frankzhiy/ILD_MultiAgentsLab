@@ -58,6 +58,13 @@ class DiagnosticFacet(StrictModel):
     source_refs: list[str] = Field(min_length=1)
     limitations: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def coherent_confidence(self):
+        expected = {"not_assessable": "unknown", "not_applicable": "not_applicable"}
+        if self.status in expected and self.confidence != expected[self.status]:
+            raise ValueError(f"Facet assessability and confidence disagree: status={self.status!r} requires confidence={expected[self.status]!r}")
+        return self
+
 
 class DiagnosticCandidate(StrictModel):
     timeframe: JudgmentTimeframe = Field(default_factory=lambda: JudgmentTimeframe(kind="unknown", description="时间未明确"))
@@ -281,9 +288,6 @@ class TeamSynthesis(StrictModel):
         dimensions = [(f.problem_id, f.dimension, f.timeframe.model_dump_json()) for f in self.diagnostic_facets]
         if len(dimensions) != len(set(dimensions)):
             raise ValueError("Diagnostic facets must have unique dimensions within each problem and timeframe")
-        for facet in self.diagnostic_facets:
-            if facet.status in {"not_assessable", "not_applicable"} and facet.confidence != ("unknown" if facet.status == "not_assessable" else "not_applicable"):
-                raise ValueError("Facet assessability and confidence disagree")
         duplicate_errors = []
         for field, key in (("issues", "issue_id"), ("judgment_reviews", "source_ref"), ("issue_dispositions", "issue_id"), ("judgment_boundaries", "boundary_id"), ("disagreements", "disagreement_id"), ("evidence_needs", "need_id")):
             items = getattr(self, field)

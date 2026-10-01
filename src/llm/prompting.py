@@ -1,6 +1,7 @@
 """Compact serialization for values sent to an LLM."""
 
 import json
+from collections import Counter
 from enum import Enum
 from functools import cache
 from typing import Any
@@ -39,6 +40,45 @@ def prompt_json(value: Any) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def build_shared_prompt_view(value: Any) -> dict[str, Any]:
+    """Represent repeated large values once, with an exactly reversible reference."""
+
+    values = {}
+    counts = Counter()
+    # ponytail: O(n²) on deeply nested JSON; cache encodings if prompt building gets slow.
+    encode = lambda item: json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+
+    def collect(item):
+        encoded = encode(item)
+        if len(encoded) < 1000:
+            return
+        counts[encoded] += 1
+        values[encoded] = item
+        for child in item.values() if isinstance(item, dict) else item if isinstance(item, list) else []:
+            collect(child)
+
+    collect(value)
+    references = {encoded: f"V{index}" for index, encoded in enumerate(
+        (encoded for encoded, count in counts.items() if count > 1), start=1)}
+
+    def descend(item):
+        if isinstance(item, dict):
+            return {key: project(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [project(child) for child in item]
+        return item
+
+    def project(item):
+        reference = references.get(encode(item))
+        return {"shared_value_ref": reference} if reference else descend(item)
+
+    return {
+        "shared_value_rule": "仅含 shared_value_ref 的对象代表 shared_values 中同编号的完整原值；递归展开后即为原始输入，引用不增加或删除证据。",
+        "shared_values": {reference: descend(values[encoded]) for encoded, reference in references.items()},
+        "input": project(value),
+    }
 
 
 def prompt_schema_json(schema_model: type[BaseModel]) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -75,7 +76,13 @@ class CreateBatchRequest(BaseModel):
             raise ValueError("请至少选择一个运行。")
         return self
 
-app = FastAPI(title="ILD Multi-Agent Research Workbench", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    orchestrator._recover_batches()
+    yield
+
+
+app = FastAPI(title="ILD Multi-Agent Research Workbench", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

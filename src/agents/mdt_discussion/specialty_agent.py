@@ -29,7 +29,7 @@ from src.guidelines.runtime import (
     resolve_guideline_evidence,
 )
 from src.llm.base import LLMClient
-from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.prompting import build_shared_prompt_view, prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.utils.config import load_text, load_yaml, render_template
 
@@ -390,7 +390,7 @@ class SpecialtyDiscussionAgent:
                 "active_judgments": prompt_json([
                     item.model_dump(mode="json") for item in active_judgments
                 ]),
-                "round_answers": prompt_json([
+                "round_answers": prompt_json(build_shared_prompt_view([
                     {
                         "task": task.model_dump(mode="json"),
                         "answer": next(
@@ -400,7 +400,7 @@ class SpecialtyDiscussionAgent:
                         ),
                     }
                     for task in tasks
-                ]),
+                ])),
                 "review_context": prompt_json([
                     item.model_dump(mode="json") for item in (reviews or [])
                 ]),

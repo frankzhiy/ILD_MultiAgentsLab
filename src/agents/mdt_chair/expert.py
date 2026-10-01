@@ -5,7 +5,7 @@ import json
 
 from src.agents.common.judgment_protocol import judgment_system_prompt
 from src.agents.common.team_synthesis import TeamSynthesis, MDTChairResult, synthesis_acceptance_status
-from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.prompting import build_shared_prompt_view, prompt_json, prompt_schema_json
 from src.utils.config import render_template
 from src.guidelines.runtime import resolve_guideline_evidence, guideline_evidence_schema_constraints, PROMPT_RULES
 
@@ -63,25 +63,43 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     guidelines, allowed_guidelines, guideline_trace = (
         agent.guideline_runtime.prepare_query(query) if agent.guideline_runtime else ("[]", {}, {})
     )
+    shared = build_shared_prompt_view({
+        "chair_input": bundle.prompt_input,
+        "case_evidence": [{"evidence_ref": ref, "quote": e.quote}
+                          for ref, e in bundle.evidence_registry.items()],
+        "discussion_context": context,
+    })
     prompt = render_template(agent.prompt, {
-        "chair_input": prompt_json(bundle.prompt_input),
-        "case_evidence": prompt_json([{ "evidence_ref": ref, "quote": e.quote}
-                                      for ref, e in bundle.evidence_registry.items()]),
-        "discussion_context": prompt_json(context),
+        **{key: prompt_json(value) for key, value in shared["input"].items()},
         "guideline_context": guidelines + "\n" + PROMPT_RULES,
         "output_schema": prompt_schema_json(TeamSynthesis),
+    })
+    prompt += "\n共享输入值目录与展开规则：\n" + prompt_json({
+        key: value for key, value in shared.items() if key != "input"
     })
 
     def validate(team):
         guideline_trace["used_chunk_ids"] = resolve_guideline_evidence(team, allowed_guidelines)
+        coverage_errors = []
         reviewed = {review.source_ref for review in team.judgment_reviews}
         if reviewed != set(current):
             obsolete = [index for index, review in enumerate(team.judgment_reviews)
                         if review.source_ref not in current]
-            raise ValueError(f"Review every active formal judgment exactly once; missing={sorted(set(current)-reviewed)}, obsolete={sorted(reviewed-set(current))}; "
+            coverage_errors.append(f"Review every active formal judgment exactly once; missing={sorted(set(current)-reviewed)}, obsolete={sorted(reviewed-set(current))}; "
                              f"/judgment_reviews obsolete indexes={obsolete}; allowed source_ref={sorted(current)}. "
                              "If missing is empty, merge any distinct information into the correct active review "
                              "and remove obsolete entries; do not rename or renumber other reviews.")
+        need_refs = [ref for need in team.evidence_needs for ref in need.source_refs
+                     if ref in need_refs_to_cover]
+        if set(need_refs) != need_refs_to_cover or len(need_refs) != len(set(need_refs)):
+            coverage_errors.append("Every specialty evidence need must appear exactly once in evidence_needs, including deferred needs; "
+                                   f"missing source_refs={sorted(need_refs_to_cover-set(need_refs))}; "
+                                   f"duplicate source_refs={sorted(ref for ref in set(need_refs) if need_refs.count(ref) > 1)}")
+        for problem in team.problems:
+            if problem.limitations and not any(b.problem_id == problem.problem_id for b in team.judgment_boundaries):
+                coverage_errors.append(f"State the decision-relevant judgment boundary for problem {problem.problem_id}")
+        if coverage_errors:
+            raise ValueError("; ".join(coverage_errors))
         def walk(value):
             if isinstance(value, dict):
                 for key, items in value.items():
@@ -156,15 +174,8 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                 for ref in handled.source_refs
             ):
                 raise ValueError(f"Covered request needs the target specialty's actual judgment: {question_ref}")
-        need_refs = [ref for need in team.evidence_needs for ref in need.source_refs
-                     if ref in need_refs_to_cover]
-        if set(need_refs) != need_refs_to_cover or len(need_refs) != len(set(need_refs)):
-            raise ValueError("Every specialty evidence need must appear exactly once in evidence_needs, including deferred needs")
         if previous_team and {n.need_id for n in previous_team.evidence_needs} - {n.need_id for n in team.evidence_needs}:
             raise ValueError("Keep prior evidence need IDs and update their status/action instead of dropping them")
-        for problem in team.problems:
-            if problem.limitations and not any(b.problem_id == problem.problem_id for b in team.judgment_boundaries):
-                raise ValueError(f"State the decision-relevant judgment boundary for problem {problem.problem_id}")
         for disagreement in team.disagreements:
             if disagreement.status == "open" and not set(disagreement.linked_issue_ids).intersection(open_ids):
                 raise ValueError("An open disagreement requires a routed discussion issue")
@@ -208,7 +219,7 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
 
     team, trace = agent.generator.generate(
         schema_model=TeamSynthesis, schema_name="mdt_expert_synthesis",
-        system_prompt=judgment_system_prompt("你是有完整肺部疾病诊断能力的资深MDT主持人，ILD是你的强项。审查专业判断并对综合负责，只返回JSON。"),
+        system_prompt=judgment_system_prompt("你是ILD多学科会诊的资深呼吸科主持人，负责审查专业意见并形成团队临床综合。只返回JSON。"),
         user_prompt=prompt + "\n当前正式判断审阅编号（每项恰好一次，不连续、不重编号；原始问题与资料需求不进入 judgment_reviews）：\n" + prompt_json(sorted(current)),
         extra_validation=validate, repair_on_validation_error=True,
         string_field_constraints=constraints,

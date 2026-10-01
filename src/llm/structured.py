@@ -115,6 +115,7 @@ class StructuredLLMGenerator:
         )
         response_format = initial_response_format
         repair_base: dict[str, Any] | None = None
+        repair_validation_feedback = ""
 
         last_error = None
         for attempt_index in range(1, attempt_limit + 1):
@@ -259,6 +260,13 @@ class StructuredLLMGenerator:
                     "attempts": attempts,
                 }
             except (ValueError, ValidationError) as exc:
+                if candidate is not None:
+                    repair_validation_feedback = str(exc)
+                    if isinstance(exc, ValidationError):
+                        paths = ["/" + "/".join(str(part).replace("~", "~0").replace("/", "~1")
+                                               for part in error["loc"])
+                                 for error in exc.errors() if error["loc"]]
+                        repair_validation_feedback += f"\nJSON Pointer 校验位置：{paths}"
                 validation_duration = time.perf_counter() - validation_started
                 last_error = exc
                 attempt_record["validated"] = False
@@ -343,7 +351,8 @@ class StructuredLLMGenerator:
                                 "不在 JudgmentReview.source_ref 中的编号不能作为正式判断审阅：\n"
                                 f"{json.dumps(string_field_constraints or {}, default=sorted, ensure_ascii=False)}\n"
                                 f"{repair_feedback}"
-                                f"校验错误：{exc}"
+                                f"当前结果仍待修复的校验错误：{repair_validation_feedback}\n"
+                                f"本轮错误：{exc}"
                             ),
                         ),
                     ]
@@ -442,7 +451,11 @@ def _apply_repair_edits(base: dict[str, Any], patch: Any) -> dict[str, Any]:
             key = part.replace("~1", "/").replace("~0", "~")
             if isinstance(current, list):
                 if not key.isdigit() or int(key) >= len(current):
-                    raise ValueError(f"Repair edit path does not exist: {path}")
+                    raise ValueError(f"Repair edit path does not exist: {path}; array has {len(current)} items. "
+                                     "Separate array indexes and field names with '/', "
+                                     "e.g. /items/0/status, not /items/0.status. "
+                                     "To add a missing item, use append on its parent array; "
+                                     "do not replace a nonexistent index.")
                 parent, index = current, int(key)
             elif isinstance(current, dict) and key in current:
                 parent, index = current, key
@@ -481,7 +494,9 @@ def _apply_repair_edits(base: dict[str, Any], patch: Any) -> dict[str, Any]:
                 or isinstance(value, (dict, list))
             ):
                 raise ValueError(
-                    f"Repair edit must replace a scalar field or scalar array: {path}"
+                    f"Repair edit must replace a scalar field or scalar array: {path}. "
+                    "Replace existing scalar fields individually; add array members with append "
+                    "(one object per edit), and remove redundant members with remove_indices."
                 )
             parent[index] = value
     return result

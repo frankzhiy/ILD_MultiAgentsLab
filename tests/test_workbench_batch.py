@@ -195,7 +195,7 @@ def test_real_batch_flow_isolates_failure_and_retries_original_snapshots(monkeyp
     assert attempts[3:] == ["case-b"]
 
 
-def test_restart_marks_only_unfinished_cases_interrupted(tmp_path):
+def test_initialization_preserves_live_batches_and_startup_recovers_unfinished_cases(tmp_path, monkeypatch):
     catalog = RunCatalog(tmp_path)
     events = EventStore(tmp_path / "events.sqlite3")
     runner = RunOrchestrator(tmp_path, catalog, events)
@@ -206,7 +206,14 @@ def test_restart_marks_only_unfinished_cases_interrupted(tmp_path):
         runner._write_json(directory / ".workbench_run.json", {"case_id": case, "status": status})
         items.append({"case_id": case, "run_id": case, "status": status})
     runner._write_batch({"id": "restart-batch", "kind": "run", "status": "running", "items": items})
-    recovered = RunOrchestrator(tmp_path, catalog, events).batch("restart-batch")
+    reopened = RunOrchestrator(tmp_path, catalog, events)
+    assert reopened.batch("restart-batch")["status"] == "running"
+    assert catalog.run_summary(catalog.run_dir("case-b"))["status"] == "running"
+    from fastapi.testclient import TestClient
+    from src.workbench import app as api
+    monkeypatch.setattr(api, "orchestrator", reopened)
+    with TestClient(api.app) as client:
+        recovered = client.get("/api/batches/restart-batch").json()
     assert recovered["status"] == "interrupted"
     assert [item["status"] for item in recovered["items"]] == ["completed", "interrupted", "interrupted"]
     assert catalog.run_summary(catalog.run_dir("case-b"))["status"] == "interrupted"

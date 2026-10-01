@@ -15,6 +15,7 @@ from src.agents.mdt_discussion.models import DiscussionAnswerClaimDraft, Discuss
 
 from src.agents.mdt_discussion.prompt_projection import build_issue_chair_prompt_view, build_specialty_discussion_prompt_view, build_specialty_initial_prompt_view
 
+
 from src.agents.mdt_discussion.routing import build_discussion_tasks, group_tasks_by_specialty
 
 from src.agents.mdt_discussion.specialty_agent import SpecialtyDiscussionAgent, _resolve_answer, discussion_evidence_schema_constraints
@@ -730,3 +731,31 @@ def test_task_without_selected_evidence_still_receives_the_patient_catalog():
                                   local_graphs=graphs, round_number=1, previous_rounds=[])
     assert len(tasks) == 1
     assert tasks[0].evidence_candidates[0].quote == '静息低氧'
+
+
+def test_judgment_update_evidence_deduplication_is_lossless():
+    from copy import deepcopy
+    from src.llm.prompting import build_shared_prompt_view
+    evidence = dict(evidence_ref='E1', segment_id='S1', graph_unit_id='U1',
+        evidence_ids=['E1'], quote='完整病例原文' * 1000,
+        evidence_fragments=[dict(text='原文片段')], propositions=[dict(statement='原始命题')],
+        graph_nodes=[dict(node_id='N1')], graph_edges=[])
+    use = dict(evidence, effect='supporting', interpretation='支持当前判断', proposition_ids=['P1'])
+    # Distinct per-use content must override the shared source rather than disappear.
+    alternate = dict(use, quote='不同引用范围', graph_nodes=[dict(node_id='N2')])
+    original = [dict(task=dict(evidence_candidates=[evidence]),
+        answer=dict(evidence_uses=[use, alternate], answer_claims=[dict(evidence_uses=[use])]))] * 2
+    saved = deepcopy(original)
+    view = build_shared_prompt_view(original)
+
+    def expand(value):
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if set(value) == {'shared_value_ref'}:
+            return expand(view['shared_values'][value['shared_value_ref']])
+        return {key: expand(item) for key, item in value.items()}
+
+    assert expand(view['input']) == original == saved
+    assert len(json.dumps(view)) < len(json.dumps(original)) / 2
