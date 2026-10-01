@@ -39,6 +39,7 @@ outputs/runs/*/
 outputs/batches/
 outputs/reports/
 outputs/traces/
+outputs/
 
 # Data (raw/processed case files may contain PHI)
 data/raw_cases/
