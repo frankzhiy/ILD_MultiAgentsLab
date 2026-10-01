@@ -93,6 +93,7 @@ def test_duplicate_judgment_review_is_locally_repaired_without_rewriting_synthes
     assert "'S1': [0, 1]" in prompts[1][-1].content
     assert '/judgment_reviews' in prompts[1][-1].content
     assert 'Do not rename duplicate IDs' in prompts[1][-1].content
+    assert 'source_refs and evidence_refs' in prompts[1][-1].content
     assert '"JudgmentReview": {"source_ref": ["S1"]}' in prompts[1][-1].content
     assert 'edits' in prompts[1][0].content
     assert trace['attempts'][1]['validated']
@@ -336,3 +337,22 @@ def test_followup_run_links_immutable_case_versions_via_api(tmp_path, monkeypatc
     parent_path.write_text('偷偷修改')
     assert create(parent_run_id=first['id']).status_code == 422
     assert len(started) == 2
+
+
+def test_invalid_problem_references_report_all_paths_and_allowed_ids():
+    import pytest
+    from src.agents.common.team_synthesis import TeamSynthesis
+    payload = team_payload()
+    payload['diagnostic_facets'] = [dict(problem_id='missing-facet', dimension='severity',
+        statement='严重程度未定', status='supported', confidence='low', rationale='现有记录', source_refs=['S1'])]
+    payload['judgment_boundaries'] = [dict(boundary_id='B1', problem_id='missing-boundary',
+        established='有限判断', undetermined='病因未定', reason='资料限制', decision_impact='归因边界', source_refs=['S1'])]
+    with pytest.raises(ValueError) as failure:
+        TeamSynthesis.model_validate(payload)
+    error = str(failure.value)
+    assert '/diagnostic_facets/0/problem_id' in error
+    assert '/judgment_boundaries/0/problem_id' in error
+    assert "allowed problem IDs=['P1']" in error
+    for field in ['diagnostic_facets', 'judgment_boundaries']:
+        payload[field][0]['problem_id'] = 'P1'
+    assert TeamSynthesis.model_validate(payload).diagnostic_facets[0].problem_id == 'P1'

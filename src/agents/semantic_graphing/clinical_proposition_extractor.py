@@ -444,7 +444,7 @@ def validate_clinical_propositions(
 
     proposition_ids: set[str] = set()
     modifier_ids: set[str] = set()
-    for proposition in result.propositions:
+    for index, proposition in enumerate(result.propositions):
         if proposition.proposition_id in proposition_ids:
             raise ValueError(f"Duplicate proposition_id: {proposition.proposition_id}")
         proposition_ids.add(proposition.proposition_id)
@@ -464,14 +464,24 @@ def validate_clinical_propositions(
                     f"Attribution for {proposition.proposition_id} is invalid: actor_text must "
                     "occur inside its evidence quote. Attribution represents an "
                     "explicitly stated information source, not an implicit proposition subject; "
-                    "set attribution to null when the source is only implicit."
+                    "set attribution to null when the source is only implicit. "
+                    f"JSON Pointer: /propositions/{index}/attribution; "
+                    f"actor_text={proposition.attribution.actor_text!r}, "
+                    f"quote={proposition.attribution.evidence.quote!r}."
                 )
-        for modifier in proposition.modifiers:
+        for modifier_index, modifier in enumerate(proposition.modifiers):
             _validate_modifier(modifier, result.evidence_blocks, modifier_ids)
             if not set(modifier.evidence.evidence_ids) & set(proposition.evidence.evidence_ids):
                 raise ValueError(
                     f"Modifier {modifier.modifier_id} must share at least one evidence block "
-                    f"with owning proposition {proposition.proposition_id}"
+                    f"with owning proposition {proposition.proposition_id}; "
+                    f"JSON Pointer: /propositions/{index}/modifiers/{modifier_index}/evidence; "
+                    f"owner evidence_ids={proposition.evidence.evidence_ids}, "
+                    f"owner quote={proposition.evidence.quote!r}; "
+                    f"modifier evidence_ids={modifier.evidence.evidence_ids}, "
+                    f"modifier quote={modifier.evidence.quote!r}. "
+                    "Ground the modifier in its owning proposition's original evidence, "
+                    "or correct its ownership; do not invent evidence IDs."
                 )
 
     from src.agents.semantic_graphing.clinical_proposition_validator import (

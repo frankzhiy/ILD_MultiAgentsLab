@@ -29,13 +29,16 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                      if source.source_type == "interspecialty_question"}
     need_refs_to_cover = {ref for ref, source in bundle.source_registry.items()
                          if source.source_type == "assessment_evidence_need"}
-    valid_refs.update(question_refs | need_refs_to_cover)
+    conditional_refs = {ref for ref, source in bundle.source_registry.items()
+                        if source.source_type == "conditional_contribution"}
+    review_refs = set(current) | conditional_refs
+    valid_refs.update(question_refs | need_refs_to_cover | conditional_refs)
     evidence_refs = set(bundle.evidence_registry)
     constraints = {
         name: {"source_refs": valid_refs, "evidence_refs": evidence_refs}
         for name in ("ClinicalProblem", "ClinicalIssue", "DiagnosticFacet", "KeyEvidenceNeed", "JudgmentBoundary", "SpecialtyPosition", "IssueDisposition")
     }
-    constraints["JudgmentReview"] = {"source_ref": set(current), "evidence_refs": evidence_refs}
+    constraints["JudgmentReview"] = {"source_ref": review_refs, "evidence_refs": evidence_refs}
     constraints["DiagnosticCandidate"] = {"source_refs": valid_refs,
         "supporting_evidence_refs": evidence_refs, "opposing_evidence_refs": evidence_refs}
     previous_team = previous.team_synthesis if previous else None
@@ -54,6 +57,9 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         "original_requests": [{**bundle.source_registry[ref].model_dump(mode="json"),
                                **bundle.source_metadata[ref]}
                               for ref in sorted(question_refs | need_refs_to_cover)],
+        "conditional_contributions": [{**bundle.source_registry[ref].model_dump(mode="json"),
+                                       **bundle.source_metadata[ref]}
+                                      for ref in sorted(conditional_refs)],
     }
     query = "肺部疾病多学科诊断 鉴别病因 " + " ".join(
         item["statement"][:100] for item in current.values()
@@ -82,13 +88,21 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         guideline_trace["used_chunk_ids"] = resolve_guideline_evidence(team, allowed_guidelines)
         coverage_errors = []
         reviewed = {review.source_ref for review in team.judgment_reviews}
-        if reviewed != set(current):
+        if reviewed != review_refs:
             obsolete = [index for index, review in enumerate(team.judgment_reviews)
-                        if review.source_ref not in current]
-            coverage_errors.append(f"Review every active formal judgment exactly once; missing={sorted(set(current)-reviewed)}, obsolete={sorted(reviewed-set(current))}; "
-                             f"/judgment_reviews obsolete indexes={obsolete}; allowed source_ref={sorted(current)}. "
+                        if review.source_ref not in review_refs]
+            coverage_errors.append(f"Review every active formal judgment and specialty conditional contribution exactly once; missing={sorted(review_refs-reviewed)}, obsolete={sorted(reviewed-review_refs)}; "
+                             f"/judgment_reviews obsolete indexes={obsolete}; allowed source_ref={sorted(review_refs)}. "
                              "If missing is empty, merge any distinct information into the correct active review "
                              "and remove obsolete entries; do not rename or renumber other reviews.")
+        retained_conditional_refs = {ref for item in [*team.evidence_needs, *team.judgment_boundaries, *team.issues]
+                                    for ref in item.source_refs}
+        for review in team.judgment_reviews:
+            if (review.source_ref in conditional_refs and review.disposition in {"adopt", "qualify"}
+                    and review.source_ref not in retained_conditional_refs):
+                coverage_errors.append(f"Retain adopted or qualified conditional contribution {review.source_ref} "
+                                       "in evidence_needs, judgment_boundaries or issues; "
+                                       "defer or reject with a specific rationale when no further action is justified")
         need_refs = [ref for need in team.evidence_needs for ref in need.source_refs
                      if ref in need_refs_to_cover]
         if set(need_refs) != need_refs_to_cover or len(need_refs) != len(set(need_refs)):
@@ -98,6 +112,43 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         for problem in team.problems:
             if problem.limitations and not any(b.problem_id == problem.problem_id for b in team.judgment_boundaries):
                 coverage_errors.append(f"State the decision-relevant judgment boundary for problem {problem.problem_id}")
+        open_ids = {i.issue_id for i in team.issues}
+        dispositions = {d.issue_id: d for d in team.issue_dispositions}
+        for index, disposition in enumerate(team.issue_dispositions):
+            if disposition.outcome in {"continue", "merged"}:
+                if not set(disposition.linked_issue_ids).intersection(open_ids):
+                    coverage_errors.append(
+                        f"Route request to an explicit open issue: {disposition.issue_id}; "
+                        f"/issue_dispositions/{index}/linked_issue_ids={disposition.linked_issue_ids}; "
+                        f"open issue IDs={sorted(open_ids)}. If further discussion is needed, retain "
+                        "or create its open issue; otherwise choose the disposition justified by "
+                        "actual sources or responses and update its links."
+                    )
+                elif disposition.issue_id in question_refs and not any(
+                    issue.issue_id in disposition.linked_issue_ids
+                    and disposition.issue_id in issue.source_refs for issue in team.issues
+                ):
+                    coverage_errors.append(
+                        "Linked discussion issue must preserve its original question source: "
+                        f"{disposition.issue_id}; add it to the linked open issue's source_refs"
+                    )
+        for old in previous_team.issues if previous_team else []:
+            disposition = dispositions.get(old.issue_id)
+            if disposition is None:
+                coverage_errors.append(f"Missing disposition for previous issue {old.issue_id}")
+                continue
+            if disposition.outcome == "continue" and old.issue_id not in open_ids:
+                coverage_errors.append(f"Continuing issue must retain its ID: {old.issue_id}")
+            if disposition.outcome != "continue" and old.issue_id in open_ids:
+                coverage_errors.append(
+                    f"Issue {old.issue_id} has outcome={disposition.outcome!r} but remains in issues. "
+                    "Remove its open entry if discussion is finished, or change its disposition "
+                    "to 'continue' if further discussion is needed. Do not append a duplicate issue."
+                )
+            if disposition.outcome in {"answered", "bounded"}:
+                matching = {a.answer_id for a in answers if a.issue_id == old.issue_id}
+                if not matching.intersection(disposition.response_refs):
+                    coverage_errors.append(f"Closure needs an actual response for {old.issue_id}")
         if coverage_errors:
             raise ValueError("; ".join(coverage_errors))
         def walk(value):
@@ -112,8 +163,6 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                 for item in value:
                     walk(item)
         walk(team.model_dump(mode="json"))
-        dispositions = {d.issue_id: d for d in team.issue_dispositions}
-        open_ids = {i.issue_id for i in team.issues}
         for review in team.judgment_reviews:
             if review.required_response and not any(
                 review.source_ref in i.source_refs
@@ -121,22 +170,6 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                 for i in team.issues
             ):
                 raise ValueError(f"Required response needs an issue routed to its author: {review.source_ref}")
-        for old in previous_team.issues if previous_team else []:
-            disposition = dispositions.get(old.issue_id)
-            if disposition is None:
-                raise ValueError(f"Missing disposition for previous issue {old.issue_id}")
-            if disposition.outcome == "continue" and old.issue_id not in open_ids:
-                raise ValueError(f"Continuing issue must retain its ID: {old.issue_id}")
-            if disposition.outcome != "continue" and old.issue_id in open_ids:
-                raise ValueError(
-                    f"Issue {old.issue_id} has outcome={disposition.outcome!r} but remains in issues. "
-                    "Remove its open entry if discussion is finished, or change its disposition "
-                    "to 'continue' if further discussion is needed. Do not append a duplicate issue."
-                )
-            if disposition.outcome in {"answered", "bounded"}:
-                matching = {a.answer_id for a in answers if a.issue_id == old.issue_id}
-                if not matching.intersection(disposition.response_refs):
-                    raise ValueError(f"Closure needs an actual response for {old.issue_id}")
         for disposition in team.issue_dispositions:
             if set(disposition.response_refs) - answer_ids:
                 raise ValueError("Disposition references an unknown round answer")
@@ -146,18 +179,11 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         for disposition in team.issue_dispositions:
             if disposition.outcome == "covered" and not disposition.source_refs:
                 raise ValueError(f"Covered request needs actual specialty sources: {disposition.issue_id}")
-            if disposition.outcome in {"continue", "merged"} and not set(disposition.linked_issue_ids).intersection(open_ids):
-                raise ValueError(f"Route request to an explicit open issue: {disposition.issue_id}")
             if disposition.issue_id in question_refs and disposition.outcome == "answered":
                 if not disposition.response_refs:
                     raise ValueError("Use covered for pre-existing opinions; answered requires actual discussion responses")
         for question_ref in question_refs:
             handled = dispositions[question_ref]
-            if handled.outcome in {"continue", "merged"} and not any(
-                issue.issue_id in handled.linked_issue_ids and question_ref in issue.source_refs
-                for issue in team.issues
-            ):
-                raise ValueError(f"Linked discussion issue must preserve its original question source: {question_ref}")
             if handled.outcome == "answered":
                 related = {question_ref, *handled.linked_issue_ids}
                 if previous_team:
@@ -182,12 +208,21 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
             for position in disagreement.positions:
                 if any(bundle.source_registry[r].specialty != position.specialty for r in position.source_refs):
                     raise ValueError("Disagreement positions must cite their own specialty")
-        for issue in team.issues:
+        requester_errors = []
+        for index, issue in enumerate(team.issues):
             if issue.origin == "specialty":
                 requesters = {bundle.source_registry[r].specialty for r in issue.source_refs
                               if r in question_refs}
                 if not set(issue.raised_by) <= requesters:
-                    raise ValueError("Specialty issue requesters must match the cited original questions")
+                    requester_errors.append(
+                        "Specialty issue requesters must match the cited original questions; "
+                        f"/issues/{index}/raised_by={issue.raised_by}; "
+                        f"allowed requesters={sorted(requesters)}; source_refs={issue.source_refs}. "
+                        "Use the actual requesters of the cited questions; if this is a new "
+                        "chair-origin question, set origin='chair' and raised_by=[]."
+                    )
+        if requester_errors:
+            raise ValueError("; ".join(requester_errors))
         # Carry closed history forward so changing an ID cannot erase prior closure.
         if previous_team:
             current_ids = set(dispositions)
@@ -220,7 +255,7 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     team, trace = agent.generator.generate(
         schema_model=TeamSynthesis, schema_name="mdt_expert_synthesis",
         system_prompt=judgment_system_prompt("你是ILD多学科会诊的资深呼吸科主持人，负责审查专业意见并形成团队临床综合。只返回JSON。"),
-        user_prompt=prompt + "\n当前正式判断审阅编号（每项恰好一次，不连续、不重编号；原始问题与资料需求不进入 judgment_reviews）：\n" + prompt_json(sorted(current)),
+        user_prompt=prompt + "\n审阅编号（正式判断与条件性贡献每项恰好一次，不连续、不重编号；原始问题与资料需求不进入 judgment_reviews）：\n" + prompt_json(sorted(review_refs)),
         extra_validation=validate, repair_on_validation_error=True,
         string_field_constraints=constraints,
         pointer_field_constraints=guideline_evidence_schema_constraints(allowed_guidelines),

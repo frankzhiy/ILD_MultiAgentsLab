@@ -1036,3 +1036,20 @@ def test_run_signature_changes_when_prompt_content_changes(tmp_path):
     second = build_run_signature({"model": "gpt-4.1-mini", **prompt_paths})
 
     assert first != second
+
+
+@pytest.mark.parametrize('supports_json_schema', [True, False])
+def test_graph_unit_extractor_uses_declared_provider_schema_support(supports_json_schema):
+    from src.agents.semantic_graphing.graph_unit_extractor import SegmentGraphUnitExtractor
+    llm = StaticResponseLLM({})
+    llm.supports_json_schema = supports_json_schema
+    extractor = SegmentGraphUnitExtractor(llm, 'src/prompts/semantic_graphing/graph_unit_extraction.md',
+                                         temperature=0, max_tokens=1000)
+    response_format = extractor.generator._initial_response_format(
+        ExtractedSegmentGraphUnits, 'segment_graph_units', None, None, None)
+    assert response_format['type'] == ('json_schema' if supports_json_schema else 'json_object')
+    if supports_json_schema:
+        schema = response_format['json_schema']['schema']
+        assert schema['additionalProperties'] is False
+        assert set(schema['properties']) == {'graph_units'}
+        assert 'primary_frame' in schema['$defs']['ExtractedGraphUnit']['required']

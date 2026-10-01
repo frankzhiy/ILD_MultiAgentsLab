@@ -136,6 +136,63 @@ def test_requests_must_change_decision_and_hypotheses_are_separate():
     assert not team.problems[0].evidence_refs
 
 
+@pytest.mark.parametrize('disposition', ['adopt', 'qualify', 'defer', 'reject'])
+def test_specialty_conditional_contribution_requires_traceable_disposition(disposition):
+    state, _, payload = setup_case()
+    contribution = dict(question='核对既有材料能否区分病因？', possible_result='提示病因A的特异所见',
+        decision_if_found='调整病因排序', cannot_establish='非特异所见不能确认病因A',
+        acquisition_value='先核对已有报告，不自动要求新增取材')
+    state.specialty_context['pathology']['conditional_contributions'] = [contribution]
+    outputs = project_active_specialty_outputs(state)
+    bundle = build_chair_prompt_bundle('100-IPF', outputs)
+    item = bundle.prompt_input['specialties'][-1]['conditional_contributions'][0]
+    ref = item['source_ref']
+    assert bundle.source_registry[ref].source_type == 'conditional_contribution'
+    assert bundle.source_registry[ref].source_path == 'specialty_assessments.conditional_contributions[0]'
+    assert bundle.source_metadata[ref] == contribution
+    assert not any(bundle.source_evidence[ref].values())
+    with pytest.raises(StructuredGenerationError, match=ref):
+        run_expert(bundle, [payload])
+    payload['judgment_reviews'].append(dict(source_ref=ref, disposition=disposition,
+        rationale='保留可改变排序的诊断问题' if disposition in {'adopt', 'qualify'} else '当前材料不可得或不足以改变决定',
+        evidence_refs=[], required_response=False))
+    if disposition in {'adopt', 'qualify'}:
+        with pytest.raises(StructuredGenerationError, match='Retain adopted or qualified'):
+            run_expert(bundle, [payload])
+    if disposition == 'adopt':
+        payload['evidence_needs'] = [dict(need_id='N1', problem_id='P1', information=contribution['question'],
+            source_refs=[ref], status='missing', available_information='', missing_information='已有报告内容',
+            action='retain_boundary', branches=[],
+            feasibility_and_burden='先核对已有材料；是否可得待核实', if_unavailable='维持当前倾向及病因边界')]
+    elif disposition == 'qualify':
+        payload['judgment_boundaries'][0]['source_refs'].append(ref)
+        payload['judgment_boundaries'][0]['undetermined'] = '尚无材料区分病因A，不能把假设所见当作患者事实'
+    result = run_expert(bundle, [payload])
+    assert result.team_synthesis.source_catalog[ref]['question'] == contribution['question']
+    assert result.team_synthesis.judgment_reviews[-1].disposition == disposition
+    assert not result.team_synthesis.issues
+    assert not result.team_synthesis.problems[0].evidence_refs
+    assert bool(result.team_synthesis.evidence_needs) == (disposition == 'adopt')
+    assert all(n.action not in {'retrieve_existing', 'obtain_new'} for n in result.team_synthesis.evidence_needs)
+    result.team_synthesis.stop_kind = 'completed'
+    report, trace = project_team_report('100-IPF', result.model_dump(mode='json'), [], '完成', None, state)
+    assert trace['model_calls'] == 0
+    assert report.team_synthesis.judgment_reviews == result.team_synthesis.judgment_reviews
+
+    # Even if later projection omits the contribution, its source and disposition remain reviewable.
+    outputs['pathology']['specialty_assessments']['conditional_contributions'] = []
+    later = build_chair_prompt_bundle('100-IPF', outputs, discussion_round=1, source_seed=bundle)
+    llm = Responses([payload])
+    agent = MDTChairAgent(llm, prompt_path='src/prompts/mdt_chair/expert_synthesis.md', max_attempts=1)
+    updated, _ = agent.integrate(later, discussion_previous=result)
+    assert updated.team_synthesis.judgment_reviews[-1].source_ref == ref
+    assert contribution['question'] in updated.team_synthesis.source_catalog[ref]['quote']
+    missing = deepcopy(payload)
+    missing['judgment_reviews'].pop()
+    with pytest.raises(StructuredGenerationError, match=ref):
+        run_expert(later, [missing])
+
+
 @pytest.mark.parametrize(("outcome", "keep_open", "message"), [
     ("bounded", True, "Issue I3 has outcome='bounded' but remains in issues"),
     ("continue", False, "Continuing issue must retain its ID: I3"),
@@ -249,6 +306,18 @@ def test_original_questions_and_needs_survive_later_round_filtering():
     missing['issue_dispositions'][0]['source_refs'] = [next(r for r in refs if r != target)]
     with pytest.raises(StructuredGenerationError, match="target specialty's actual judgment"):
         run_expert(later, [missing])
+    payload['issues'] = [dict(issue_id='open', origin='specialty', kind='clarification',
+        question='明确影像判断边界', raised_by=['rheumatology'],
+        target_specialties=['thoracic_radiology'],
+        assignments=[dict(specialty='thoracic_radiology', question='说明影像判断边界')],
+        source_refs=[question], decision_impact='影像分型', closure_criterion='说明依据')]
+    with pytest.raises(StructuredGenerationError) as failure:
+        run_expert(bundle, [payload])
+    error = failure.value.attempts[0]['validation_error']
+    assert '/issues/0/raised_by' in error
+    assert "allowed requesters=['pulmonology']" in error
+    payload['issues'][0]['raised_by'] = ['pulmonology']
+    assert run_expert(bundle, [payload]).team_synthesis.issues[0].raised_by == ['pulmonology']
 
 
 def test_new_schema_rejects_self_answer_and_legacy_chair_fields():
@@ -313,3 +382,27 @@ def test_chair_reports_missing_reviews_needs_and_boundaries_together():
     assert 'Every specialty evidence need' in error
     assert next(iter(bundle.evidence_need_refs_to_classify)) in error
     assert 'judgment boundary for problem P1' in error
+
+
+def test_chair_reports_all_dispositions_without_open_routes_together():
+    _, bundle, payload = setup_case()
+    missing_review = payload['judgment_reviews'].pop()
+    payload['issue_dispositions'] = [dict(issue_id=ref, outcome=outcome,
+        rationale='需要进一步讨论', linked_issue_ids=[])
+        for ref, outcome in [('request1', 'continue'), ('request2', 'merged')]]
+    with pytest.raises(StructuredGenerationError) as failure:
+        run_expert(bundle, [payload])
+    error = failure.value.attempts[0]['validation_error']
+    assert 'request1' in error and 'request2' in error
+    assert 'Review every active formal judgment' in error
+    payload['judgment_reviews'].append(missing_review)
+    assert '/issue_dispositions/0/linked_issue_ids' in error
+    assert '/issue_dispositions/1/linked_issue_ids' in error
+    payload['issues'] = [dict(issue_id='open', origin='chair', kind='clarification',
+        question='说明判断边界', target_specialties=['pulmonology'],
+        assignments=[dict(specialty='pulmonology', question='说明判断边界')],
+        source_refs=[payload['judgment_reviews'][0]['source_ref']],
+        decision_impact='明确归因边界', closure_criterion='给出解释')]
+    for disposition in payload['issue_dispositions']:
+        disposition['linked_issue_ids'] = ['open']
+    assert run_expert(bundle, [payload]).team_synthesis.issues[0].issue_id == 'open'

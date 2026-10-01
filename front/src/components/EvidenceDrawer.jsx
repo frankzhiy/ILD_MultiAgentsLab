@@ -184,6 +184,7 @@ export function EvidenceDrawer() {
   const showSegmentContext = Boolean(segmentText
     && !sameText(segmentText, graphUnitText)
     && !sameText(segmentText, quote))
+  const contextText = showSegmentContext ? segmentText : showGraphUnitContext ? graphUnitText : ''
   const quoteCoversGraphUnit = Boolean(graphUnitText && sameText(graphUnitText, quote))
   const currentLabel = evidence ? citationLabel(evidence, evidenceList, evidenceIndex) : ''
   const [categoryKind, categoryLabel] = evidence ? citationCategory(evidence) : ['', '']
@@ -242,27 +243,24 @@ export function EvidenceDrawer() {
               ))}
             </div>
           )}
-          <div ref={!showGraphUnitContext && !showSegmentContext ? sourceRef : undefined}>
+          <div ref={!contextText ? sourceRef : undefined}>
             <Space size={6} wrap>
               <Text type="secondary">{excerptLabel(categoryKind, categoryLabel)}</Text>
               {quoteCoversGraphUnit && <Tag>覆盖整个 Graph Unit，不重复展示</Tag>}
             </Space>
             <Paragraph className="evidence-quote">{quote || evidence.text || '该引用未携带原文摘录'}</Paragraph>
           </div>
-          {showGraphUnitContext && (
-            <div ref={!showSegmentContext ? sourceRef : undefined}>
-              <Text type="secondary">证据单元上下文（Graph Unit）</Text>
-              <Paragraph className="evidence-source-context"><HighlightedText text={graphUnitText} quote={quote} /></Paragraph>
-            </div>
-          )}
-          {showSegmentContext && (
-            <div ref={sourceRef}>
-              <Text type="secondary">原始片段上下文（Segment）</Text>
-              <Paragraph className="evidence-source-context"><HighlightedText text={segmentText} quote={graphUnitText || quote} /></Paragraph>
-            </div>
+          {contextText && (
+            <details ref={sourceRef} key={evidenceIndex}>
+              <summary>{showSegmentContext ? '原始片段上下文（Segment）' : '证据单元上下文（Graph Unit）'}</summary>
+              <Paragraph className="evidence-source-context"><HighlightedText text={contextText} quote={quote} /></Paragraph>
+            </details>
           )}
           <Space wrap>
-            {(quote || graphUnitText || segmentText) && <Button icon={<FileSearchOutlined />} onClick={() => sourceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>在原文中定位</Button>}
+            {(quote || graphUnitText || segmentText) && <Button icon={<FileSearchOutlined />} onClick={() => {
+              if (contextText && sourceRef.current) sourceRef.current.open = true
+              sourceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }}>在原文中定位</Button>}
             {evidence.graph_unit_id && runId && <Button type="primary" onClick={locate}>定位到语义图</Button>}
             {guideline && <Button icon={<LinkOutlined />} href={api.guidelineUrl(guideline.filename, evidence.page || evidence.page_number)} target="_blank">打开指南原文</Button>}
           </Space>

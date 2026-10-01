@@ -571,7 +571,7 @@ def run_input(
     )
     print(
         "Clinical modifiers: "
-        f"{sum(len(unit.event_modifiers) + sum(len(prop.modifiers) for prop in unit.propositions) for item in clinical_propositions.segments for unit in item.units)}"
+        f"{sum(len(prop.modifiers) for item in clinical_propositions.segments for unit in item.units for prop in unit.propositions)}"
     )
     print(
         "Evidence blocks: "

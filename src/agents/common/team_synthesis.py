@@ -268,12 +268,18 @@ class TeamSynthesis(StrictModel):
         ids = [problem.problem_id for problem in self.problems]
         if len(ids) != len(set(ids)) or sum(p.relationship == "primary" for p in self.problems) != 1:
             raise ValueError("Unique problem IDs and exactly one primary clinical problem required")
-        if any(need.problem_id not in ids for need in self.evidence_needs):
-            raise ValueError("Evidence requests must belong to a clinical problem")
-        if any(f.problem_id not in ids for f in self.diagnostic_facets):
-            raise ValueError("Diagnostic facets must belong to a clinical problem")
-        if any(b.problem_id not in ids for b in self.judgment_boundaries):
-            raise ValueError("Judgment boundaries must belong to a clinical problem")
+        invalid_problems = []
+        for field, label in (("evidence_needs", "Evidence requests"),
+                             ("diagnostic_facets", "Diagnostic facets"),
+                             ("judgment_boundaries", "Judgment boundaries")):
+            for index, item in enumerate(getattr(self, field)):
+                if item.problem_id not in ids:
+                    invalid_problems.append(
+                        f"{label} must belong to a clinical problem; "
+                        f"/{field}/{index}/problem_id={item.problem_id!r}"
+                    )
+        if invalid_problems:
+            raise ValueError("; ".join(invalid_problems) + f"; allowed problem IDs={ids}")
         issue_ids = {i.issue_id for i in self.issues} | {d.issue_id for d in self.issue_dispositions}
         invalid_links = []
         for field in ("disagreements", "issue_dispositions"):
@@ -301,7 +307,9 @@ class TeamSynthesis(StrictModel):
         if duplicate_errors:
             raise ValueError("; ".join(duplicate_errors) +
                              "; merge distinct information into the retained entry, then use "
-                             "remove_indices to delete redundant entries. Do not rename duplicate IDs.")
+                             "remove_indices to delete redundant entries. Preserve the union of distinct "
+                             "source_refs and evidence_refs from all merged entries before removing any entry. "
+                             "Do not rename duplicate IDs.")
         return self
 
 

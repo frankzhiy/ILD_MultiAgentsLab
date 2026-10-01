@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Empty, Space, Tabs, Tag, Typography } from 'antd'
 import { PrinterOutlined } from '@ant-design/icons'
+import { useQuery } from '@tanstack/react-query'
+import { useParams } from 'react-router-dom'
+import { api } from '../api'
 import { assessabilityLabels } from './JudgmentDimensions'
-import { CitationGroup } from './Citation'
+import { aggregateCitations, CitationGroup } from './Citation'
 
 const { Title, Paragraph, Text } = Typography
 const confidence = { high: '高把握度', moderate: '中等把握度', low: '低把握度', unknown: '尚不能评定把握度' }
@@ -30,9 +33,27 @@ function Guidelines({ items = [] }) {
   </section>)}</>
 }
 
+function SourceEvidence({ items }) {
+  const { runId } = useParams()
+  const { data: semantic } = useQuery({ queryKey: ['semantic', runId], queryFn: () => api.semantic(runId), enabled: Boolean(runId) })
+  const units = (semantic?.segments || []).flatMap(segment => segment.units || [])
+  const citations = aggregateCitations(items).map(item => {
+    const unit = units.find(unit => unit.graph_unit_id === item.graph_unit_id)
+    const ids = new Set(item.evidence_ids || [])
+    const quote = (unit?.clinical_propositions?.evidence_blocks || [])
+      .filter(block => ids.has(block.evidence_id)).map(block => block.text).join('')
+    return { ...item, quote: quote || item.quote }
+  })
+  return <><CitationGroup caseEvidence={citations} />{citations.map((item, index) => <blockquote key={item.graph_unit_id || item.evidence_ref || index}>
+    <Space wrap><Text type="secondary">{item.graph_unit_id || item.evidence_ref}</Text>
+      {[...new Set((item.relations || []).map(r => r.relation))].map(role => <Tag key={role}>{evidenceRoles[role] || role}</Tag>)}
+    </Space><Paragraph>{item.quote || '原文未保留'}</Paragraph>
+  </blockquote>)}</>
+}
+
 function Sources({ team, refs = [], evidence = [] }) {
   const citations = ids => ids.map(ref => team.evidence_catalog?.[ref]).filter(Boolean)
-  const evidenceView = ids => <><CitationGroup caseEvidence={citations(ids)} />{ids.map(ref => <blockquote key={ref}><Text type="secondary">{ref}</Text><Paragraph>{team.evidence_catalog?.[ref]?.quote || '原文未保留'}</Paragraph></blockquote>)}</>
+  const evidenceView = items => items.length > 0 && <SourceEvidence items={items} />
   return <div className="synthesis-sources">
     {refs.map(ref => {
       const source = team.source_catalog?.[ref]
@@ -44,11 +65,11 @@ function Sources({ team, refs = [], evidence = [] }) {
         {source.conditions && <><Paragraph>判断对象：{source.conditions.subject}</Paragraph><Timeframe value={source.conditions.timeframe} />
           <Paragraph>成立前提：{source.conditions.applicability_conditions?.join('；') || '未附加前提'}</Paragraph>
           <Paragraph>证据边界：{source.conditions.evidence_scope?.scope_limitations?.join('；') || '未附加限制'}</Paragraph></>}
-        {Object.entries(source.evidence_relations || {}).filter(([, ids]) => ids.length).map(([role, ids]) => <section key={role}><Text strong>{evidenceRoles[role] || role}</Text>{evidenceView(ids)}</section>)}
+        {evidenceView(Object.entries(source.evidence_relations || {}).flatMap(([role, ids]) => citations(ids).map(item => ({ ...item, relations: [{ relation: role }] }))))}
         <Guidelines items={source.guideline_evidence} />
       </article>
     })}
-    {evidenceView(evidence)}
+    {evidenceView(citations(evidence))}
   </div>
 }
 

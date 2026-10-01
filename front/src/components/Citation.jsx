@@ -17,6 +17,7 @@ const SOURCE_TYPES = {
   interspecialty_question: '专科问题',
   native_question: '专科问题',
   assessment_evidence_need: '证据缺口',
+  conditional_contribution: '条件性贡献',
   evidence_gap: '证据缺口',
   discussion_answer: '专科回答',
   working_diagnosis: '工作诊断',

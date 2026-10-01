@@ -51,7 +51,7 @@ def json_schema_response_format(
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": name,
+            "name": name[:64],
             "strict": True,
             "schema": schema,
         },

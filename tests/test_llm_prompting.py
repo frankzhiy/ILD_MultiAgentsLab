@@ -643,3 +643,15 @@ def test_ssl_eof_retries_the_same_structured_request():
 
     assert result.value == "ok"
     assert llm.calls == len(trace["attempts"]) == 2
+
+
+def test_schema_response_name_is_bounded_without_changing_schema():
+    from pydantic import BaseModel
+    class Result(BaseModel):
+        value: str
+    long_name = 'thoracic_radiology_discussion_' + 'R01-issue-pathology-' * 3
+    result = json_schema_response_format(Result, long_name)['json_schema']
+    assert len(result['name']) <= 64
+    assert result['name'] == long_name[:64]
+    assert result['schema'] == json_schema_response_format(Result, 'short')['json_schema']['schema']
+    assert json_schema_response_format(Result, 'short')['json_schema']['name'] == 'short'

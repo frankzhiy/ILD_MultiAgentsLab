@@ -418,7 +418,16 @@ class SpecialtyDiscussionAgent:
             if len(targeted) != len(set(targeted)):
                 errors.append("One update cannot target the same judgment twice")
             if self.config.get("protocol_version") == "expert.v1" and set(targeted) != set(current_by_id):
-                errors.append("Every supplied active judgment needs explicit maintain/change with rationale; empty updates cannot establish synchronization")
+                missing = sorted(set(current_by_id) - set(targeted))
+                missing_versions = {ref: current_by_id[ref].version_id for ref in missing}
+                errors.append(
+                    "Every supplied active judgment needs explicit maintain/change with rationale; "
+                    f"missing={missing}, unexpected={sorted(set(targeted) - set(current_by_id))}; "
+                    f"missing base_version_id={missing_versions}. "
+                    f"/proposals has {len(draft.proposals)} items; append one proposal per missing "
+                    "judgment using op='append' on /proposals, with the medically justified "
+                    "maintain/change and rationale. Preserve existing proposals."
+                )
             for proposal_index, proposal in enumerate(draft.proposals):
                 if proposal.change_type != "maintain":
                     if not proposal.trigger_issue_ids:

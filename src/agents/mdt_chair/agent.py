@@ -157,17 +157,20 @@ class _Registry:
             if existing is None:
                 self.evidence[ref] = CaseEvidenceCitation(evidence_ref=ref, **value)
             else:
+                evidence_ids = _ordered_unique([*existing.evidence_ids, *value["evidence_ids"]])
+                blocks = self.semantic_evidence.get(value["graph_unit_id"], {}).get("evidence_blocks", {})
+                quote = "".join(text for evidence_id, text in blocks.items() if evidence_id in evidence_ids) if ref == value["graph_unit_id"] else ""
                 self.evidence[ref] = CaseEvidenceCitation(
                     evidence_ref=ref,
                     segment_id=existing.segment_id or value["segment_id"],
                     graph_unit_id=existing.graph_unit_id or value["graph_unit_id"],
-                    evidence_ids=_ordered_unique([*existing.evidence_ids, *value["evidence_ids"]]),
+                    evidence_ids=evidence_ids,
                     proposition_ids=_ordered_unique([
                         *existing.proposition_ids,
                         *value["proposition_ids"],
                     ]),
                     node_ids=_ordered_unique([*existing.node_ids, *value["node_ids"]]),
-                    quote=_merge_quotes(existing.quote, value["quote"]),
+                    quote=quote or _merge_quotes(existing.quote, value["quote"]),
                 )
         return self._evidence_keys[key]
 
@@ -514,12 +517,29 @@ def _compact_specialty(
             }
         )
 
+    conditional_contributions = []
+    for index, item in enumerate(assessments_block.get("conditional_contributions") or []):
+        source_ref = registry.source(
+            specialty,
+            "conditional_contribution",
+            f"specialty_assessments.conditional_contributions[{index}]",
+            "\n".join(f"{label}：{item[key]}" for key, label in (
+                ("question", "诊断问题"), ("possible_result", "可能结果"),
+                ("decision_if_found", "若发现时的决定"), ("cannot_establish", "不能据此确定"),
+                ("acquisition_value", "获取价值"),
+            )),
+            metadata=dict(item),
+        )
+        conditional_contributions.append({
+            **item, "source_ref": source_ref, "source_type": "conditional_contribution",
+        })
+
     return {
         "specialty": specialty,
         "specialty_question": assessments_block.get("specialty_question"),
         "assessability": assessments_block.get("assessability"),
         "boundaries": list(assessments_block.get("boundaries") or []),
-        "conditional_contributions": list(assessments_block.get("conditional_contributions") or []),
+        "conditional_contributions": conditional_contributions,
         "specialty_assessments": projected_assessments,
         "discussion_answers": projected_discussion_answers,
         "interspecialty_questions": projected_questions,

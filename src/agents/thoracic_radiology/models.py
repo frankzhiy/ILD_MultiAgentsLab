@@ -357,7 +357,15 @@ class SpecialistOpinion(BaseModel):
 def _require_unique(values: list[str], label: str) -> None:
     duplicates = sorted({item for item in values if values.count(item) > 1})
     if duplicates:
-        raise ValueError(f"Duplicate {label} values: {duplicates}")
+        positions = {value: [index for index, item in enumerate(values) if item == value]
+                     for value in duplicates}
+        guidance = (
+            " Tasks require one entry per task: merge distinct findings and rationale into "
+            "the retained entry, then remove redundant entries. Changing priority or activation "
+            "does not make a repeated task unique."
+            if label in {"task plan", "task assessment"} else ""
+        )
+        raise ValueError(f"Duplicate {label} values: {duplicates}; array indexes={positions}.{guidance}")
 
 
 def _legacy_pointer(value: Any) -> list[dict]:

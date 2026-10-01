@@ -185,6 +185,37 @@ describe('SpecialtyWorkspace', () => {
     expect(screen.getByRole('button', { name: /Evidence ID → 原文证据块（1）/ })).toBeInTheDocument()
   })
 
+  it('shows nested source text once by default and opens one highlighted context on demand', async () => {
+    api.specialties.mockResolvedValue(payload())
+    api.semantic.mockResolvedValue({
+      segments: [{
+        segment_id: 'seg-1',
+        text: '现病史：患者长期进行性呼吸困难。近期加重。',
+        units: [{ graph_unit_id: 'gu-1', text: '患者长期进行性呼吸困难。' }],
+      }],
+    })
+    renderWorkspace({ run: { status: 'completed' }, drawer: true })
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /病历原文/ }))[0])
+    const summary = await screen.findByText('原始片段上下文（Segment）')
+    expect(document.querySelectorAll('.evidence-quote')).toHaveLength(1)
+    expect(document.querySelectorAll('.evidence-source-context')).toHaveLength(1)
+    expect(document.querySelector('.evidence-source-context')).not.toBeVisible()
+    expect(screen.queryByText('证据单元上下文（Graph Unit）')).not.toBeInTheDocument()
+
+    fireEvent.click(summary)
+    expect(document.querySelector('.evidence-source-context')).toBeVisible()
+    expect(document.querySelector('.evidence-source-context')).toHaveTextContent('现病史：患者长期进行性呼吸困难。近期加重。')
+    expect(document.querySelector('.evidence-source-context mark')).toHaveTextContent(pointer.quote)
+
+    fireEvent.click(summary)
+    const scroll = vi.fn()
+    summary.parentElement.scrollIntoView = scroll
+    fireEvent.click(await screen.findByRole('button', { name: /在原文中定位/ }))
+    expect(document.querySelector('.evidence-source-context')).toBeVisible()
+    expect(scroll).toHaveBeenCalledOnce()
+  })
+
   it('keeps source kinds distinct without presenting graph locators as numbered evidence', () => {
     const items = [
       { segment_id: 'seg-1' },

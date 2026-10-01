@@ -284,8 +284,11 @@ def test_actor_outside_attribution_span_error_explains_implicit_subjects_use_nul
     with pytest.raises(
         ValueError,
         match="actor_text must occur.*not an implicit proposition subject.*attribution to null",
-    ):
+    ) as failure:
         validate_clinical_propositions(result, make_unit(text), make_frame())
+    assert "/propositions/0/attribution" in str(failure.value)
+    assert "actor_text='患者'" in str(failure.value)
+    assert "quote='吸烟30余年'" in str(failure.value)
 
 
 def test_nonverbatim_modifier_evidence_becomes_validation_warning():
@@ -565,8 +568,10 @@ def test_validation_rejects_unknown_and_disconnected_evidence_references():
         "metadata": {},
     }
 
-    with pytest.raises(ValueError, match="must share at least one evidence block"):
+    with pytest.raises(ValueError, match="must share at least one evidence block") as failure:
         validate_clinical_propositions(result_from(response, text), make_unit(text), make_frame())
+    assert '/propositions/0/modifiers/0/evidence' in str(failure.value)
+    assert "owner evidence_ids=['seg_001_gu_001_ev_001']" in str(failure.value)
 
     response["propositions"][0]["modifiers"] = []
     response["propositions"][0]["evidence"] = {

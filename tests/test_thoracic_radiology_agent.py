@@ -569,3 +569,16 @@ def test_initial_report_leads_with_core_answer_and_keeps_guide_as_audit(tmp_path
     assert "节点 ·" in html and pointer.node_ids[0] in html
     assert "命题 ·" in html and pointer.proposition_ids[0] in html
     assert all(quote in html for quote in pointer.quote.splitlines())
+
+
+def test_duplicate_task_feedback_requires_merging_entries_not_changing_activation():
+    payload = reconstruction_0714().model_dump(mode='json')
+    duplicate = dict(payload['task_plan'][0], activation='reviewed_not_applicable', rationale='另一发现的独立说明')
+    index = len(payload['task_plan'])
+    payload['task_plan'].append(duplicate)
+    with pytest.raises(ValueError) as failure:
+        InitialCaseReconstruction.model_validate(payload)
+    message = str(failure.value)
+    assert f'[0, {index}]' in message
+    assert 'merge' in message
+    assert 'activation' in message

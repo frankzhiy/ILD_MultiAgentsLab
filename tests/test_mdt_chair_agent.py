@@ -429,3 +429,23 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
     proposition_evidence = next(iter(proposition_bundle.evidence_registry.values()))
     assert proposition_evidence.evidence_ref == "seg_001_gu_001::prop_001"
     assert proposition_evidence.proposition_ids == ["seg_001_gu_001::prop_001"]
+
+
+def test_graph_unit_quote_is_rebuilt_from_unique_blocks_across_sources_and_rounds():
+    unit_id = "seg_001_gu_001"
+    blocks = {f"{unit_id}_ev_{i:03d}": text for i, text in enumerate(
+        ("患者咳嗽。", "活动后气短。", "近期加重。"), 1
+    )}
+    ids = list(blocks)
+    catalog = {unit_id: {"segment_id": "seg_001", "evidence_blocks": blocks}}
+    source = outputs()
+    for specialty, selected in zip(SPECIALTIES, (ids[:2], ids[1:], ids[:2], ids[1:])):
+        source[specialty]["specialty_assessments"]["assessments"][0]["evidence"] = {
+            "supporting": [{"graph_unit_id": unit_id, "evidence_ids": selected}]
+        }
+    bundle = build_chair_prompt_bundle("case-1", source, semantic_evidence=catalog)
+    evidence = bundle.evidence_registry[unit_id]
+    assert evidence.quote == "".join(blocks.values())
+    assert set(evidence.evidence_ids) == set(ids)
+    later = build_chair_prompt_bundle("case-1", source, semantic_evidence=catalog, source_seed=bundle)
+    assert later.evidence_registry[unit_id].quote == evidence.quote

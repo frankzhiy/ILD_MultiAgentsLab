@@ -432,6 +432,9 @@ class RunOrchestrator:
             raise
         except Exception as error:
             self.workflow._check_stop(run_id)
+            failure = error
+            while not hasattr(failure, "attempts") and failure.__cause__ is not None:
+                failure = failure.__cause__
             case_id = self.catalog.case_id(run_dir)
             failure_path = run_dir / f"{case_id}_{agent_id}_{stage}_failure_trace.json"
             self._write_json(
@@ -442,7 +445,7 @@ class RunOrchestrator:
                     "agent_id": agent_id,
                     "error_type": type(error).__name__,
                     "error": str(error),
-                    "attempts": getattr(error, "attempts", []),
+                    "attempts": getattr(failure, "attempts", []),
                 },
             )
             self.events.append(

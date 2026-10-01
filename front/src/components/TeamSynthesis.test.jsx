@@ -1,8 +1,47 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, expect, it, vi } from 'vitest'
+import { api } from '../api'
+import { useWorkbenchStore } from '../store'
 import { TeamSynthesis } from './TeamSynthesis'
+import { team as fixture } from './teamSynthesisFixture'
+
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal()),
+  api: { ...(await importOriginal()).api, semantic: vi.fn() },
+}))
 
 afterEach(cleanup)
+it('shows a graph unit once across evidence roles and resolves overlapping historical quotes', async () => {
+  const team = structuredClone(fixture)
+  const unitId = 'seg_001_gu_001'
+  const blocks = ['患者咳嗽。', '活动后气短。', '近期加重。'].map((text, index) => ({ evidence_id: `ev-${index + 1}`, text }))
+  team.evidence_catalog = {
+    [unitId]: { graph_unit_id: unitId, evidence_ref: unitId, evidence_ids: blocks.map(b => b.evidence_id), quote: '患者咳嗽。活动后气短。\n活动后气短。近期加重。\n患者咳嗽。活动后气短。近期加重。' },
+    'ev-2': { graph_unit_id: unitId, evidence_ref: 'ev-2', evidence_ids: ['ev-2'], quote: '活动后气短。' },
+  }
+  team.source_catalog.S2.evidence_relations = {
+    supporting: [unitId, 'ev-2'], discriminating: [unitId], qualifying: [unitId],
+  }
+  api.semantic.mockResolvedValue({ segments: [{ units: [{ graph_unit_id: unitId, clinical_propositions: { evidence_blocks: blocks } }] }] })
+  const original = structuredClone(team)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/runs/run-1/chair']}><Routes>
+    <Route path="/runs/:runId/:view" element={<TeamSynthesis team={team} />} />
+  </Routes></MemoryRouter></QueryClientProvider>)
+  fireEvent.click(screen.getByRole('tab', { name: '证据需求及满足状态' }))
+  const panel = screen.getByRole('tabpanel')
+  await waitFor(() => expect(panel.querySelector('blockquote > .ant-typography')?.textContent).toBe('患者咳嗽。活动后气短。近期加重。'))
+  expect(panel.querySelectorAll('blockquote')).toHaveLength(1)
+  expect(panel.querySelector('blockquote')).not.toHaveTextContent('患者咳嗽。活动后气短。\n活动后气短。')
+  for (const label of ['支持证据', '鉴别证据', '限定依据']) expect(within(panel).getByText(label)).toBeVisible()
+  fireEvent.click(within(panel).getByRole('button', { name: /病历原文/ }))
+  expect(useWorkbenchStore.getState().evidence.quote).toBe('患者咳嗽。活动后气短。近期加重。')
+  expect(useWorkbenchStore.getState().evidence.evidence_ids).toEqual(['ev-1', 'ev-2', 'ev-3'])
+  expect(team).toEqual(original)
+})
+
 it('keeps clinical problems separate and reveals conditional reasoning and adoption', () => {
   const team = {
     schema_version: 'team_synthesis.v2', judgment_boundaries: [], disagreements: [], revision: 2, acceptance: 'explicit_dissent', stop_kind: 'budget',

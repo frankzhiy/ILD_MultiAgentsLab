@@ -759,3 +759,35 @@ def test_judgment_update_evidence_deduplication_is_lossless():
 
     assert expand(view['input']) == original == saved
     assert len(json.dumps(view)) < len(json.dumps(original)) / 2
+
+
+def test_incomplete_judgment_update_feedback_names_missing_targets_and_append_operation():
+    from src.llm.structured import StructuredGenerationError
+    assessment = SpecialtyAssessment.model_validate(dict(
+        assessment_id='a1', role='primary', assessment_type='working_diagnosis',
+        statement='有限工作判断', assessability='partially_assessable', direction='supports',
+        confidence='low', clinical_role='primary', status='possible', medical_basis='原文',
+        decision_impact='病因定位', evidence={'evidence_relations': []}))
+    judgments = [SpecialtyJudgmentVersion(judgment_id=ref, version_id=ref+'@v001',
+        version_number=1, specialty='pulmonology', change_type='initial',
+        assessment=assessment, content_hash='hash') for ref in ['current1', 'current2']]
+    proposals = [dict(change_type='maintain', target_judgment_id=j.judgment_id,
+        base_version_id=j.version_id, proposed_content=None, rationale='本轮判断不变',
+        trigger_issue_ids=[], considered_source_refs=[]) for j in judgments]
+    class FakeLLM:
+        supports_json_schema = False
+        items = proposals[:1]
+        def complete(self, messages, **kwargs):
+            return LLMResponse(content=json.dumps({'proposals': self.items}), raw={})
+    llm = FakeLLM()
+    agent = SpecialtyDiscussionAgent(llm, specialty='pulmonology', config={
+        'protocol_version': 'expert.v1', 'max_attempts': 1, 'guideline_retrieval': {'enabled': False}})
+    with pytest.raises(StructuredGenerationError) as failure:
+        agent.propose_judgment_update(round_number=1, tasks=[], answers=[], active_judgments=judgments)
+    error = failure.value.attempts[0]['validation_error']
+    assert "missing=['current2']" in error
+    assert 'current2@v001' in error
+    assert 'append' in error and '/proposals' in error
+    llm.items = proposals
+    update, _ = agent.propose_judgment_update(round_number=1, tasks=[], answers=[], active_judgments=judgments)
+    assert len(update.proposals) == 2

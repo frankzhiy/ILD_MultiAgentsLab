@@ -338,3 +338,22 @@ def test_semantic_generators_receive_the_same_stop_signal(monkeypatch, tmp_path)
         with pytest.raises(RunStopped):
             generate(part)
     assert llm.calls == 1
+
+
+def test_stage_failure_trace_keeps_attempts_from_wrapped_semantic_errors(tmp_path):
+    import json
+    from src.llm.structured import StructuredGenerationError
+    directory = tmp_path / 'outputs/runs/run-case'
+    directory.mkdir(parents=True)
+    write_json(directory / '.workbench_run.json', {'case_id': 'case'})
+    runner = RunOrchestrator(tmp_path, RunCatalog(tmp_path), EventStore(tmp_path / 'events.sqlite3'))
+    attempts = [{'attempt': 1, 'content': '{invalid}', 'validation_error': 'invalid JSON'}]
+    def fail():
+        try:
+            raise StructuredGenerationError('invalid JSON', attempts=attempts, stage='segment_graph_units')
+        except StructuredGenerationError as error:
+            raise RuntimeError('Graph-unit extraction failed for seg_005') from error
+    with pytest.raises(RuntimeError, match='Graph-unit extraction failed'):
+        asyncio.run(runner._stage('run-case', directory, 'semantic_graphing', 'semantic_graphing', fail))
+    saved = json.loads((directory / 'case_semantic_graphing_semantic_graphing_failure_trace.json').read_text())
+    assert saved['attempts'] == attempts
