@@ -181,7 +181,7 @@ def _polish(
     generator = StructuredLLMGenerator(
         llm,
         temperature=0.0,
-        max_tokens=16000,
+        max_tokens=32000,
         max_attempts=2,
         response_format_mode="json_schema"
         if getattr(llm, "supports_json_schema", False)

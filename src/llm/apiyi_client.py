@@ -59,6 +59,10 @@ class APIYIClient(LLMClient):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self.model.startswith("gpt-6"):
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+            if payload.get("reasoning_effort", "medium") != "none":
+                payload.pop("temperature")
         if response_format:
             payload["response_format"] = response_format
 

@@ -72,17 +72,16 @@ export APIYI_API_KEY="..."
 Set `provider`, model, base URL, API key environment variable, and timeout in
 `configs/agents/semantic_graphing/agent.yaml`.
 
-Semantic graphing uses `deepseek-v4-flash` through APIYI's OpenAI-compatible endpoint. Thinking is
-explicitly disabled for every stage through `request_options`.
+Semantic graphing uses `gpt-6.1-sol` through APIYI's OpenAI-compatible endpoint, with
+`medium` reasoning effort for every stage.
 
 ```yaml
 provider: apiyi
-model: deepseek-v4-flash
+model: gpt-6.1-sol
 base_url: https://api.apiyi.com/v1
 api_key_env: APIYI_API_KEY
 request_options:
-  thinking:
-    type: disabled
+  reasoning_effort: medium
 ```
 
 The same config also controls `max_concurrency`, `max_attempts`, per-stage token limits, and
@@ -142,9 +141,11 @@ Set the APIYI credential before running the future multi-agent system:
 export APIYI_API_KEY="..."
 ```
 
-The default downstream model is `deepseek-v4-flash` through APIYI's OpenAI-compatible endpoint.
-Thinking is explicitly disabled through `request_options`. The APIYI client is provider-specific,
-not DeepSeek-specific: GPT, Claude, Qwen, and other models exposed through APIYI's compatible
+The four specialty agents and MDT chair default to `gpt-6.1-sol` with `high` reasoning effort
+through APIYI's OpenAI-compatible endpoint. Discussion reuses their respective configurations.
+The APIYI client omits custom temperature for GPT-6 reasoning requests and uses
+`max_completion_tokens` for GPT-6 token limits. The APIYI client is provider-specific:
+GPT, Claude, Qwen, and other models exposed through APIYI's compatible
 endpoint can use the same client by changing `model` and any model-specific `request_options`.
 
 ## Rheumatology ILD Consultation Agent

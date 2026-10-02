@@ -602,7 +602,7 @@ def _merge_quotes(*values: str) -> str:
 
 class MDTChairAgent:
     def __init__(self, llm: LLMClient, *, prompt_path: str | Path,
-                 temperature: float = 0.0, max_tokens: int = 12000,
+                 temperature: float = 0.0, max_tokens: int = 64000,
                  max_attempts: int = 2, retry_backoff_seconds: float = 0.0,
                  guideline_runtime: GuidelineRuntime | None = None,
                  event_callback: Callable[[str, dict[str, Any]], None] | None = None):
@@ -622,7 +622,7 @@ class MDTChairAgent:
             raise ValueError("MDT chair requires protocol_version=expert.v2")
         return cls(llm, prompt_path=config["prompt"],
                    temperature=float(config.get("temperature", 0.0)),
-                   max_tokens=int(config.get("max_tokens", 12000)),
+                   max_tokens=int(config.get("max_tokens", 64000)),
                    max_attempts=int(config.get("max_attempts", 2)),
                    retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
                    guideline_runtime=GuidelineRuntime.from_config(config), event_callback=event_callback)

@@ -75,7 +75,7 @@ class SpecialtyDiscussionAgent:
         self.generator = StructuredLLMGenerator(
             llm,
             temperature=float(config.get("temperature", 0.0)),
-            max_tokens=min(int(config.get("max_tokens", 12000)), 8000),
+            max_tokens=int(config.get("max_tokens", 32000)),
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
             response_format_mode=(
@@ -86,7 +86,7 @@ class SpecialtyDiscussionAgent:
         self.review_generator = StructuredLLMGenerator(
             llm,
             temperature=0.0,
-            max_tokens=min(int(config.get("max_tokens", 12000)), 2500),
+            max_tokens=min(int(config.get("max_tokens", 32000)), 16000),
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
             response_format_mode=(

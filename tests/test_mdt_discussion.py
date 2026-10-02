@@ -292,7 +292,7 @@ def test_requester_review_uses_only_the_current_question_and_answer():
         supports_json_schema = False
 
         def complete(self, messages, *, temperature, max_tokens, response_format=None):
-            assert max_tokens == 2500
+            assert max_tokens == 16000
             return LLMResponse(
                 content='{"outcome":"accept_boundary","rationale":"已明确当前资料边界。"}',
                 raw={"choices": [{}]},

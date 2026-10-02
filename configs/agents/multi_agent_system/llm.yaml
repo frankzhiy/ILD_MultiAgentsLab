@@ -1,7 +1,7 @@
 provider: apiyi
-model: gpt-6-luna
+model: gpt-6.1-sol
 base_url: https://api.apiyi.com/v1
 api_key_env: APIYI_API_KEY
 timeout_seconds: 300
 request_options:
-  reasoning_effort: none
+  reasoning_effort: high

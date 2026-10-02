@@ -1,15 +1,15 @@
 protocol_version: expert.v1
 provider: apiyi
-model: gpt-6-luna
+model: gpt-6.1-sol
 base_url: https://api.apiyi.com/v1
 # base_url: http://api.apiyi.com:16888/v1
 api_key_env: APIYI_API_KEY
 request_options:
-  reasoning_effort: none
+  reasoning_effort: high
 supports_json_schema: true
 timeout_seconds: 300
 temperature: 0.0
-max_tokens: 12000
+max_tokens: 32000
 max_attempts: 4
 retry_backoff_seconds: 2
 initial_foundation_prompt: src/prompts/pulmonology/initial_foundation.md

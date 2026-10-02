@@ -68,7 +68,7 @@ class SemanticGraphingAgent:
     def from_config(cls, config_path: str | Path, llm: LLMClient) -> "SemanticGraphingAgent":
         config = load_yaml(config_path)
         temperature = float(config.get("temperature", 0.1))
-        max_tokens = int(config.get("max_tokens", 6000))
+        max_tokens = int(config.get("max_tokens", 32000))
         max_attempts = int(config.get("max_attempts", 2))
         retry_backoff_seconds = float(config.get("retry_backoff_seconds", 2))
 

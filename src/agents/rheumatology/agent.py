@@ -140,7 +140,7 @@ class RheumatologyAgent:
             **{f"{key}_path": config[key] for key in keys},
             clinical_rules=config.get("clinical_rules", {}),
             temperature=float(config.get("temperature", 0.0)),
-            max_tokens=int(config.get("max_tokens", 12000)),
+            max_tokens=int(config.get("max_tokens", 32000)),
             max_attempts=int(config.get("max_attempts", 2)),
             retry_backoff_seconds=float(config.get("retry_backoff_seconds", 2)),
             event_callback=event_callback,

@@ -23,16 +23,24 @@ class FakeHTTPResponse:
         return b'{"choices":[{"message":{"content":"ok"}}]}'
 
 
-def test_multi_agent_config_builds_apiyi_client(monkeypatch):
+@pytest.mark.parametrize("config_path", [
+    "configs/agents/multi_agent_system/llm.yaml",
+    "configs/agents/pulmonology/agent.yaml",
+    "configs/agents/thoracic_radiology/agent.yaml",
+    "configs/agents/rheumatology/agent.yaml",
+    "configs/agents/pathology/agent.yaml",
+    "configs/agents/mdt_chair/agent.yaml",
+])
+def test_multi_agent_config_builds_apiyi_client(monkeypatch, config_path):
     monkeypatch.setenv("APIYI_API_KEY", "secret")
 
-    config = load_yaml("configs/agents/multi_agent_system/llm.yaml")
+    config = load_yaml(config_path)
     client = build_llm_client(config)
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-6-luna"
+    assert client.model == "gpt-6.1-sol"
     assert client.base_url == "https://api.apiyi.com/v1"
-    assert client.request_options == {"reasoning_effort": "none"}
+    assert client.request_options == {"reasoning_effort": "high"}
 
 
 def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
@@ -42,9 +50,32 @@ def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
     client = build_llm_client(config)
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-6-luna"
-    assert client.request_options == {"reasoning_effort": "none"}
+    assert client.model == "gpt-6.1-sol"
+    assert client.request_options == {"reasoning_effort": "medium"}
     assert client.supports_json_schema is True
+
+
+@pytest.mark.parametrize("effort", ["medium", "high", "none"])
+def test_apiyi_gpt6_request_parameters(monkeypatch, effort):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured.update(json.loads(request.data))
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr("src.llm.apiyi_client.urllib.request.urlopen", fake_urlopen)
+    client = APIYIClient(
+        api_key="secret",
+        model="gpt-6-luna" if effort == "none" else "gpt-6.1-sol",
+        base_url="https://api.apiyi.com/v1",
+        request_options={"reasoning_effort": effort},
+    )
+    client.complete([LLMMessage(role="user", content="test")], temperature=0, max_tokens=100)
+
+    assert captured["reasoning_effort"] == effort
+    assert captured["max_completion_tokens"] == 100
+    assert "max_tokens" not in captured
+    assert ("temperature" in captured) == (effort == "none")
 
 
 def test_apiyi_sends_provider_options_without_implicit_json_mode(monkeypatch):
