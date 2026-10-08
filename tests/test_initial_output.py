@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -464,6 +465,12 @@ def test_fixed_slots_are_split_into_bounded_unique_batches(monkeypatch):
 
         def generate(self, *, schema_model, **kwargs):
             batch_slot_ids = list(schema_model.model_fields)
+            payload = json.loads(kwargs["user_prompt"].split("\n\n", 1)[1])
+            assert set(payload["slots"]) == set(batch_slot_ids)
+            for values in payload["slots"].values():
+                slot = dict(zip(payload["slot_fields"], values, strict=True))
+                assert slot["assessment_id"] == payload["claims"][slot["claim_id"]]["assessment_id"]
+                assert slot["evidence_id"] in payload["evidence"]
             self.slot_ids.extend(batch_slot_ids)
             return schema_model.model_validate(
                 {slot_id: None for slot_id in batch_slot_ids}

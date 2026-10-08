@@ -45,7 +45,7 @@ from src.guidelines.runtime import (
     resolve_guideline_evidence,
 )
 from src.llm.base import LLMClient
-from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.prompting import shared_prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
@@ -382,7 +382,7 @@ class PathologyAgent:
 
 
 def _json(value: object) -> str:
-    return prompt_json(value)
+    return shared_prompt_json(value)
 
 
 def _requires_material_plan(value: object) -> bool:

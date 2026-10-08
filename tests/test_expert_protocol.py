@@ -57,6 +57,19 @@ def run_expert(bundle, payloads):
     return agent.integrate(bundle)[0]
 
 
+@pytest.mark.parametrize("supports_json_schema", [True, False])
+def test_chair_sends_schema_once_and_preserves_fallback(supports_json_schema):
+    _, bundle, payload = setup_case()
+    llm = Responses([payload])
+    llm.supports_json_schema = supports_json_schema
+    agent = MDTChairAgent(llm, prompt_path='src/prompts/mdt_chair/expert_synthesis.md', max_attempts=1)
+    _, trace = agent.integrate(bundle)
+    prompt = trace["prompt"]
+    assert ("由 API 的严格 JSON Schema response_format 提供。" in prompt) == supports_json_schema
+    assert ('"$defs"' in prompt) == (not supports_json_schema)
+    assert llm.calls == 1
+
+
 def test_review_report_is_one_sealed_non_ild_snapshot():
     state,bundle,payload = setup_case()
     result = run_expert(bundle,[payload])

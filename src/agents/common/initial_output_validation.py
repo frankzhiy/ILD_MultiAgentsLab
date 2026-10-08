@@ -24,7 +24,7 @@ from src.agents.common.validation import (
     resolve_evidence_pointers,
     validate_pointers,
 )
-from src.llm.prompting import prompt_json
+from src.llm.prompting import shared_prompt_json
 from src.llm.structured import StructuredLLMGenerator
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 from src.schemas.specialty_agent_input import SpecialtyCaseInput
@@ -199,7 +199,11 @@ def assign_specialty_initial_evidence(
                 for evidence_id, evidence in blocks.items()
                 if evidence_id in batch_evidence_ids
             },
-            "slots": batch_slots,
+            "slot_fields": ["assessment_id", "claim_id", "evidence_id"],
+            "slots": {
+                slot_id: [slot["assessment_id"], slot["claim_id"], slot["evidence_id"]]
+                for slot_id, slot in batch_slots.items()
+            },
         }
         assignment_model = create_model(
             f"SpecialtyEvidenceAssignments{batch_number:03d}",
@@ -230,8 +234,9 @@ def assign_specialty_initial_evidence(
                 "每个字段对应程序生成的唯一 claim × evidence 槽位。使用该证据时填写"
                 " direction 和 function；不使用时填写 null。不得因为同一证据用于其他"
                 " claim 而省略当前槽位。diagnostic_eligible=false 的槽位若使用，只能是"
-                " neutral/background。每个槽位必须恰好返回一次。\n\n"
-                f"{prompt_json(batch_prompt)}"
+                " neutral/background。每个槽位必须恰好返回一次。slots 中的数组按"
+                " slot_fields 的列顺序表示同一槽位的完整字段。\n\n"
+                f"{shared_prompt_json(batch_prompt)}"
             ),
             dependent_field_constraints=_EVIDENCE_DIMENSION_SCHEMA_CONSTRAINTS,
         )

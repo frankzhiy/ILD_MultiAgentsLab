@@ -29,7 +29,7 @@ from src.guidelines.runtime import (
     resolve_guideline_evidence,
 )
 from src.llm.base import LLMClient
-from src.llm.prompting import build_shared_prompt_view, prompt_json, prompt_schema_json
+from src.llm.prompting import build_shared_prompt_view, llm_value, prompt_json, prompt_schema_json
 from src.llm.structured import StructuredLLMGenerator
 from src.utils.config import load_text, load_yaml, render_template
 
@@ -113,11 +113,21 @@ class SpecialtyDiscussionAgent:
 
     def review_synthesis(self, *, team, specialty_output):
         from src.agents.common.team_synthesis import SynthesisAcceptanceDraft, SynthesisAcceptance
+        shared = build_shared_prompt_view(llm_value({
+            "team": team.model_dump(mode="json", exclude={"acceptance", "acceptance_records"}),
+            "specialty_output": specialty_output,
+        }))
         prompt = render_template(load_text(Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/synthesis_acceptance.md"), {
             "specialty": SPECIALTY_LABELS[self.specialty],
-            "team": prompt_json(team.model_dump(mode="json", exclude={"acceptance", "acceptance_records"})),
-            "specialty_output": prompt_json(specialty_output),
-            "output_schema": prompt_schema_json(SynthesisAcceptanceDraft),
+            **{key: prompt_json(value) for key, value in shared["input"].items()},
+            "output_schema": (
+                "由 API 的严格 JSON Schema response_format 提供。"
+                if self.review_generator.response_format_mode == "json_schema"
+                else prompt_schema_json(SynthesisAcceptanceDraft)
+            ),
+        })
+        prompt += "\n共享输入值目录与展开规则：\n" + prompt_json({
+            key: value for key, value in shared.items() if key != "input"
         })
         draft, trace = self.review_generator.generate(
             schema_model=SynthesisAcceptanceDraft, schema_name="synthesis_acceptance",

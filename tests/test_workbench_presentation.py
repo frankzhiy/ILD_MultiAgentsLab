@@ -109,12 +109,26 @@ def test_presentation_is_cached_and_never_changes_source(monkeypatch, tmp_path):
     )
     presentation.present(tmp_path, run_dir, "specialties", source)
     assert len(calls) == 2
+    assert len(calls[1]) == 1
+    assert calls[1][0]["path"].endswith("/medical_basis")
 
     prompt_path.write_text(
         "## 润色\n\nrevised draft\n\n## 医学含义与口吻核对\n\nreview\n", encoding="utf-8"
     )
     presentation.present(tmp_path, run_dir, "specialties", source)
     assert len(calls) == 3
+    assert len(calls[2]) == 2
+
+    assessment = source["results"][0]["output"]["specialty_assessments"]["assessments"][0]
+    assessment["status"] = "possible"
+    presentation.present(tmp_path, run_dir, "specialties", source)
+    assert len(calls) == 4
+    assert len(calls[3]) == 2
+
+    (config_dir / "agent.yaml").write_text("model: test-model\nreasoning_effort: high\n", encoding="utf-8")
+    presentation.present(tmp_path, run_dir, "specialties", source)
+    assert len(calls) == 5
+    assert len(calls[4]) == 2
 
     monkeypatch.setattr(
         presentation,

@@ -25,13 +25,41 @@ from src.agents.rheumatology.models import SpecialistQuestion as RheumatologyQue
 from src.agents.thoracic_radiology.models import EvidencePointer as RadiologyPointer
 from src.agents.thoracic_radiology.models import SpecialistQuestion as RadiologyQuestion
 from src.guidelines.models import GuidelineEvidencePointer
-from src.llm.prompting import prompt_json, prompt_schema_json
+from src.llm.prompting import build_shared_prompt_view, llm_value, prompt_json, prompt_schema_json, shared_prompt_json
 from src.llm.base import LLMResponse
 from src.llm.structured import (
     StructuredGenerationError,
     StructuredLLMGenerator,
     json_schema_response_format,
 )
+
+
+def test_shared_prompt_preserves_all_values_and_omits_unused_catalog_entries():
+    quote = "原始临床证据，包括确定度、否定和时间。" * 12
+    block = {"quote": quote, "status": "not_assessable", "evidence_id": "E1"}
+    original = {"case_id": "100-IPF", "assessment": [block, block], "evidence": block}
+    view = build_shared_prompt_view(llm_value(original))
+    used = set()
+
+    def expand(value):
+        if isinstance(value, dict):
+            if set(value) == {"shared_value_ref"}:
+                reference = value["shared_value_ref"]
+                used.add(reference)
+                return expand(view["shared_values"][reference])
+            return {key: expand(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        return value
+
+    assert expand(view["input"]) == json.loads(prompt_json(original))
+    assert used == set(view["shared_values"])
+    assert len(shared_prompt_json(original)) < len(prompt_json(original))
+    assert shared_prompt_json({"quote": "无重复。"}) == prompt_json({"quote": "无重复。"})
+    # Repeated short evidence quotes are now eligible, even within different objects.
+    short_quote = "医学依据及其成立条件。" * 12
+    assert json.dumps(build_shared_prompt_view([{"a": short_quote}, {"b": short_quote}]),
+                      ensure_ascii=False).count(short_quote) == 1
 
 
 def test_semantic_retry_repairs_only_invalid_fields_and_preserves_other_sections():

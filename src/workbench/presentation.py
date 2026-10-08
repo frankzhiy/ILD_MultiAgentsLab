@@ -265,7 +265,7 @@ def present(
     prompts = _load_prompts()
     source_hash = sha256(
         json.dumps(
-            [_VERSION, config.get("model"), records, prompts], ensure_ascii=False, sort_keys=True
+            [_VERSION, config, records, prompts], ensure_ascii=False, sort_keys=True
         ).encode()
     ).hexdigest()
     cache_path = run_dir / f"presentation_{scope}.json"
@@ -277,14 +277,28 @@ def present(
         if cache.get("source_sha256") == source_hash:
             wording = cache.get("wording", {})
         else:
+            record_hashes = {
+                item["path"]: sha256(json.dumps(
+                    [_VERSION, config, item, prompts], ensure_ascii=False, sort_keys=True
+                ).encode()).hexdigest()
+                for item in records
+            }
+            wording = {
+                path: text for path, text in cache.get("wording", {}).items()
+                if path in record_hashes
+                and cache.get("record_sha256", {}).get(path) == record_hashes[path]
+            }
+            pending = [item for item in records if item["path"] not in wording]
             try:
-                wording = _polish(records, config, prompts)
+                if pending:
+                    wording.update(_polish(pending, config, prompts))
             except Exception:
                 return {**payload, "presentation_status": "unavailable"}
             temp_path = cache_path.with_suffix(".tmp")
             temp_path.write_text(
                 json.dumps(
-                    {"source_sha256": source_hash, "wording": wording}, ensure_ascii=False, indent=2
+                    {"source_sha256": source_hash, "record_sha256": record_hashes,
+                     "wording": wording}, ensure_ascii=False, indent=2
                 ),
                 encoding="utf-8",
             )

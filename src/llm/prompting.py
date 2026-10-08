@@ -45,17 +45,15 @@ def prompt_json(value: Any) -> str:
 def build_shared_prompt_view(value: Any) -> dict[str, Any]:
     """Represent repeated large values once, with an exactly reversible reference."""
 
-    values = {}
     counts = Counter()
     # ponytail: O(n²) on deeply nested JSON; cache encodings if prompt building gets slow.
     encode = lambda item: json.dumps(item, ensure_ascii=False, separators=(",", ":"))
 
     def collect(item):
         encoded = encode(item)
-        if len(encoded) < 1000:
+        if len(encoded) < 100:
             return
         counts[encoded] += 1
-        values[encoded] = item
         for child in item.values() if isinstance(item, dict) else item if isinstance(item, list) else []:
             collect(child)
 
@@ -70,15 +68,29 @@ def build_shared_prompt_view(value: Any) -> dict[str, Any]:
             return [project(child) for child in item]
         return item
 
+    shared_values = {}
+
     def project(item):
         reference = references.get(encode(item))
-        return {"shared_value_ref": reference} if reference else descend(item)
+        if reference:
+            if reference not in shared_values:
+                shared_values[reference] = descend(item)
+            return {"shared_value_ref": reference}
+        return descend(item)
+
+    projected = project(value)
 
     return {
         "shared_value_rule": "仅含 shared_value_ref 的对象代表 shared_values 中同编号的完整原值；递归展开后即为原始输入，引用不增加或删除证据。",
-        "shared_values": {reference: descend(values[encoded]) for encoded, reference in references.items()},
-        "input": project(value),
+        "shared_values": shared_values,
+        "input": projected,
     }
+
+
+def shared_prompt_json(value: Any) -> str:
+    original = prompt_json(value)
+    shared = prompt_json(build_shared_prompt_view(llm_value(value)))
+    return shared if len(shared) < len(original) else original
 
 
 def prompt_schema_json(schema_model: type[BaseModel]) -> str:

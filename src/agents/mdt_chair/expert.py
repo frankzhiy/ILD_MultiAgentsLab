@@ -78,7 +78,11 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     prompt = render_template(agent.prompt, {
         **{key: prompt_json(value) for key, value in shared["input"].items()},
         "guideline_context": guidelines + "\n" + PROMPT_RULES,
-        "output_schema": prompt_schema_json(TeamSynthesis),
+        "output_schema": (
+            "由 API 的严格 JSON Schema response_format 提供。"
+            if agent.generator.response_format_mode == "json_schema"
+            else prompt_schema_json(TeamSynthesis)
+        ),
     })
     prompt += "\n共享输入值目录与展开规则：\n" + prompt_json({
         key: value for key, value in shared.items() if key != "input"
