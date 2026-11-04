@@ -5,12 +5,9 @@ import pytest
 from pydantic import ValidationError
 
 from src.agents.common.initial_output import SpecialtyInitialOutput
-from src.agents.common.judgment_protocol import validate_clinical_text
 from src.agents.common.initial_output_validation import (
-    assign_specialty_initial_evidence,
     validate_specialty_initial_output,
 )
-from src.llm.structured import json_schema_response_format
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 
 
@@ -37,6 +34,7 @@ def assessment(
         "direction": "indeterminate" if status == "not_assessable" else "supports",
         "confidence": "unknown" if status == "not_assessable" else "moderate",
         "clinical_role": "boundary" if status == "not_assessable" else "primary",
+        "claims": [{"statement": "现有肺部异常需要病因鉴别。"}],
         "medical_basis": "病程与现有肺部资料形成连贯解释，替代病因仍需限定。",
         "decision_impact": "决定后续跨专科核对方向。",
         "evidence": evidence_bundle(),
@@ -72,7 +70,7 @@ def output_payload(*, questions: list[dict] | None = None) -> dict:
                     "related_evidence": [pointer()],
                 }
             ],
-            "boundaries": ["本判断不是最终 MDT 诊断。"],
+            "boundaries": ["病原未定，限制具体病因判断。"],
         },
         "interspecialty_questions": {"questions": questions or []},
     }
@@ -124,25 +122,37 @@ def test_formal_output_has_exactly_two_top_level_sections():
     assert "professional_conclusions" not in schema["properties"]
 
 
-def test_clinical_text_rejects_generic_missing_image_excuses():
-    with pytest.raises(ValueError, match="面向医生的结论"):
-        validate_clinical_text("仅有影像报告文字，未提供原始图像供独立复核。")
-    validate_clinical_text("影像所见记录双肺实变；报告未描述病变分布，无法进一步区分模式。")
-
-
-def test_legacy_output_is_readable_but_serializes_with_current_labels():
-    payload = legacy_payload()
-    payload["professional_conclusions"]["conclusions"][0].pop("assessment_id")
-    payload["professional_conclusions"]["conclusions"][0].pop("assessment_type")
-
+@pytest.mark.parametrize('specialty', list(SpecialistTarget))
+@pytest.mark.parametrize('text', [
+    '未直接阅片。',
+    '既有意见不构成跨专科冲突。',
+    '未提供材料属于输入范围限制，不等于标本不充分、取样不具代表性或患者从未接受活检。',
+])
+def test_wording_does_not_reject_a_structurally_valid_opinion(monkeypatch, specialty, text):
+    stub_evidence(monkeypatch)
+    payload = output_payload()
+    if specialty == SpecialistTarget.RHEUMATOLOGY:
+        payload['specialty_assessments']['assessments'][0]['assessment_type'] = 'rheumatic_disease'
+        payload['specialty_assessments']['assessments'].append(assessment('assessment_002', 'ild_attribution'))
+    payload['specialty_assessments']['assessments'][0]['limitations'] = [text]
     output = SpecialtyInitialOutput.model_validate(payload)
+    result = validate_specialty_initial_output(output, SimpleNamespace(), specialty)
+    assert result.specialty_assessments.assessments[0].limitations == [text]
 
-    assert output.specialty_assessments.assessments[0].assessment_id == "assessment_001"
-    assert output.interspecialty_questions.questions[0].target_specialty == "thoracic_radiology"
-    assert set(output.model_dump(mode="json")) == {
-        "specialty_assessments",
-        "interspecialty_questions",
-    }
+
+def test_limitations_are_not_copied_into_other_condition_fields():
+    from src.agents.common.initial_output import synchronize_judgment_conditions
+    payload = output_payload()
+    item = SpecialtyInitialOutput.model_validate(payload).specialty_assessments.assessments[0]
+    synchronize_judgment_conditions(item)
+    assert item.limitations
+    assert not item.conditions.evidence_scope.scope_limitations
+    assert not item.conditions.applicability_conditions
+
+
+def test_legacy_output_is_rejected_without_silent_migration():
+    with pytest.raises(ValueError):
+        SpecialtyInitialOutput.model_validate(legacy_payload())
 
 
 def test_extra_top_level_section_is_rejected():
@@ -238,18 +248,18 @@ def test_formal_output_allows_probability_terms_in_clinical_text(monkeypatch):
     assert validated is output
 
 
-def test_formal_output_rejects_cross_specialty_conflict(monkeypatch):
+def test_formal_output_does_not_use_keywords_to_detect_conflict(monkeypatch):
     stub_evidence(monkeypatch)
     payload = output_payload()
     payload["specialty_assessments"]["assessments"][0]["medical_basis"] = (
-        "与影像科意见存在冲突。"
+        "与影像科意见不存在冲突。"
     )
     output = SpecialtyInitialOutput.model_validate(payload)
 
-    with pytest.raises(ValueError, match="cross-specialty conflict"):
-        validate_specialty_initial_output(
-            output, SimpleNamespace(), SpecialistTarget.PULMONOLOGY
-        )
+    result = validate_specialty_initial_output(
+        output, SimpleNamespace(), SpecialistTarget.PULMONOLOGY
+    )
+    assert result.specialty_assessments.assessments[0].medical_basis == '与影像科意见不存在冲突。'
 
 
 def test_formal_output_accepts_independent_confidence():
@@ -351,160 +361,100 @@ def test_same_evidence_locator_cannot_appear_in_two_relations(monkeypatch):
         )
 
 
-def test_fixed_slots_allow_one_locator_once_per_atomic_claim(monkeypatch):
-    unit = SimpleNamespace(
-        may_support_diagnostic_claim=True,
-        clinical_propositions=SimpleNamespace(
-            evidence_blocks=[
-                SimpleNamespace(evidence_id="ev_1", text="血气分析未见二氧化碳潴留。")
-            ]
-        ),
-    )
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation.case_units",
-        lambda _: {"gu_001": unit},
-    )
-    def resolve(value, *_):
-        for item in value.specialty_assessments.assessments:
-            for relation in item.evidence.evidence_relations:
-                relation.graph_unit_id = "gu_001"
-
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation.resolve_evidence_pointers",
-        resolve,
-    )
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation.validate_pointers",
-        lambda *args: None,
-    )
+def test_inline_claim_evidence_keeps_distinct_uses_and_resolves_sources():
+    from synthetic_case import case_input
+    case = case_input()
+    unit = next(unit for segment in case.segments for unit in segment.units
+                if unit.may_support_diagnostic_claim)
+    block = unit.clinical_propositions.evidence_blocks[0]
     payload = output_payload()
+    payload["specialty_assessments"]["evidence_gaps"] = []
     payload["specialty_assessments"]["assessments"][0]["claims"] = [
-        {"statement": "未见二氧化碳潴留。"},
-        {"statement": "总体严重度只能部分评价。"},
+        {"statement": "当前症状支持肺部病变。", "evidence_relations": [
+            {"evidence_ids": [block.evidence_id], "direction": "supports", "function": "foundational"},
+        ]},
+        {"statement": "同期发热限定慢性病变的解释范围。", "evidence_relations": [
+            {"evidence_ids": [block.evidence_id], "direction": "neutral", "function": "qualifying"},
+        ]},
     ]
     output = SpecialtyInitialOutput.model_validate(payload)
-
-    class Generator:
-        def generate(self, *, schema_model, **kwargs):
-            schema = json_schema_response_format(
-                schema_model,
-                "evidence_assignments",
-                dependent_field_constraints=kwargs["dependent_field_constraints"],
-            )["json_schema"]["schema"]
-            valid_pairs = {
-                (direction, function)
-                for alternative in schema["$defs"]["_EvidenceSlotDecision"]["anyOf"]
-                for direction in alternative["properties"]["direction"]["enum"]
-                for function in alternative["properties"]["function"]["enum"]
-            }
-            assert ("neutral", "background") in valid_pairs
-            assert ("supports", "foundational") in valid_pairs
-            assert ("supports", "background") not in valid_pairs
-            assert ("neutral", "foundational") not in valid_pairs
-            return schema_model.model_validate({
-                "slot_0001": {
-                    "direction": "supports",
-                    "function": "foundational",
-                },
-                "slot_0002": {
-                    "direction": "neutral",
-                    "function": "qualifying",
-                },
-            }), {"validated": True}
-
-    validated, trace = assign_specialty_initial_evidence(
-        output,
-        SimpleNamespace(),
-        SpecialistTarget.PULMONOLOGY,
-        Generator(),
+    validated = validate_specialty_initial_output(
+        output, case, SpecialistTarget.PULMONOLOGY, require_claim_evidence=True,
     )
-
-    relations = validated.specialty_assessments.assessments[0].evidence.evidence_relations
-    assert trace["slot_count"] == 2
-    assert trace["batch_count"] == 1
-    assert trace["batches"][0]["validated"] is True
+    item = validated.specialty_assessments.assessments[0]
+    assert [claim.claim_id for claim in item.claims] == ["assessment_001_c001", "assessment_001_c002"]
+    relations = item.evidence.evidence_relations
     assert len(relations) == 2
-    assert {relation.target_claim_id for relation in relations} == {
-        "assessment_001_c001",
-        "assessment_001_c002",
-    }
-    assert {relation.evidence_ids[0] for relation in relations} == {"ev_1"}
+    assert {relation.target_claim_id for relation in relations} == {claim.claim_id for claim in item.claims}
+    assert all(relation.quote == block.text for relation in relations)
+    assert all(relation.graph_unit_id == unit.graph_unit.graph_unit_id for relation in relations)
+    assert all(claim.evidence_relations[0].quote == block.text for claim in item.claims)
+    assert item.conditions.evidence_scope.evidence_ids == [block.evidence_id]
+    saved = validated.model_dump(mode="json")
+    assert validate_specialty_initial_output(
+        validated, case, SpecialistTarget.PULMONOLOGY, require_claim_evidence=True,
+    ).model_dump(mode="json") == saved
 
 
-def test_fixed_slots_are_split_into_bounded_unique_batches(monkeypatch):
-    unit = SimpleNamespace(
-        may_support_diagnostic_claim=True,
-        clinical_propositions=SimpleNamespace(
-            evidence_blocks=[
-                SimpleNamespace(evidence_id=f"ev_{number}", text=f"证据{number}")
-                for number in range(1, 4)
-            ]
-        ),
-    )
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation.case_units",
-        lambda _: {"gu_001": unit},
-    )
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation._MAX_EVIDENCE_SLOTS_PER_CALL",
-        2,
-    )
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation.resolve_evidence_pointers",
-        lambda *args: None,
-    )
-    monkeypatch.setattr(
-        "src.agents.common.initial_output_validation.validate_pointers",
-        lambda *args: None,
-    )
-    output = SpecialtyInitialOutput.model_validate(output_payload())
-
-    class Generator:
-        def __init__(self):
-            self.slot_ids = []
-
-        def generate(self, *, schema_model, **kwargs):
-            batch_slot_ids = list(schema_model.model_fields)
-            payload = json.loads(kwargs["user_prompt"].split("\n\n", 1)[1])
-            assert set(payload["slots"]) == set(batch_slot_ids)
-            for values in payload["slots"].values():
-                slot = dict(zip(payload["slot_fields"], values, strict=True))
-                assert slot["assessment_id"] == payload["claims"][slot["claim_id"]]["assessment_id"]
-                assert slot["evidence_id"] in payload["evidence"]
-            self.slot_ids.extend(batch_slot_ids)
-            return schema_model.model_validate(
-                {slot_id: None for slot_id in batch_slot_ids}
-            ), {"slot_ids": batch_slot_ids}
-
-    generator = Generator()
-    _, trace = assign_specialty_initial_evidence(
-        output,
-        SimpleNamespace(),
-        SpecialistTarget.PULMONOLOGY,
-        generator,
-    )
-
-    assert generator.slot_ids == ["slot_0001", "slot_0002", "slot_0003"]
-    assert len(generator.slot_ids) == len(set(generator.slot_ids))
-    assert trace["slot_count"] == 3
-    assert trace["batch_count"] == 2
-
-
-def test_legacy_evidence_role_lists_migrate_to_relations():
+@pytest.mark.parametrize("relations", [
+    [{"evidence_ids": ["invented"], "direction": "supports", "function": "foundational"}],
+    [{"evidence_ids": ["context"], "direction": "supports", "function": "foundational"}],
+    [
+        {"evidence_ids": ["diagnostic"], "direction": "supports", "function": "foundational"},
+        {"evidence_ids": ["diagnostic"], "direction": "weakens", "function": "foundational"},
+    ],
+])
+def test_inline_claim_rejects_unknown_ineligible_or_conflicting_evidence(relations):
+    from synthetic_case import case_input
+    case = case_input()
+    units = [unit for segment in case.segments for unit in segment.units]
+    units[0].may_support_diagnostic_claim = False
+    ids = {"context": next(unit for unit in units if not unit.may_support_diagnostic_claim)
+           .clinical_propositions.evidence_blocks[0].evidence_id,
+           "diagnostic": next(unit for unit in units if unit.may_support_diagnostic_claim)
+           .clinical_propositions.evidence_blocks[0].evidence_id}
     payload = output_payload()
-    payload["specialty_assessments"]["assessments"][0]["evidence"] = {
-        "supporting": [pointer()],
-        "weakening": [],
-        "discriminating": [],
-        "qualifying": [],
-        "background": [],
-    }
+    payload["specialty_assessments"]["evidence_gaps"] = []
+    payload["specialty_assessments"]["assessments"][0]["claims"] = [{
+        "statement": "当前肺部判断。",
+        "evidence_relations": [{**relation, "evidence_ids": [ids.get(relation["evidence_ids"][0], "invented")]}
+                               for relation in relations],
+    }]
+    with pytest.raises(ValueError, match="unknown evidence_ids|context-only|must appear once"):
+        validate_specialty_initial_output(
+            SpecialtyInitialOutput.model_validate(payload), case, SpecialistTarget.PULMONOLOGY,
+            require_claim_evidence=True,
+        )
 
+
+def test_empty_inline_evidence_is_explicit_and_legacy_evidence_remains_readable(monkeypatch):
+    stub_evidence(monkeypatch)
+    payload = output_payload()
     output = SpecialtyInitialOutput.model_validate(payload)
-    evidence = output.model_dump(mode="json")["specialty_assessments"]["assessments"][0][
-        "evidence"
-    ]
+    with pytest.raises(ValueError, match="explicitly return evidence_relations"):
+        validate_specialty_initial_output(
+            output, SimpleNamespace(), SpecialistTarget.PULMONOLOGY, require_claim_evidence=True,
+        )
+    payload["specialty_assessments"]["assessments"][0]["claims"] = [{
+        "statement": "肺功能未提供，无法评价功能严重度。", "evidence_relations": [],
+    }]
+    validated = validate_specialty_initial_output(
+        SpecialtyInitialOutput.model_validate(payload), SimpleNamespace(), SpecialistTarget.PULMONOLOGY,
+        require_claim_evidence=True,
+    )
+    assert not validated.specialty_assessments.assessments[0].evidence.evidence_relations
+    legacy = output_payload()
+    legacy["specialty_assessments"]["assessments"][0]["evidence"] = {
+        "evidence_relations": [{"evidence_ids": ["ev_1"], "direction": "supports", "function": "foundational"}],
+    }
+    assert validate_specialty_initial_output(
+        SpecialtyInitialOutput.model_validate(legacy), SimpleNamespace(), SpecialistTarget.PULMONOLOGY,
+        diagnostic_evidence_ids={"ev_1"},
+    ).specialty_assessments.assessments[0].evidence.evidence_relations
 
-    assert set(evidence) == {"evidence_relations"}
-    assert evidence["evidence_relations"][0]["direction"] == "supports"
-    assert evidence["evidence_relations"][0]["function"] == "foundational"
+
+def test_legacy_evidence_role_lists_are_rejected():
+    payload = output_payload()
+    payload["specialty_assessments"]["assessments"][0]["evidence"] = {"supporting": [pointer()]}
+    with pytest.raises(ValueError):
+        SpecialtyInitialOutput.model_validate(payload)

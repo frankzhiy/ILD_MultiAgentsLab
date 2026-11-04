@@ -10,6 +10,8 @@ from src.agents.common.decision_state import (
     prepare_judgment_change,
 )
 from src.agents.common.judgment_protocol import judgment_system_prompt
+from src.agents.common.validation import iter_evidence_pointers
+from src.agents.common.initial_output import EvidenceRelation
 from src.agents.mdt_discussion.models import (
     DiscussionAnswerClaim,
     DiscussionEvidenceUse,
@@ -114,8 +116,8 @@ class SpecialtyDiscussionAgent:
     def review_synthesis(self, *, team, specialty_output):
         from src.agents.common.team_synthesis import SynthesisAcceptanceDraft, SynthesisAcceptance
         shared = build_shared_prompt_view(llm_value({
-            "team": team.model_dump(mode="json", exclude={"acceptance", "acceptance_records"}),
-            "specialty_output": specialty_output,
+            "team": llm_value(team),
+            "specialty_output": build_specialty_discussion_prompt_view(specialty_output),
         }))
         prompt = render_template(load_text(Path(__file__).resolve().parents[2] / "prompts/mdt_discussion/synthesis_acceptance.md"), {
             "specialty": SPECIALTY_LABELS[self.specialty],
@@ -462,7 +464,7 @@ class SpecialtyDiscussionAgent:
                         errors.append(f"proposals[{proposal_index}] stale base version: {proposal.base_version_id}")
                 if proposal.proposed_content is None:
                     continue
-                for relation in proposal.proposed_content.evidence.evidence_relations:
+                for relation in iter_evidence_pointers(proposal.proposed_content, EvidenceRelation):
                     unknown = set(relation.evidence_ids) - allowed_evidence_ids
                     if unknown:
                         errors.append(f"proposals[{proposal_index}] judgment update uses unknown evidence IDs: {sorted(unknown)}")

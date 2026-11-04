@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Layout, Menu, Skeleton, Space, Typography } from 'antd'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { useWorkbenchStore } from '../store'
 import { api } from '../api'
 import { Brand } from '../components/Brand'
 import { QueryError } from '../components/QueryState'
@@ -60,7 +61,9 @@ export function RunWorkspace() {
     queryFn: () => api.run(runId),
     refetchInterval: (current) => ['queued', 'running', 'stopping'].includes(current.state.data?.status) ? 2000 : false,
   })
+  const closeEvidence = useWorkbenchStore(state => state.closeEvidence)
   const status = query.data?.status
+  useEffect(() => closeEvidence(), [closeEvidence, runId, activeView, status])
   useEffect(() => {
     if (!status) return
     ;['semantic', 'routing', 'specialties', 'chair', 'discussion', 'report', 'errors', 'artifacts'].forEach(key => {

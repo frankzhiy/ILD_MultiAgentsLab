@@ -15,11 +15,16 @@ from src.llm.structured import StructuredGenerationError
 
 class Responses:
     supports_json_schema = True
-    def __init__(self, items):
+    def __init__(self, items, exploration=None):
+        self.exploration = exploration
         self.items = iter(items)
         self.calls = 0
     def complete(self, messages, **kwargs):
         self.calls += 1
+        if kwargs.get('response_format', {}).get('json_schema', {}).get('name') == 'diagnostic_exploration' or messages[-1].content.startswith('# MDT：独立候选形成'):
+            return LLMResponse(content=json.dumps(self.exploration or dict(problem_representation='患者文字需要进一步疾病解释。', candidates=[],
+                combined_phenotype_review='没有足够患者事实形成新的组合候选。', unrepresented_findings='暂无额外发现。',
+                insufficient_candidate_basis='测试输入不包含患者原文判别证据。'), ensure_ascii=False), raw={})
         assert '100-IPF' not in messages[-1].content
         assert '{{' not in messages[-1].content
         return LLMResponse(content=json.dumps(next(self.items), ensure_ascii=False), raw={})
@@ -33,13 +38,18 @@ def setup_case():
                 assessments=[dict(assessment_id=specialty+'-a1', role='primary', assessment_type='working_diagnosis',
                 statement='肺炎可能解释急性变化' if specialty=='pulmonology' else '本专业的有限判断',
                 assessability='partially_assessable', direction='supports', confidence='low', clinical_role='primary', status='possible', medical_basis='已有文字记录', decision_impact='诊断定位',
-                evidence={'evidence_relations':[]})], boundaries=['有资料限制']),
+                claims=[{'statement': '本专业有限的原子判断', 'evidence_relations': []}], evidence={'evidence_relations':[]})], boundaries=['有资料限制']),
             'interspecialty_questions': {'questions': []}}
     state = initialize_decision_state('100-IPF', outputs)
     bundle = build_chair_prompt_bundle('100-IPF', project_active_specialty_outputs(state))
     refs = [s['specialty_assessments'][0]['source_ref'] for s in bundle.prompt_input['specialties']]
     team = dict(judgment_reviews=[dict(source_ref=r, disposition='adopt', rationale='原文支持有限判断',
                                      evidence_refs=[], required_response=False) for r in refs],
+        diagnostic_opinion=dict(case_formulation='急性呼吸道症状与同期肺部异常构成本次主要问题。',
+            diagnosis='当前首先考虑肺炎，具体病原尚未明确。',
+            reasoning='症状发生与肺部异常的时间相符；其余专科未提供更有解释力的病因。',
+            differential_reasoning='当前证据尚不足以将急性变化归为独立的慢性间质性肺病。',
+            problem_ids=['P1'], source_refs=[refs[0]], evidence_refs=[], limitations=['病原未定']),
         problems=[dict(problem_id='P1', title='急性肺部病变', relationship='primary', statement='首先考虑肺炎',
                        assessability='partially_assessable', confidence='moderate', rationale='症状与文字报告符合',
                        source_refs=refs, evidence_refs=[], candidates=[], limitations=['病原未定'])],
@@ -47,14 +57,151 @@ def setup_case():
             undetermined='病原未定', reason='缺乏病原结果', decision_impact='不能确定病原', source_refs=refs)],
         disagreements=[], issues=[], issue_dispositions=[], evidence_needs=[], conditional_contributions=[], dissent=[],
         synthesis_rationale='按同一问题整合', coverage_review='无足够证据预设ILD', guideline_evidence=[])
+    team['diagnostic_resolution'] = dict(status='provisional_diagnosis', achieved_level='disease',
+        primary_diagnosis='肺炎', goal_review='已形成有限具体疾病判断，病原未定。',
+        candidate_dispositions=[], remaining_gaps=[])
     return state,bundle,team
 
 
-def run_expert(bundle, payloads):
-    llm = Responses(payloads)
+def test_chair_must_produce_a_case_level_diagnosis_beyond_the_opinion_ledger():
+    _, bundle, payload = setup_case()
+    payload.pop('diagnostic_opinion')
+    with pytest.raises(StructuredGenerationError, match='diagnostic_opinion'):
+        run_expert(bundle, [payload])
+
+
+def test_new_chair_schema_requires_a_non_null_diagnostic_opinion():
+    from src.agents.common.team_synthesis import ChairSynthesisDraft
+    schema = ChairSynthesisDraft.model_json_schema()
+    assert 'diagnostic_opinion' in schema['required']
+    assert schema['properties']['diagnostic_opinion'] == {'$ref': '#/$defs/ChairDiagnosticOpinionDraft'}
+    assert 'diagnosis' not in schema['$defs']['ChairDiagnosticOpinionDraft']['properties']
+
+
+def test_chair_seals_diagnosis_from_adjudicated_problems_and_preserves_reasoning():
+    state, bundle, payload = setup_case()
+    original = deepcopy(bundle.prompt_input)
+    opinion = payload['diagnostic_opinion']
+    opinion.update(diagnosis='综合解释C是本次主要病变，解释B作为并存因素保留。',
+        reasoning='将各科保留的时间、分布与全身表现共同考虑，解释C比单一器官解释更连贯。',
+        differential_reasoning='解释A仅覆盖局部表现，解释B不能单独解释本次变化。')
+    assert all(opinion['diagnosis'] != item['statement']
+               for specialty in bundle.prompt_input['specialties']
+               for item in specialty['specialty_assessments'])
+    associated = {**payload['problems'][0], 'problem_id': 'P2', 'relationship': 'comorbidity',
+                  'statement': '并存解释B。', 'limitations': []}
+    payload['problems'].append(associated)
+    result = run_expert(bundle, [payload])
+    result.team_synthesis.stop_kind = 'completed'
+    report, _ = project_team_report('100-IPF', result.model_dump(mode='json'), [], '完成', None, state)
+    expected = '首先考虑肺炎\n\n并存问题：并存解释B。'
+    assert result.team_synthesis.diagnostic_opinion.diagnosis == expected
+    assert report.team_synthesis.diagnostic_opinion.diagnosis == expected
+    assert report.team_synthesis.diagnostic_opinion.reasoning == opinion['reasoning']
+    assert bundle.prompt_input == original
+    result.team_synthesis.diagnostic_opinion.diagnosis = opinion['diagnosis']
+    result.team_synthesis.snapshot_hash = synthesis_hash(result.team_synthesis)
+    with pytest.raises(ValueError, match='综合诊断与已审定的临床问题不一致'):
+        project_team_report('100-IPF', result.model_dump(mode='json'), [], '完成', None, state)
+
+
+def test_chair_diagnosis_cannot_present_a_rejected_opinion_as_its_retained_basis():
+    _, bundle, payload = setup_case()
+    payload['judgment_reviews'][0]['disposition'] = 'reject'
+    with pytest.raises(StructuredGenerationError, match='保留的专科判断'):
+        run_expert(bundle, [payload])
+
+
+def test_chair_diagnosis_must_cover_the_primary_problem():
+    _, bundle, payload = setup_case()
+    payload['diagnostic_opinion']['problem_ids'] = ['not-a-problem']
+    with pytest.raises(StructuredGenerationError, match='diagnostic_opinion'):
+        run_expert(bundle, [payload])
+
+
+def test_chair_can_reject_all_specialty_interpretations_and_use_direct_case_evidence():
+    from src.agents.mdt_chair.models import CaseEvidenceCitation
+    _, bundle, payload = setup_case()
+    bundle.evidence_registry['E1'] = CaseEvidenceCitation(evidence_ref='E1',
+        graph_unit_id='unit-1', evidence_ids=['ev-1'], quote='合成病例中的时间与器官发现。')
+    for review in payload['judgment_reviews']:
+        review['disposition'] = 'reject'
+    payload['diagnostic_opinion'].update(source_refs=[], evidence_refs=['E1'],
+        diagnosis='基于病例原文形成整体解释C，现有专科归因不予采纳。')
+    result = run_expert(bundle, [payload])
+    assert result.team_synthesis.diagnostic_opinion.source_refs == []
+    assert result.team_synthesis.diagnostic_opinion.evidence_refs == ['E1']
+
+
+def test_case_level_diagnosis_can_agree_with_a_specialist_but_must_cover_acute_changes():
+    _, bundle, payload = setup_case()
+    payload['diagnostic_opinion']['diagnosis'] = bundle.prompt_input['specialties'][0]['specialty_assessments'][0]['statement']
+    assert run_expert(bundle, [payload]).team_synthesis.diagnostic_opinion.diagnosis
+    acute = deepcopy(payload['problems'][0])
+    acute.update(problem_id='P2', relationship='acute_contributor', title='急性叠加因素', limitations=[])
+    payload['problems'].append(acute)
+    with pytest.raises(StructuredGenerationError, match='diagnostic_opinion.problem_ids'):
+        run_expert(bundle, [payload])
+    payload['diagnostic_opinion']['problem_ids'].append('P2')
+    assert run_expert(bundle, [payload]).team_synthesis.diagnostic_opinion.problem_ids == ['P1', 'P2']
+
+
+def test_historical_deduplicated_summary_is_not_promoted_to_a_chair_diagnosis():
+    from src.workbench.catalog import RunCatalog
+    state, bundle, payload = setup_case()
+    result = run_expert(bundle, [payload]).model_dump(mode='json')
+    result['team_synthesis'].pop('diagnostic_opinion')
+    assert not RunCatalog._is_current_chair_output(result)
+    with pytest.raises(ValueError, match='缺少主持人全病例诊断意见'):
+        project_team_report('100-IPF', result, [], '完成', None, state)
+
+
+def run_expert(bundle, payloads, exploration=None):
+    llm = Responses(payloads, exploration)
     agent = MDTChairAgent(llm, 
         prompt_path='src/prompts/mdt_chair/expert_synthesis.md', max_attempts=1)
     return agent.integrate(bundle)[0]
+
+
+def test_chair_preserves_wording_without_rejecting_a_valid_synthesis():
+    _, bundle, payload = setup_case()
+    payload['synthesis_rationale'] = '本轮未附病理材料不等于患者未接受过肺活检。'
+    result = run_expert(bundle, [payload])
+    assert result.team_synthesis.synthesis_rationale == payload['synthesis_rationale']
+    assert result.team_synthesis.judgment_boundaries[0].undetermined == '病原未定'
+
+
+def test_report_projects_a_valid_sealed_snapshot_without_wording_rejection():
+    state, bundle, payload = setup_case()
+    result = run_expert(bundle, [payload])
+    team = result.team_synthesis
+    team.stop_kind = 'completed'
+    team.problems[0].limitations = ['本轮未直接阅片。']
+    team.snapshot_hash = synthesis_hash(team)
+    report, _ = project_team_report('100-IPF', result.model_dump(mode='json'), [], '完成', None, state)
+    assert report.team_synthesis.problems[0].limitations == team.problems[0].limitations
+
+
+def test_later_chair_round_keeps_audit_catalogs_local():
+    from types import SimpleNamespace
+    from src.agents.mdt_discussion.models import SpecialtyTaskAnswer
+    _, bundle, payload = setup_case()
+    previous = run_expert(bundle, [payload])
+    previous.team_synthesis.source_catalog['S001']['quote'] = '仅用于本地审计的唯一原文标记'
+    agent = MDTChairAgent(Responses([payload]),
+        prompt_path='src/prompts/mdt_chair/expert_synthesis.md', max_attempts=1)
+    answer = SpecialtyTaskAnswer(answer_id='A1', task_id='T1', issue_type='question',
+        issue_id='Q1', answerability='answered', answer='已有证据支持有限判断',
+        confidence='low', medical_basis='已有记录', changed_from_previous=False,
+        evidence_uses=[dict(evidence_ref='E1', effect='supporting', interpretation='支持有限判断',
+                            quote='不应重复发送的讨论证据原文标记')])
+    _, trace = agent.integrate(bundle, discussion_previous=previous,
+                              discussion_responses=[SimpleNamespace(answers=[answer])])
+    assert '仅用于本地审计的唯一原文标记' not in trace['prompt']
+    assert 'source_catalog' not in trace['prompt']
+    assert 'evidence_catalog' not in trace['prompt']
+    assert '不应重复发送的讨论证据原文标记' not in trace['prompt']
+    assert '已有证据支持有限判断' in trace['prompt']
 
 
 @pytest.mark.parametrize("supports_json_schema", [True, False])
@@ -67,7 +214,7 @@ def test_chair_sends_schema_once_and_preserves_fallback(supports_json_schema):
     prompt = trace["prompt"]
     assert ("由 API 的严格 JSON Schema response_format 提供。" in prompt) == supports_json_schema
     assert ('"$defs"' in prompt) == (not supports_json_schema)
-    assert llm.calls == 1
+    assert llm.calls == 2
 
 
 def test_review_report_is_one_sealed_non_ild_snapshot():
@@ -85,6 +232,10 @@ def test_review_report_is_one_sealed_non_ild_snapshot():
     modified['team_synthesis']['problems'][0]['statement'] = '新增错误诊断'
     with pytest.raises(ValueError,match='hash'):
         project_team_report('100-IPF',modified,[],'完成',None,state)
+    modified = result.model_dump(mode='json')
+    modified['team_synthesis']['diagnostic_opinion']['diagnosis'] = '未经审定的新诊断'
+    with pytest.raises(ValueError, match='hash'):
+        project_team_report('100-IPF', modified, [], '完成', None, state)
     result.team_synthesis.dependency_versions['S001'] = 'old-version'
     result.team_synthesis.snapshot_hash = synthesis_hash(result.team_synthesis)
     with pytest.raises(ValueError,match='obsolete'):
@@ -117,13 +268,19 @@ def test_low_confidence_candidates_survive_dissent_and_sealed_report(has_prefere
         statement='当前更支持解释A' if has_preference else '现有文字不能区分解释A和B',
         rationale='解释A较符合时间关系' if has_preference else '缺少区分A和B的病程记录')
     problem['candidates'] = [dict(
-        diagnosis='解释' + name,
+        candidate_id=f'C{index + 1}', diagnosis='解释' + name,
         position=('preferred' if index == 0 else 'alternative') if has_preference else 'unresolved',
         confidence='low', rationale=problem['rationale'], source_refs=problem['source_refs'],
         limitations=['具体病因未证实'],
     ) for index, name in enumerate(('A', 'B'))]
     payload['dissent'] = ['某专科保留不同倾向，主持人维持上述工作判断。']
-    result = run_expert(bundle, [payload])
+    from test_diagnostic_resolution import exploration as make_exploration
+    from src.agents.mdt_chair.models import CaseEvidenceCitation
+    bundle.evidence_registry['E1'] = CaseEvidenceCitation(evidence_ref='E1', graph_unit_id='g1', evidence_ids=['ev1'], quote='合成的病程线索。')
+    explored = make_exploration()
+    explored['candidates'] = [{**explored['candidates'][0], 'candidate_id': c['candidate_id'], 'diagnosis': c['diagnosis']} for c in problem['candidates']]
+    payload['diagnostic_resolution'].update(primary_candidate_id='C1' if has_preference else None, primary_diagnosis='', candidate_dispositions=[dict(candidate_id=c['candidate_id'], outcome='preferred' if c['position'] == 'preferred' else 'retained', rationale=problem['rationale']) for c in problem['candidates']])
+    result = run_expert(bundle, [payload], explored)
     result.team_synthesis.stop_kind = 'completed'
     report, _ = project_team_report('100-IPF', result.model_dump(mode='json'), [],
         '现有资料讨论完成', None, state)
@@ -263,14 +420,11 @@ def test_remote_disconnect_is_retryable_and_atomic_write_preserves_prior_snapsho
     assert len(list(tmp_path.iterdir())) == 1
 
 
-def test_catalog_recognizes_expert_snapshot_and_presenter_cannot_rewrite_it(tmp_path):
+def test_catalog_recognizes_current_expert_snapshot(tmp_path):
     from src.workbench.catalog import RunCatalog
-    from src.workbench.presentation import present
     _,bundle,payload=setup_case()
     result=run_expert(bundle,[payload]).model_dump(mode='json')
     assert RunCatalog._is_current_chair_output(result)
-    value=present(tmp_path,tmp_path,'chair',{'result':result})
-    assert value['result'] == result
     incomplete=deepcopy(result); incomplete['team_synthesis']=None
     assert not RunCatalog._is_current_chair_output(incomplete)
 
@@ -419,3 +573,32 @@ def test_chair_reports_all_dispositions_without_open_routes_together():
     for disposition in payload['issue_dispositions']:
         disposition['linked_issue_ids'] = ['open']
     assert run_expert(bundle, [payload]).team_synthesis.issues[0].issue_id == 'open'
+
+
+def test_chair_reports_all_missing_requests_with_other_coverage_errors():
+    state, _, payload = setup_case()
+    outputs = project_active_specialty_outputs(state)
+    outputs['pulmonology']['interspecialty_questions']['questions'] = [dict(
+        question=question, target_specialty='thoracic_radiology',
+        why_it_matters='区分病因', decision_unlocked='诊断排序')
+        for question in ('分布支持哪种模式？', '是否有小气道异常？', '是否存在急性变化？')]
+    outputs['pulmonology']['specialty_assessments']['evidence_gaps'] = [dict(
+        missing_information='影像描述', available_information='症状',
+        why_it_matters='判断模式', decision_unlocked='病因归属')]
+    bundle = build_chair_prompt_bundle('100-IPF', outputs)
+    refs = [s['specialty_assessments'][0]['source_ref'] for s in bundle.prompt_input['specialties']]
+    for review, ref in zip(payload['judgment_reviews'], refs):
+        review['source_ref'] = ref
+    payload['problems'][0]['source_refs'] = refs
+    payload['judgment_boundaries'][0]['source_refs'] = refs
+    questions = sorted(bundle.question_refs_to_classify)
+    target = next(r for r in refs if bundle.source_registry[r].specialty == 'thoracic_radiology')
+    existing = dict(issue_id=questions[0], outcome='covered', rationale='已提供专业意见', source_refs=[target])
+    payload['issue_dispositions'] = [existing]
+    with pytest.raises(StructuredGenerationError) as failure:
+        run_expert(bundle, [payload])
+    error = failure.value.attempts[0]['validation_error']
+    assert 'Every specialty evidence need' in error
+    assert f'Missing disposition for specialty requests: {questions[1:]}' in error
+    assert 'append' in error and 'do not rename' in error
+    assert payload['issue_dispositions'] == [existing]

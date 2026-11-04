@@ -24,7 +24,7 @@ def require_radiology_input(case_input: SpecialtyCaseInput) -> None:
 
 
 def resolve_proposition_pointers(value: object, case_input: SpecialtyCaseInput) -> None:
-    """Resolve exact proposition quotes while retaining legacy evidence-ID support."""
+    """Resolve the exact source text for proposition and evidence-block pointers."""
 
     units = case_units(case_input)
     evidence_to_unit: dict[str, object] = {}
@@ -139,8 +139,6 @@ def validate_initial_assessment(
             f"Assessment case_id {result.case_id} does not match {case_input.case_id}"
         )
     working_input = build_radiology_working_input(case_input)
-    if result.legacy_import:
-        _upgrade_legacy_initial(result, working_input)
     resolve_proposition_pointers(result, case_input)
     _validate_reconstruction(result.reconstruction, case_input, working_input)
     _validate_formulation(result, result.reconstruction, case_input, working_input, {})
@@ -333,65 +331,6 @@ def _validate_projection_pointers(
                 "Evidence pointer includes non-thoracic or ineligible propositions: "
                 f"{sorted(invalid)}"
             )
-
-
-def _upgrade_legacy_initial(
-    result: ThoracicRadiologyInitialAssessment,
-    working: RadiologyWorkingInput,
-) -> None:
-    """Convert v1 block references to eligible propositions and drop old route errors."""
-
-    eligible_by_unit = {
-        unit.graph_unit_id: [
-            statement
-            for statement in unit.statements
-            if statement.thoracic_imaging_eligible
-        ]
-        for unit in working.evidence_units
-    }
-
-    def exact(pointers: list[EvidencePointer]) -> list[EvidencePointer]:
-        mapped = []
-        for pointer in pointers:
-            if pointer.proposition_ids:
-                mapped.append(pointer)
-                continue
-            evidence_ids = set(pointer.evidence_ids)
-            pointer.proposition_ids = [
-                statement.proposition_id
-                for statement in eligible_by_unit.get(pointer.graph_unit_id, [])
-                if evidence_ids.intersection(statement.evidence_ids)
-            ]
-            if pointer.proposition_ids:
-                mapped.append(pointer)
-        return mapped
-
-    examinations = []
-    for exam in result.reconstruction.examinations:
-        exam.source_evidence = exact(exam.source_evidence)
-        if exam.source_evidence:
-            examinations.append(exam)
-    exam_ids = {exam.exam_id for exam in examinations}
-    for exam in examinations:
-        exam.possible_same_exam_as = [
-            item for item in exam.possible_same_exam_as if item in exam_ids
-        ]
-    result.reconstruction.examinations = examinations
-
-    statements = []
-    for statement in result.reconstruction.reported_statements:
-        statement.evidence = exact(statement.evidence)
-        if statement.evidence and statement.exam_id in exam_ids:
-            statements.append(statement)
-    result.reconstruction.reported_statements = statements
-    statement_ids = {item.statement_id for item in statements}
-
-    for assessment in result.task_assessments:
-        assessment.reported_statement_ids = [
-            item for item in assessment.reported_statement_ids if item in statement_ids
-        ]
-        assessment.supporting_evidence = exact(assessment.supporting_evidence)
-        assessment.conflicting_evidence = exact(assessment.conflicting_evidence)
 
 
 def _validate_all_pointers(pointers: Iterable[EvidencePointer]) -> None:

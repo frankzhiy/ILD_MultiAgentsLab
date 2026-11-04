@@ -1,5 +1,7 @@
 """Build evidence registries and run the current expert synthesis protocol."""
 from __future__ import annotations
+
+from src.agents.common.clinical_concepts import LEGACY_JUDGMENT_NOTE
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -28,6 +30,7 @@ class ChairPromptBundle:
     question_refs_to_classify: set[str] = field(default_factory=set)
     evidence_need_refs_to_classify: set[str] = field(default_factory=set)
     already_classified_question_refs: set[str] = field(default_factory=set)
+    evidence_blocks: dict[str, str] = field(default_factory=dict)
 
 
 class _Registry:
@@ -86,6 +89,11 @@ class _Registry:
             for unit_id, unit in self.semantic_evidence.items()
             for evidence_id in unit.get("evidence_blocks", {})
         }
+        for ref, item in self.evidence.items():
+            blocks = self.semantic_evidence.get(item.graph_unit_id, {}).get("evidence_blocks", {})
+            quote = _case_quote(blocks, item.evidence_ids)
+            if quote and quote != item.quote:
+                self.evidence[ref] = item.model_copy(update={"quote": quote})
 
     def source(
         self,
@@ -159,7 +167,7 @@ class _Registry:
             else:
                 evidence_ids = _ordered_unique([*existing.evidence_ids, *value["evidence_ids"]])
                 blocks = self.semantic_evidence.get(value["graph_unit_id"], {}).get("evidence_blocks", {})
-                quote = "".join(text for evidence_id, text in blocks.items() if evidence_id in evidence_ids) if ref == value["graph_unit_id"] else ""
+                quote = _case_quote(blocks, evidence_ids)
                 self.evidence[ref] = CaseEvidenceCitation(
                     evidence_ref=ref,
                     segment_id=existing.segment_id or value["segment_id"],
@@ -195,10 +203,11 @@ class _Registry:
                 for proposition_id in local_proposition_ids
                 for evidence_id in propositions.get(proposition_id, {}).get("evidence_ids", [])
             )
-            quote = "\n".join(
-                propositions.get(proposition_id, {}).get("quote", "")
-                for proposition_id in local_proposition_ids
-                if propositions.get(proposition_id, {}).get("quote")
+            quote = _case_quote(unit.get("evidence_blocks", {}), evidence_ids) or _merge_quotes(
+                *(
+                    propositions.get(proposition_id, {}).get("quote", "")
+                    for proposition_id in local_proposition_ids
+                )
             )
             proposition_ids = [
                 f"{unit_id}::{proposition_id}"
@@ -210,10 +219,7 @@ class _Registry:
                 if proposition_id in unit.get("node_ids", set())
             ]
         else:
-            quote = "".join(
-                unit.get("evidence_blocks", {}).get(evidence_id, "")
-                for evidence_id in evidence_ids
-            )
+            quote = _case_quote(unit.get("evidence_blocks", {}), evidence_ids)
             selected = set(evidence_ids)
             node_ids = [
                 node_id
@@ -231,6 +237,12 @@ class _Registry:
         }
 
 
+def _case_quote(blocks: dict[str, str], evidence_ids: list[str]) -> str:
+    if not all(ref in blocks for ref in evidence_ids):
+        return ""
+    return "".join(blocks[ref] for ref in dict.fromkeys(evidence_ids))
+
+
 def _canonical_evidence_ref(pointer: dict[str, Any]) -> str:
     proposition_ids = list(pointer.get("proposition_ids") or [])
     if len(proposition_ids) == 1:
@@ -240,6 +252,10 @@ def _canonical_evidence_ref(pointer: dict[str, Any]) -> str:
         return evidence_ids[0]
     graph_unit_id = str(pointer.get("graph_unit_id") or "")
     if graph_unit_id:
+        if evidence_ids or proposition_ids:
+            from hashlib import sha256
+            selection = json.dumps([sorted(evidence_ids), sorted(proposition_ids)], ensure_ascii=False)
+            return f"{graph_unit_id}::selection_{sha256(selection.encode()).hexdigest()[:12]}"
         return graph_unit_id
     raise ValueError("A case evidence pointer must contain a semantic_graphing identifier")
 
@@ -286,6 +302,7 @@ def build_chair_prompt_bundle(
     semantic_evidence: dict[str, dict[str, Any]] | None = None,
     discussion_round: int | None = None,
     source_seed: ChairPromptBundle | None = None,
+    consultation: dict | None = None,
 ) -> ChairPromptBundle:
     """Project assessments plus only the questions and gaps new to this round."""
     missing = sorted(set(SPECIALTIES) - set(specialty_outputs))
@@ -305,7 +322,9 @@ def build_chair_prompt_bundle(
         if unit.get("evidence_blocks"):
             registry.pointer({"graph_unit_id": unit_id, "segment_id": unit.get("segment_id", ""),
                               "evidence_ids": list(unit["evidence_blocks"])})
+    from src.agents.common.consultation import ConsultationContext
     prompt_input = {
+        "consultation": ConsultationContext.model_validate(consultation or {}).prompt_context(),
         "case_id": case_id,
         "specialties": compact,
     }
@@ -339,6 +358,11 @@ def build_chair_prompt_bundle(
         registry.source_metadata,
         question_refs_to_classify=question_refs,
         evidence_need_refs_to_classify=evidence_need_refs,
+        evidence_blocks={
+            **(source_seed.evidence_blocks if source_seed else {}),
+            **{evidence_id: text for unit in (semantic_evidence or {}).values()
+               for evidence_id, text in unit.get("evidence_blocks", {}).items()},
+        },
     )
 
 
@@ -395,6 +419,12 @@ def _compact_specialty(
                 "role": item.get("role"),
                 "assessment_type": item.get("assessment_type"),
                 "status": item.get("status"),
+                "answerability": item.get("answerability"),
+                "answer_confidence": item.get("answer_confidence"),
+                "assessability": item.get("assessability"),
+                "direction": item.get("direction"),
+                "confidence": item.get("confidence"),
+                "clinical_role": item.get("clinical_role"),
                 "limitations": list(item.get("limitations") or []),
                 "origin": item.get("origin", "initial_assessment"),
                 "answered_question_id": item.get("answered_question_id", ""),
@@ -402,6 +432,14 @@ def _compact_specialty(
                 "version_id": item.get("version_id", ""),
                 "previous_version_id": item.get("previous_version_id"),
                 "conditions": dict(item.get("conditions") or {}),
+                "claims": [
+                    {"claim_id": claim.get("claim_id", ""), "statement": claim["statement"],
+                     "evidence_relations": [
+                         {"evidence_ref": registry.pointer(relation),
+                          "direction": relation["direction"], "function": relation["function"]}
+                         for relation in claim.get("evidence_relations", [])]}
+                    for claim in item.get("claims") or []
+                ],
             },
         )
         projected = {
@@ -411,14 +449,29 @@ def _compact_specialty(
             "role": item.get("role"),
             "assessment_type": item.get("assessment_type"),
             "statement": statement,
-            "status": item.get("status"),
+            "answerability": item.get("answerability"),
+            "answer_confidence": item.get("answer_confidence"),
             "medical_basis": medical_basis,
             "assessability": item.get("assessability"),
             "direction": item.get("direction"),
             "confidence": item.get("confidence"),
             "clinical_role": item.get("clinical_role"),
             "decision_impact": decision_impact,
-            "claims": list(item.get("claims") or []),
+            "claims": [
+                {
+                    "claim_id": claim.get("claim_id", ""),
+                    "statement": claim["statement"],
+                    "evidence_relations": [
+                        {
+                            "evidence_ref": registry.pointer(relation),
+                            "direction": relation["direction"],
+                            "function": relation["function"],
+                        }
+                        for relation in claim.get("evidence_relations", [])
+                    ],
+                }
+                for claim in item.get("claims") or []
+            ],
             "evidence_options": [
                 {
                     "evidence_ref": evidence_ref,
@@ -436,6 +489,8 @@ def _compact_specialty(
             "previous_version_id": item.get("previous_version_id"),
             "conditions": dict(item.get("conditions") or {}),
         }
+        if item.get("status"):
+            projected["legacy_semantics"] = LEGACY_JUDGMENT_NOTE
         if is_discussion_answer:
             projected_discussion_answers.append(projected)
         else:
@@ -464,6 +519,7 @@ def _compact_specialty(
                 "target_specialty": item.get("target_specialty"),
                 "why_it_matters": item.get("why_it_matters"),
                 "decision_unlocked": item.get("decision_unlocked"),
+                "related_assessment_ids": list(item.get("related_assessment_ids") or []),
                 "discussion_round": item.get("_discussion_round"),
                 "discussion_issue_id": item.get("_discussion_issue_id"),
                 "discussion_disposition": item.get("_discussion_disposition"),
@@ -498,6 +554,7 @@ def _compact_specialty(
                 "available_information": item.get("available_information"),
                 "why_it_matters": item.get("why_it_matters"),
                 "decision_unlocked": item.get("decision_unlocked"),
+                "related_assessment_ids": list(item.get("related_assessment_ids") or []),
                 "discussion_round": item.get("_discussion_round"),
                 "discussion_issue_id": item.get("_discussion_issue_id"),
                 "discussion_disposition": item.get("_discussion_disposition"),
@@ -564,14 +621,7 @@ def _formal_evidence_refs(
             if function in grouped:
                 grouped[function].append(ref)
         return {role: _ordered_unique(refs) for role, refs in grouped.items()}
-    return {
-        role: [
-            registry.pointer(pointer)
-            for pointer in evidence.get(role) or []
-            if isinstance(pointer, dict)
-        ]
-        for role in EVIDENCE_ROLES
-    }
+    raise ValueError("Specialty evidence requires current evidence_relations")
 
 
 def _related_evidence_refs(

@@ -1,6 +1,6 @@
 protocol_version: expert.v1
 provider: apiyi
-model: gpt-6.1-sol
+model: gpt-6.1-terra
 base_url: https://api.apiyi.com/v1
 # base_url: http://api.apiyi.com:16888/v1
 api_key_env: APIYI_API_KEY
@@ -32,11 +32,6 @@ guideline_retrieval:
     - cts-ild-mdd-2023-zh
     - cra-ctd-ild-2022-zh
     - ers-eular-ctd-ild-2025
-  queries:
-    initial_foundation: ILD 临床表型评估、继发病因识别和多学科诊断需要哪些病例信息
-    initial_pulmonary_assessment: ILD 严重程度、肺功能、急性加重和进展性肺纤维化 PPF 应如何评价
-    initial_diagnostic_formulation: ILD 诊断信度、暂定诊断和未分类 ILD 应如何定义与表达
-    initial_reasoning_output: ILD 首轮呼吸科工作诊断、鉴别证据、病程机制一致性和专科边界应如何论证
 
 clinical_rules:
   diagnostic_confidence:

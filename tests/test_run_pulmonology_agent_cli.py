@@ -123,12 +123,10 @@ def test_main_builds_input_with_prepare_specialty_input_before_running_agent(
     assert runner.read_json(tmp_path / "synthetic-case_pulmonology_initial.json") == consultation(result, {}).formal_output.model_dump(mode="json")
     assert runner.read_json(tmp_path / "synthetic-case_pulmonology_internal_state.json") == result.model_dump(mode="json")
     assert (tmp_path / "synthetic-case_pulmonology_initial_trace.json").exists()
-    report_path = tmp_path / "synthetic-case_pulmonology_initial.html"
-    assert report_path.exists()
-    assert "八问处理状态" in report_path.read_text(encoding="utf-8")
+    assert not list(tmp_path.glob("*.html"))
     output = capsys.readouterr().out
     assert "准备并写入呼吸科输入" in output
-    assert "HTML 报告" in output
+    assert "HTML 报告" not in output
 
 
 def test_main_saves_failed_stage_trace_before_reraising(monkeypatch, tmp_path):

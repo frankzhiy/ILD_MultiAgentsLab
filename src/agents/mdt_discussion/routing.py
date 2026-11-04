@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.agents.common.clinical_concepts import LEGACY_JUDGMENT_NOTE
+
 from collections.abc import Iterable
 from typing import Any
 
@@ -32,7 +34,7 @@ def build_discussion_tasks(
     previous_rounds: list[DiscussionRound],
     decision_state: MultiSpecialtyDecisionState | None = None,
 ) -> list[DiscussionTask]:
-    """Route the current synthesis directly; never reconstruct legacy chair sections."""
+    """Route open issues and preserve the first exchange for original specialty questions."""
     from src.agents.common.team_synthesis import MDTChairResult
     from src.agents.mdt_chair.agent import build_semantic_evidence_catalog
 
@@ -46,7 +48,7 @@ def build_discussion_tasks(
              evidence_ids=list(item["evidence_blocks"]), quote="\n".join(item["evidence_blocks"].values()))
         for ref, item in catalog.items() if item["evidence_blocks"]
     ]}, propositions, graphs)
-    return [DiscussionTask(
+    tasks = [DiscussionTask(
         task_id=f"R{round_number:02d}-{issue.issue_id}-{assignment.specialty}",
         round_number=round_number, issue_type="question", issue_id=issue.issue_id,
         specialty=assignment.specialty, prompt=assignment.question,
@@ -58,6 +60,35 @@ def build_discussion_tasks(
         evidence_candidates=evidence,
         active_judgments=_active_judgment_view(decision_state, assignment.specialty),
     ) for issue in team.issues for assignment in issue.assignments]
+    # A premeeting coverage decision cannot replace an answer and requester review.
+    if round_number == 1 and not previous_rounds:
+        for ref, source in team.source_catalog.items():
+            if source.get("source_type") != "interspecialty_question":
+                continue
+            target, requester = source["target_specialty"], source["specialty"]
+            routed = next((task for task in tasks if task.specialty == target
+                           and any(s.get("source_ref") == ref for s in task.specialty_context)), None)
+            if routed is not None:
+                routed.origin = "specialty"
+                routed.raised_by = list(dict.fromkeys([*routed.raised_by, requester]))
+                if source["quote"] not in routed.prompt:
+                    routed.prompt += "\n原始专科问题：" + source["quote"]
+                continue
+            disposition = next((d for d in team.issue_dispositions if d.issue_id == ref), None)
+            context_refs = list(dict.fromkeys([ref, *(disposition.source_refs if disposition else [])]))
+            tasks.append(DiscussionTask(
+                task_id=f"R{round_number:02d}-{ref}-{target}", round_number=round_number,
+                issue_type="question", issue_id=ref, specialty=target,
+                prompt=source["quote"], origin="specialty", raised_by=[requester],
+                current_result=team.diagnostic_opinion.diagnosis,
+                remaining_clarification=source.get("decision_unlocked") or source["quote"],
+                why_it_matters=source.get("why_it_matters") or source["quote"],
+                affected_specialties=[requester],
+                specialty_context=[team.source_catalog[r] for r in context_refs],
+                evidence_candidates=evidence,
+                active_judgments=_active_judgment_view(decision_state, target),
+            ))
+    return tasks
 
 
 def group_tasks_by_specialty(
@@ -80,12 +111,11 @@ def _active_judgment_view(
             "judgment_id": item.judgment_id,
             "version_id": item.version_id,
             "statement": item.assessment.statement,
-            "status": item.assessment.status,
             "assessability": item.assessment.assessability,
             "direction": item.assessment.direction,
             "confidence": item.assessment.confidence,
             "clinical_role": item.assessment.clinical_role,
-
+            **({"legacy_semantics": LEGACY_JUDGMENT_NOTE} if item.assessment.status else {}),
             "medical_basis": item.assessment.medical_basis,
             "limitations": item.assessment.limitations,
             "conditions": item.assessment.conditions.model_dump(mode="json"),

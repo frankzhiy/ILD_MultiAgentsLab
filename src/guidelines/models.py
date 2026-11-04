@@ -30,7 +30,7 @@ class GuidelineChunk(BaseModel):
     source_file: str = Field(min_length=1)
     page: int = Field(ge=1)
     section_path: list[str] = Field(default_factory=list)
-    unit_type: Literal["recommendation", "definition", "threshold"]
+    unit_type: Literal["recommendation", "definition", "threshold", "clinical_description"]
     text: str = Field(min_length=1)
     document_sha256: str = Field(min_length=64, max_length=64)
 

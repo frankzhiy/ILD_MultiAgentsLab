@@ -15,6 +15,8 @@ export function ReportWorkspace({ runId, run }) {
   })
   const mutation = useMutation({
     mutationFn: () => api.runReport(runId),
+    onMutate: () => client.setQueryData(['report', runId], current => ({ ...current, status: 'running', report_status: 'running', final_report: null })),
+    onSettled: () => client.invalidateQueries({ queryKey: ['report', runId] }),
     onSuccess: (value) => {
       client.setQueryData(['report', runId], value)
       client.invalidateQueries({ queryKey: ['run', runId] })
@@ -31,11 +33,11 @@ export function ReportWorkspace({ runId, run }) {
         {value.final_report || value.report_status === 'failed' ? '重新运行本阶段' : '生成最终报告'}
       </Button>
     </div>
-    <Alert className="section-gap" type="info" title="报告可独立生成" description="直接使用已完成讨论的综合结论，不重新运行专科或讨论。停止的讨论保留为阶段结果，不生成最终报告。" />
+    <details className="stage-run-help no-print"><summary>报告生成说明</summary><Text type="secondary">直接使用已完成讨论的综合结论，不重新运行专科或讨论。停止的讨论保留为阶段结果，不生成最终报告。</Text></details>
     {value.status === 'outdated' && <Alert className="section-gap" type="warning" title="上游结果已更新，请先重新运行团队讨论。" />}
     {value.report_status === 'failed' && <Alert className="section-gap" type="error" title="最终报告生成失败" description={value.error} />}
     {mutation.isError && <Alert type="error" title="无法生成报告" description={mutation.error.message} />}
-    {value.final_report ? <FinalReport report={value.final_report} /> : <Empty description={value.runnable ? '讨论已完成，可单独生成最终报告' : value.error || '最终报告尚未生成'} />}
+    {!running && value.report_status === 'completed' && value.final_report ? <FinalReport report={value.final_report} diagnosisConclusion={value.diagnosis_conclusion} /> : <Empty description={running ? '正在生成本次报告' : value.runnable ? '讨论已完成，可单独生成最终报告' : value.error || '最终报告尚未生成'} />}
     <Link to={`/runs/${encodeURIComponent(runId)}/discussion`}>查看 MDT 团队讨论</Link>
   </div>
 }

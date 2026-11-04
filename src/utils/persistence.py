@@ -1,7 +1,8 @@
-"""Atomic UTF-8 JSON snapshots for readers polling an active run."""
+"""Atomic UTF-8 snapshots for readers polling an active run."""
 
 import json
 import os
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -10,11 +11,22 @@ from tempfile import NamedTemporaryFile
 def write_json(path: Path, value) -> None:
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
+    with _atomic_stream(path) as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2, default=str)
+
+
+def write_text(path: Path, value: str) -> None:
+    with _atomic_stream(path) as stream:
+        stream.write(value)
+
+
+@contextmanager
+def _atomic_stream(path: Path):
     temporary = None
     try:
         with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
             temporary = Path(stream.name)
-            json.dump(value, stream, ensure_ascii=False, indent=2, default=str)
+            yield stream
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
@@ -34,12 +46,14 @@ def verify_protocol_snapshot(root: Path, run_dir: Path, *, allow_stage_rerun: bo
     patient = Path(run["input_path"])
     if sha256(patient.read_bytes()).hexdigest() != data["patient_sha256"]:
         raise ValueError("病例快照已改变，请创建新运行")
+    if data.get("consultation") != run.get("consultation"):
+        raise ValueError("会诊任务快照已改变，请创建新运行")
     if allow_stage_rerun:
         return  # New stage records current rules; immutable patient input remains mandatory.
     for agent, signature in data.get("agents", {}).items():
         if load_yaml(run["configs"][agent]) != signature["config"]:
             raise ValueError(f"{agent} 运行配置已改变，请创建新运行")
-    changed = [relative for section in ("prompts", "guidelines")
+    changed = [relative for section in ("prompts", "guidelines", "knowledge_index")
                for relative, digest in data.get(section, {}).items()
                if not (root / relative).exists() or sha256((root / relative).read_bytes()).hexdigest() != digest]
     if changed:
@@ -56,7 +70,7 @@ def verify_stage_snapshot(root: Path, run_dir: Path, stage: str) -> None:
     run = json.loads((run_dir / ".workbench_run.json").read_text(encoding="utf-8"))
     changed = [agent for agent, config in rules["configs"].items()
                if load_yaml(run["configs"][agent]) != config]
-    changed.extend(relative for section in ("prompts", "guidelines")
+    changed.extend(relative for section in ("prompts", "guidelines", "knowledge_index")
                    for relative, digest in rules.get(section, {}).items()
                    if not (root / relative).exists() or sha256((root / relative).read_bytes()).hexdigest() != digest)
     if changed:

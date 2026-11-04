@@ -25,10 +25,6 @@ from src.guidelines.runtime import (
     resolve_guideline_evidence,
 )
 from src.llm.structured import json_schema_response_format
-from src.reporting.specialty_report_common import (
-    render_guideline_audit,
-    render_reasoning_audit,
-)
 from src.agents.pulmonology.models import ClinicalAssessmentItem
 from src.utils.config import load_yaml
 
@@ -92,17 +88,17 @@ def test_runtime_records_retrieved_candidates_for_stage():
         def search(self, query, *, guideline_ids, limit):
             assert query == "诊断信度"
             assert guideline_ids == ["guide"]
-            assert limit == 3
+            assert limit == 6
             return [GuidelineSearchHit(chunk=chunk(), score=0.91)]
 
     runtime = GuidelineRuntime(
-        FakeRetriever(), ["guide"], {"initial": "诊断信度"}, limit=3
+        FakeRetriever(), ["guide"], limit=3
     )
-    prompt, allowed, trace = runtime.prepare("initial")
+    prompt, allowed, trace = runtime.prepare_query("诊断信度")
     assert "guide:p001:c001" in prompt
     assert '"unit_type":"recommendation"' in prompt
     assert set(allowed) == {"guide:p001:c001"}
-    assert trace["candidates"] == [{"chunk_id": "guide:p001:c001", "score": 0.91}]
+    assert trace["candidates"][0]["chunk_id"] == "guide:p001:c001"
 
 
 def test_runtime_honors_stage_limit_and_skips_zero_limit_stage():
@@ -116,15 +112,14 @@ def test_runtime_honors_stage_limit_and_skips_zero_limit_stage():
     runtime = GuidelineRuntime(
         FakeRetriever(),
         ["guide"],
-        {"assessment": "诊断", "mapping": "映射"},
         limit=6,
         limits={"assessment": 2, "mapping": 0},
     )
 
-    prompt, _, _ = runtime.prepare("assessment")
-    skipped, allowed, _ = runtime.prepare("mapping")
+    prompt, _, _ = runtime.prepare_case("assessment", {"diagnosis": "诊断"})
+    skipped, allowed, _ = runtime.prepare_case("mapping", {"diagnosis": "映射"})
 
-    assert calls == [("诊断", 2)]
+    assert len(calls) == 1 and "诊断" in calls[0][0] and calls[0][1] == 4
     assert set(json.loads(prompt)[0]) == {
         "chunk_id",
         "section_path",
@@ -193,50 +188,16 @@ def test_retrieved_chunk_ids_are_closed_in_structured_output_schema():
     assert empty_schema["properties"]["guideline_evidence"]["maxItems"] == 0
 
 
-def test_shared_report_renders_exact_guideline_location(tmp_path):
-    source = chunk().model_copy(
-        update={"source_file": "cra_ctd-ild_standard_2022_zh.pdf", "page": 4}
-    )
-    pointer = GuidelineEvidencePointer(
-        chunk_id=source.chunk_id,
-        quote_unit_ids=[
-            unit.quote_unit_id for unit in guideline_quote_units(source)
-        ],
-        relevance="规定诊断方法",
-        application="用于解释患者资料",
-    )
-    resolve_guideline_evidence(pointer, {source.chunk_id: source})
-    item = ClinicalAssessmentItem(
-        assessment="工作判断",
-        confidence="moderate",
-        reasoning_summary="病例证据和指南共同限定该判断。",
-        guideline_evidence=[pointer],
-    )
-    report_path = tmp_path / "report.html"
-    html = render_reasoning_audit(item, {}, report_path) + render_guideline_audit(
-        item, report_path
-    )
-    assert pointer.quote in html
-    assert "PDF 第 4 页" in html
-    assert "#page=4" in html
-    assert "相关上下文（不直接支持结论）" in html
 
-
-def test_atomic_units_split_recommendation_definition_and_threshold():
-    text = (
-        "【推荐意见1】建议疑似患者接受规范的高分辨率CT检查。"
-        "进展性肺纤维化定义为一年内满足规定的进展条件。"
-        "肺功能阈值为FVC绝对下降≥5%。"
-    )
-
+def test_clinical_passages_keep_rules_and_disease_descriptions_together():
+    text = ("【推荐意见1】建议疑似患者接受规范的高分辨率CT检查。"
+            "進展性肺纤维化定义为一年内满足规定的进展条件。"
+            "肺功能阈值为FVC绝对下降≥5%。"
+            "纤维化可与气道病变及肺气肿并存，应分别解释其影像和生理贡献。")
     units = _atomic_units(text)
-
-    assert units == [
-        ("recommendation", "【推荐意见1】建议疑似患者接受规范的高分辨率CT检查。"),
-        ("definition", "进展性肺纤维化定义为一年内满足规定的进展条件。"),
-        ("threshold", "肺功能阈值为FVC绝对下降≥5%。"),
-    ]
-    assert all(len(item[1]) <= MAX_UNIT_CHARS for item in units)
+    assert len(units) == 1
+    assert units[0][1] == __import__("unicodedata").normalize("NFKC", text)
+    assert all(len(unit[1]) <= MAX_UNIT_CHARS for unit in units)
 
 
 def test_repeated_margins_are_removed_and_two_columns_keep_reading_order():
@@ -275,35 +236,17 @@ def test_normalization_removes_pdf_line_wrap_spaces_between_chinese_characters()
     assert _normalize_text("风湿免 疫科\n应进行 评估") == "风湿免疫科应进行评估"
 
 
-def test_atomic_units_reject_noise_and_incomplete_fragments():
-    text = (
-        "Consensus required ≥70% agreement on each recommendation."
-        "Correspondence and requests for reprints should be addressed to the author."
-        "Absolute decline in DLCO >10% within one year 3 Radiological evidence of progression: a."
-        "残气量占预计值百分比<80%、第1秒钟用力呼气"
-        "We suggest performing pulmonary function tests every 3–6 months."
-    )
-
-    assert _atomic_units(text) == [
-        (
-            "recommendation",
-            "We suggest performing pulmonary function tests every 3–6 months.",
-        )
-    ]
+def test_clinical_description_without_recommendation_or_definition_is_preserved():
+    text = "ILD can also be combined with non-ILD abnormalities, or combined pulmonary fibrosis and emphysema."
+    assert _atomic_units(text) == [("clinical_description", text)]
 
 
-def test_recommendation_strength_is_attached_to_preceding_statement():
-    text = (
-        "【推荐意见1】建议将MDD纳入ILD患者诊治流程。"
-        "【强推荐】三、病例评估内容。"
-    )
-
-    assert _atomic_units(text) == [
-        (
-            "recommendation",
-            "【推荐意见1】建议将MDD纳入ILD患者诊治流程 【强推荐】。",
-        )
-    ]
+def test_long_descriptions_are_split_without_losing_late_discriminators():
+    text = "Clinical fibrosis has multiple morphologic findings. " * 50 + "Coexisting emphysema must also be evaluated."
+    units = _atomic_units(text)
+    assert len(units) > 1
+    assert all(len(unit[1]) <= MAX_UNIT_CHARS for unit in units)
+    assert "Coexisting emphysema" in units[-1][1]
 
 
 def test_embedding_uses_context_without_polluting_quote_text():
@@ -424,3 +367,44 @@ def test_quote_units_must_belong_to_the_chunk_and_noncontiguous_are_split():
         source.text[pointer.quote_start : pointer.quote_end] == pointer.quote
         for pointer in pointers
     )
+
+
+def test_reference_section_stops_ingestion_even_when_heading_shares_a_block():
+    from src.guidelines.index import _chunk_document
+    from src.guidelines.catalog import load_catalog
+    document = next(iter(load_catalog(Path('data/guidelines/catalog.yaml')).values()))
+    def page(text):
+        return dict(width=600, height=800, blocks=[dict(x0=40, x1=560, y0=180, y1=500, text=text)])
+    chunks = _chunk_document(document, [page('Clinical disease features include fibrosis and airway abnormalities.'),
+        page('References\n1 Smith A et al. Disease mentioned in a bibliography.'),
+        page('2 Jones A et al. Further bibliographic mentions.')], '0' * 64)
+    assert chunks and all(c.page == 1 for c in chunks)
+
+
+def test_runtime_retrieves_each_candidate_question_including_late_candidates():
+    from src.guidelines.runtime import GuidelineRuntime
+    seen = []
+    class Retriever:
+        manifest = {'chunker_version': 'clinical_passages_v3'}
+        def search(self, query, **kwargs):
+            seen.append(query)
+            return [GuidelineSearchHit(chunk=chunk(), score=1)]
+    runtime = GuidelineRuntime(Retriever(), ['guide'])
+    _, _, trace = runtime.prepare_queries([f'candidate {i}' for i in range(6)])
+    assert len(seen) == 6
+    assert trace['queries'] == seen and trace['index_version'] == 'clinical_passages_v3'
+
+
+def test_short_exact_quote_units_survive_noncontiguous_splitting():
+    source = chunk().model_copy(update={"text": "(3)炎性关节炎或多关节晨僵≥60 min;(4)手掌毛细血管扩张;(5)雷诺现象;"})
+    units = guideline_quote_units(source)
+    pointers = [GuidelineEvidencePointer(
+        chunk_id=source.chunk_id, quote_unit_ids=[units[0].quote_unit_id, units[2].quote_unit_id],
+        relevance="临床域", application="区分临床表现",
+    )]
+    assert resolve_guideline_evidence(pointers, {source.chunk_id: source}) == [source.chunk_id]
+    assert [p.quote for p in pointers] == [units[0].text, "(5)雷诺现象;"]
+    assert all(source.text[p.quote_start:p.quote_end] == p.quote for p in pointers)
+    legacy = GuidelineEvidencePointer(chunk_id=source.chunk_id, quote="雷诺现象", relevance="临床域", application="判断")
+    with pytest.raises(ValueError, match="too short"):
+        resolve_guideline_evidence(legacy, {source.chunk_id: source})

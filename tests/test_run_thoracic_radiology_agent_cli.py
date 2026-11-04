@@ -102,8 +102,4 @@ def test_main_uses_shared_input_builder_with_radiology_target(monkeypatch, tmp_p
     assert runner.read_json(tmp_path / "synthetic-case_thoracic_radiology_initial.json") == consultation(result, {}).formal_output.model_dump(mode="json")
     assert runner.read_json(tmp_path / "synthetic-case_thoracic_radiology_internal_state.json") == result.model_dump(mode="json")
     assert (tmp_path / "synthetic-case_thoracic_radiology_initial_trace.json").exists()
-    report = tmp_path / "synthetic-case_thoracic_radiology_initial.html"
-    assert report.exists()
-    html = report.read_text(encoding="utf-8")
-    assert "当前影像问题" in html
-    assert "七问处理状态" not in html
+    assert not list(tmp_path.glob("*.html"))

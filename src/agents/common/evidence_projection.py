@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.agents.common.consultation import ConsultationContext
 from src.schemas.semantic_graphing.clinical_proposition import EvidenceBlock
 from src.schemas.semantic_graphing.document import DiscourseUnitType, SourceType
 from src.schemas.semantic_graphing.graph_unit import (
@@ -66,6 +67,7 @@ class SpecialtyWorkingInput(BaseModel):
     schema_version: str = "specialty_working_input.v1"
     case_id: str
     target_specialty: SpecialistTarget
+    consultation: ConsultationContext = Field(default_factory=ConsultationContext)
     segments: list[WorkingSegment]
     summary: SpecialtyCaseSummary
 
@@ -74,6 +76,7 @@ def build_specialty_working_input(case_input: SpecialtyCaseInput) -> SpecialtyWo
     return SpecialtyWorkingInput(
         case_id=case_input.case_id,
         target_specialty=case_input.target_specialty,
+        consultation=case_input.consultation,
         segments=[
             WorkingSegment(
                 segment=WorkingSegmentSource(
@@ -128,6 +131,7 @@ def build_specialty_evidence_prompt_input(case_input: SpecialtyCaseInput) -> dic
         for unit in segment.units
     ]
     return {
+        "consultation": case_input.consultation.prompt_context(),
         "case_id": case_input.case_id,
         "target_specialty": case_input.target_specialty,
         "diagnostic_evidence_units": [

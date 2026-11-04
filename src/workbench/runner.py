@@ -65,6 +65,11 @@ class RunOrchestrator:
             parent_manifest = self.catalog._json(parent_dir / ".workbench_run.json", {})
             if parent_manifest.get("case_version_id", parent_version) != parent_version:
                 raise ValueError("前序病例快照已改变，不能建立版本关联。")
+        from src.agents.common.consultation import ConsultationContext
+        consultation = ConsultationContext.model_validate(
+            retry_manifest.get("consultation", {"template": "unspecified"}) if retry_dir
+            else request.get("consultation", {"template": "refine_diagnosis"})
+        ).model_dump(mode="json")
         source = request.get("source", "library")
         if source == "library":
             input_path = (retry_dir or self.catalog.cases_dir) / f"{case_id}{'_input' if retry_dir else ''}.txt"
@@ -134,9 +139,11 @@ class RunOrchestrator:
         self._write_json(run_dir / "protocol_manifest.json", {
             "protocol": "expert.v2",
             "patient_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+            "consultation": consultation,
             "agents": {key: build_run_signature(load_yaml(path)) for key, path in config_paths.items()},
             "prompts": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
                         for p in sorted((self.root / "src/prompts").rglob("*.md"))},
+            "knowledge_index": self._knowledge_index_signature(),
             "guidelines": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
                            for p in sorted((self.root / "data/guidelines").glob("*.pdf"))},
         })
@@ -145,6 +152,7 @@ class RunOrchestrator:
             "run_id": run_id,
             "case_id": case_id,
             "source": source,
+            "consultation": consultation,
             "case_version_id": case_version,
             "parent_run_id": parent_run_id,
             "parent_case_version_id": parent_version,
@@ -166,6 +174,10 @@ class RunOrchestrator:
                 start_stage: str = "semantic_graphing") -> asyncio.Task[None]:
         if self._busy(run_id):
             raise ValueError("该运行仍在执行，请等待结束。")
+        stages = {"mdt_chair": ("mdt_chair", "mdt_discussion"),
+                  "mdt_discussion": ("mdt_discussion",), "mdt_report": ("mdt_report",)}
+        for stage in stages.get(start_stage, ()):
+            self._archive_stage(self.catalog.run_dir(run_id), stage)
         self._update_manifest(self.catalog.run_dir(run_id) / ".workbench_run.json",
                               status="queued", status_source="run", status_updated_at=self._now(),
                               error=None, finished_at=None)
@@ -247,7 +259,9 @@ class RunOrchestrator:
                     raise FileNotFoundError(f"病例不存在：{case_id}")
             items = []
             for case_id in item_ids:
-                run_request = {**request, "source": "library", "case_id": case_id}
+                run_request = {**request, "source": "library", "case_id": case_id,
+                               "consultation": (request.get("case_consultations") or {}).get(
+                                   case_id, request.get("consultation", {"template": "refine_diagnosis"}))}
                 run_id, input_path = (self.prepare(run_request, retry_run_id=previous_items[case_id]["run_id"])
                                       if retry_of else self.prepare(run_request))
                 manifest = self.catalog._json(self.catalog.runs_dir / run_id / ".workbench_run.json", {})
@@ -258,6 +272,7 @@ class RunOrchestrator:
                         "input_path": str(input_path),
                         "status": "queued",
                         "case_version_id": manifest.get("case_version_id"),
+                        "consultation": manifest.get("consultation"),
                     }
                 )
         else:
@@ -468,8 +483,11 @@ class RunOrchestrator:
         patterns = {
             "mdt_chair": [f"{case}_mdt_chair*.json"],
             "mdt_discussion": [f"{case}_mdt_discussion*.json", f"{case}_mdt_round_*.json",
-                               f"{case}_*_round_*.json", f"{case}_mdt_final_report*.json", f"{case}_mdt_report*.json"],
-            "mdt_report": [f"{case}_mdt_final_report*.json", f"{case}_mdt_report*failure_trace.json"],
+                               f"{case}_*_round_*.json", f"{case}_mdt_final_report*.json",
+                               f"{case}_mdt_final_report.html", f"{case}_mdt_report*.json",
+                               f"{case}_mdt_decision_state.json"],
+            "mdt_report": [f"{case}_mdt_final_report*.json", f"{case}_mdt_final_report.html",
+                           f"{case}_mdt_report*failure_trace.json"],
         }[stage]
         files = {p for pattern in patterns for p in run_dir.glob(pattern)}
         previous_rules = run_dir / f"{stage}_stage_rules.json"
@@ -481,6 +499,14 @@ class RunOrchestrator:
             for path in files:
                 path.rename(history / path.name)
 
+    def _knowledge_index_signature(self) -> dict:
+        from src.guidelines.index import CHUNKER_VERSION
+        paths = [self.root / "data/guidelines/catalog.yaml",
+                 self.root / f"data/guidelines/index/{CHUNKER_VERSION}/manifest.json",
+                 self.root / f"data/guidelines/processed/{CHUNKER_VERSION}/chunks.jsonl"]
+        return {str(path.relative_to(self.root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in paths if path.is_file()}
+
     def _record_stage_rules(self, run_dir: Path, stage: str) -> None:
         manifest = self._read_json(run_dir / ".workbench_run.json")
         agents = (*SPECIALTIES, "mdt_chair") if stage == "mdt_discussion" else ("mdt_chair",)
@@ -489,6 +515,7 @@ class RunOrchestrator:
             "configs": {agent: load_yaml(manifest["configs"][agent]) for agent in agents},
             "prompts": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
                         for p in sorted((self.root / "src/prompts").rglob("*.md"))},
+            "knowledge_index": self._knowledge_index_signature(),
             "guidelines": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
                            for p in sorted((self.root / "data/guidelines").glob("*.pdf"))},
         })

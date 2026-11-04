@@ -5,12 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
 from src.agents.common.team_synthesis import ConditionalContribution, JudgmentTimeframe
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
+from src.agents.common.clinical_concepts import (
+    Assessability, Confidence, JudgmentDirection, ClinicalRole,
+    DIRECTION_DESCRIPTION, CONFIDENCE_DESCRIPTION, validate_judgment_dimensions,
+)
 
 
 AssessmentStatus = Literal[
@@ -21,7 +25,6 @@ AssessmentStatus = Literal[
     "not_assessable",
     "not_applicable",
 ]
-Assessability = Literal["assessable", "partially_assessable", "not_assessable"]
 AssessmentRole = Literal[
     "primary",
     "important_alternative",
@@ -50,24 +53,6 @@ EvidenceFunction = Literal[
     "background",
 ]
 
-LEGACY_EVIDENCE_ROLE_RELATIONS = {
-    "supporting": ("supports", "foundational"),
-    "weakening": ("weakens", "foundational"),
-    "discriminating": ("neutral", "discriminating"),
-    "qualifying": ("neutral", "qualifying"),
-    "background": ("neutral", "background"),
-}
-
-
-def legacy_role_for_evidence_relation(
-    direction: EvidenceDirection,
-    function: EvidenceFunction,
-) -> str:
-    if function != "foundational":
-        return function
-    return "weakening" if direction == "weakens" else "supporting"
-
-
 class CaseEvidencePointer(BaseModel):
     """LLM selects one evidence block; source location is resolved locally."""
 
@@ -90,7 +75,7 @@ class EvidenceRelation(CaseEvidencePointer):
     """One case-evidence locator with separate directional and functional meaning."""
 
     target_claim_id: SkipJsonSchema[str] = ""
-    direction: EvidenceDirection
+    direction: EvidenceDirection = Field(description="本条证据相对claim.statement的方向；支持一条否定陈述不等于支持疾病存在。与专科判断针对conditions.subject的direction分开。")
     function: EvidenceFunction
 
     @model_validator(mode="after")
@@ -107,24 +92,6 @@ class EvidenceBundle(BaseModel):
 
     evidence_relations: list[EvidenceRelation] = Field(default_factory=list)
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_role_lists(cls, value):
-        if not isinstance(value, dict) or "evidence_relations" in value:
-            return value
-        migrated = dict(value)
-        relations = []
-        for role, (direction, function) in LEGACY_EVIDENCE_ROLE_RELATIONS.items():
-            for pointer in migrated.pop(role, []) or []:
-                relations.append(
-                    {
-                        **pointer,
-                        "direction": direction,
-                        "function": function,
-                    }
-                )
-        migrated["evidence_relations"] = relations
-        return migrated
 
 
 class SpecialtyAtomicClaim(BaseModel):
@@ -134,6 +101,10 @@ class SpecialtyAtomicClaim(BaseModel):
 
     claim_id: SkipJsonSchema[str] = ""
     statement: str = Field(min_length=1)
+    evidence_relations: list[EvidenceRelation] = Field(
+        default_factory=list,
+        description="仅引用实际支持、削弱或限定本条判断的病例证据；无直接证据时为空列表。",
+    )
 
 
 ProfessionalLevel = Literal[
@@ -161,7 +132,7 @@ class JudgmentConditions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    subject: str = ""
+    subject: str = Field(default="", description="中性的判断对象，例如CTD相关ILD或主要网格病变；不把‘不支持某病’作为方向判断的对象。")
     professional_level: ProfessionalLevel = "observation"
     timeframe: JudgmentTimeframe = Field(default_factory=JudgmentTimeframe)
     evidence_scope: JudgmentEvidenceScope = Field(default_factory=JudgmentEvidenceScope)
@@ -171,47 +142,29 @@ class JudgmentConditions(BaseModel):
 class SpecialtyAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_missing_atomic_claims(cls, value):
-        if (
-            isinstance(value, dict)
-            and "claims" not in value
-            and isinstance(value.get("statement"), str)
-        ):
-            return {
-                **value,
-                "claims": [{"statement": value["statement"]}],
-            }
-        return value
-
     assessment_id: str = Field(
         min_length=1,
-        validation_alias=AliasChoices("assessment_id", "conclusion_id"),
     )
     role: AssessmentRole
-    assessment_type: AssessmentType = Field(
-        validation_alias=AliasChoices("assessment_type", "conclusion_type")
-    )
-    statement: str = Field(min_length=1)
-    status: AssessmentStatus
+    assessment_type: AssessmentType
+    statement: str = Field(min_length=1, description="直接给出本专业最支持的判断；不附加职责声明、层级自述或泛化免责句。")
+    # Read historical records verbatim; new model output uses the explicit dimensions below.
+    status: SkipJsonSchema[AssessmentStatus | None] = Field(default=None, exclude_if=lambda value: value is None)
     assessability: Assessability
-    direction: Literal["supports", "against", "indeterminate"]
-    confidence: Literal["high", "moderate", "low", "unknown"]
-    clinical_role: Literal["primary", "competing_explanation", "acute_contributor", "comorbidity", "unexplained_finding", "boundary"]
+    direction: JudgmentDirection = Field(description=DIRECTION_DESCRIPTION)
+    confidence: Confidence = Field(description=CONFIDENCE_DESCRIPTION)
+    clinical_role: ClinicalRole
     medical_basis: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
     claims: list[SpecialtyAtomicClaim] = Field(min_length=1)
     evidence: SkipJsonSchema[EvidenceBundle] = Field(default_factory=EvidenceBundle)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list, description="只列会改变当前判断的具体限制，可为空；不重复诊断正文和通用规则。")
     conditions: JudgmentConditions = Field(default_factory=JudgmentConditions)
 
     @model_validator(mode="after")
     def consistent_assessability(self):
-        if self.assessability == "not_assessable" and self.confidence != "unknown":
-            raise ValueError("An unassessable judgment cannot have diagnostic confidence")
-        return self
+        return validate_judgment_dimensions(self)
 
 
 _PROFESSIONAL_LEVEL_BY_ASSESSMENT_TYPE: dict[str, ProfessionalLevel] = {
@@ -228,6 +181,20 @@ _PROFESSIONAL_LEVEL_BY_ASSESSMENT_TYPE: dict[str, ProfessionalLevel] = {
     "etiologic_association": "etiologic_attribution",
     "other": "observation",
 }
+
+
+def synchronize_claim_evidence(assessment: SpecialtyAssessment, *, replace_evidence=False) -> None:
+    """Keep the existing assessment evidence interface bound to atomic claims."""
+
+    for claim in assessment.claims:
+        for relation in claim.evidence_relations:
+            relation.target_claim_id = claim.claim_id
+    if replace_evidence or any(claim.evidence_relations for claim in assessment.claims):
+        assessment.evidence = EvidenceBundle(evidence_relations=[
+            relation.model_copy(deep=True)
+            for claim in assessment.claims
+            for relation in claim.evidence_relations
+        ])
 
 
 def synchronize_judgment_conditions(assessment: SpecialtyAssessment) -> None:
@@ -254,14 +221,6 @@ def synchronize_judgment_conditions(assessment: SpecialtyAssessment) -> None:
     ]
     conditions.evidence_scope.evidence_ids = list(dict.fromkeys(evidence_ids))
     conditions.evidence_scope.source_types = ["case_evidence"] if evidence_ids else []
-    conditions.evidence_scope.scope_limitations = list(dict.fromkeys([
-        *conditions.evidence_scope.scope_limitations,
-        *assessment.limitations,
-    ]))
-    conditions.applicability_conditions = list(dict.fromkeys([
-        *conditions.applicability_conditions,
-        *assessment.limitations,
-    ]))
 
 
 class InterspecialtyQuestion(BaseModel):
@@ -303,7 +262,6 @@ class SpecialtyAssessments(BaseModel):
     assessability: Assessability
     assessments: list[SpecialtyAssessment] = Field(
         min_length=1,
-        validation_alias=AliasChoices("assessments", "conclusions"),
     )
     evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
     boundaries: list[str] = Field(min_length=1)
@@ -324,26 +282,6 @@ class SpecialtyInitialOutput(BaseModel):
     specialty_assessments: SpecialtyAssessments
     interspecialty_questions: InterspecialtyQuestions
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_output(cls, value):
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        legacy = migrated.pop("professional_conclusions", None)
-        migrated.pop("clinical_reasoning", None)
-        if "specialty_assessments" not in migrated and isinstance(legacy, dict):
-            legacy = dict(legacy)
-            questions = legacy.pop("interspecialty_questions", [])
-            migrated["specialty_assessments"] = legacy
-            migrated.setdefault("interspecialty_questions", {"questions": questions})
-        elif isinstance(migrated.get("specialty_assessments"), dict):
-            assessments = dict(migrated["specialty_assessments"])
-            questions = assessments.pop("interspecialty_questions", None)
-            migrated["specialty_assessments"] = assessments
-            if questions is not None:
-                migrated.setdefault("interspecialty_questions", {"questions": questions})
-        return migrated
 
 @dataclass(frozen=True, slots=True)
 class SpecialtyInitialConsultResult:

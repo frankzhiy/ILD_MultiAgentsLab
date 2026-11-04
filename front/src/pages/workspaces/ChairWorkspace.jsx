@@ -4,28 +4,33 @@ import { Alert, Button, Skeleton, Space, Typography } from 'antd'
 import { api } from '../../api'
 import { QueryError } from '../../components/QueryState'
 import { StatusTag } from '../../components/StatusTag'
+import { isCurrentTeam } from '../../components/resultContract'
 import { TeamSynthesis } from '../../components/TeamSynthesis'
 
 const { Text, Title } = Typography
 
-export function ChairResultTabs({ result }) {
+export function ChairResultTabs({ result, stage = 'premeeting' }) {
   if (!result) return null
-  if (result.schema_version !== 'mdt_chair.v11' || result.team_synthesis?.schema_version !== 'team_synthesis.v2') {
+  if (result.schema_version !== 'mdt_chair.v13' || !isCurrentTeam(result.team_synthesis)) {
     return <Alert type="warning" title="旧版结果仅保留在历史产物中，请重新运行本阶段。" />
   }
-  return <TeamSynthesis team={result.team_synthesis} />
+  return <TeamSynthesis team={result.team_synthesis} stage={stage} />
 }
 
 export function ChairWorkspace({ runId, run }) {
   const client = useQueryClient()
   const query = useQuery({
-    queryKey: ['chair', runId, 'presented'], queryFn: () => api.chair(runId, true),
+    queryKey: ['chair', runId], queryFn: () => api.chair(runId),
     refetchInterval: (q) => q.state.data?.status === 'running' || ['queued', 'running', 'stopping'].includes(run?.status) ? 2000 : false,
   })
   const mutation = useMutation({
     mutationFn: () => api.runChair(runId),
+    onMutate: () => {
+      client.setQueryData(['chair', runId], current => ({ ...current, status: 'running', result: null }))
+    },
+    onSettled: () => client.invalidateQueries({ queryKey: ['chair', runId] }),
     onSuccess: (value) => {
-      client.setQueryData(['chair', runId, 'presented'], value)
+      client.setQueryData(['chair', runId], value)
       ;['run', 'discussion', 'report'].forEach(key => client.invalidateQueries({ queryKey: [key, runId] }))
     },
   })
@@ -42,10 +47,10 @@ export function ChairWorkspace({ runId, run }) {
         {rerun ? '从会前整合重新运行' : '运行会前整合'}
       </Button>
     </div>
-    <Alert className="section-gap" type="info" title="从会前整合继续完整流程" description="复用已有四个专科结果，依次完成会前整合、团队讨论及最终报告。旧产物保留在历史记录中。" />
+    <details className="stage-run-help no-print"><summary>运行与重跑说明</summary><Text type="secondary">复用已有四个专科结果，依次完成会前整合、团队讨论及最终报告。旧产物保留在历史记录中。</Text></details>
     {value.status === 'outdated' && <Alert className="section-gap" type="warning" title="旧版结构需要重新运行" description="历史产物仍可下载；当前页面和讨论仅使用新结构。" />}
     {['failed', 'unavailable'].includes(value.status) && <Alert className="section-gap" type="error" title={value.status === 'failed' ? '会前整合失败' : '会前整合尚不可运行'} description={value.error} />}
     {mutation.isError && <Alert type="error" title="无法启动会前整合" description={mutation.error.message} />}
-    <ChairResultTabs result={value.result} />
+    <ChairResultTabs result={!running && value.status === 'completed' ? value.result : null} />
   </div>
 }

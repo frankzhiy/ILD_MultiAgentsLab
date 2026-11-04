@@ -513,7 +513,7 @@ def test_pointer_normalizer_never_merges_relations_across_atomic_claims():
     ]
 
 
-def test_specialty_output_schema_defers_evidence_and_requires_atomic_claims():
+def test_specialty_output_schema_requires_inline_claim_evidence():
     schema = SpecialtyInitialOutput.model_json_schema()
     assessment_schema = schema["$defs"]["SpecialtyAssessment"]
     assessment = assessment_schema["properties"]
@@ -525,7 +525,10 @@ def test_specialty_output_schema_defers_evidence_and_requires_atomic_claims():
     assert "claims" in assessment
     assert "claims" in assessment_schema["required"]
     assert "evidence" not in assessment
-    assert set(claim) == {"statement"}
+    assert set(claim) == {"statement", "evidence_relations"}
+    strict = json_schema_response_format(SpecialtyInitialOutput, "specialty_initial")["json_schema"]["schema"]
+    assert "evidence_relations" in strict["$defs"]["SpecialtyAtomicClaim"]["required"]
+    assert set(relation) == {"evidence_ids", "direction", "function"}
     assert set(evidence) == {"evidence_relations"}
     assert relation["direction"]["enum"] == ["supports", "weakens", "neutral"]
     assert relation["function"]["enum"] == [
@@ -601,18 +604,17 @@ def test_final_contract_distinguishes_partitioned_and_working_inputs():
     assert partitioned.endswith("specialist_opinion_ids 必须为空列表。")
 
 
-def test_final_contract_defers_case_evidence_for_formal_claim_draft():
+def test_final_contract_requires_inline_evidence_for_formal_claims():
     contract = specialty_output_contract(
-        pointer_style="evidence_id",
-        initial_stage=True,
-        partitioned_evidence=True,
-        defer_case_evidence=True,
+        pointer_style="evidence_id", initial_stage=True,
+        partitioned_evidence=True, claim_evidence=True,
     )
-
-    assert "原子 claims" in contract
-    assert "固定 claim × evidence 槽位" in contract
+    assert "同时生成原子 claims" in contract
+    assert "evidence_relations" in contract
+    assert "不枚举 claim × evidence 组合" in contract
+    assert "不选择或返回病例证据" not in contract
     assert "supporting_evidence" not in contract
-    assert "evidence_relations" not in contract
+    assert "同一证据可用于不同 claims" in contract
 
 
 def test_declared_json_schema_support_does_not_silently_downgrade():
@@ -683,3 +685,26 @@ def test_schema_response_name_is_bounded_without_changing_schema():
     assert result['name'] == long_name[:64]
     assert result['schema'] == json_schema_response_format(Result, 'short')['json_schema']['schema']
     assert json_schema_response_format(Result, 'short')['json_schema']['name'] == 'short'
+
+
+def test_repair_add_restores_omitted_scalar_array_without_replacing_records():
+    from src.llm.structured import _apply_repair_edits
+    original = {'candidates': [{'candidate_id': 'C1', 'diagnosis': '疾病A'}]}
+    fixed = _apply_repair_edits(original, {'edits': [dict(
+        op='add', path='/candidates/0/aliases', value=['别名A'])]})
+    assert fixed['candidates'][0] == {**original['candidates'][0], 'aliases': ['别名A']}
+    assert 'aliases' not in original['candidates'][0]
+
+
+@pytest.mark.parametrize('path,value', [
+    ('/candidates/0/candidate_id', 'C2'),
+    ('/candidates/1/aliases', ['别名']),
+    ('/candidates/0/new/aliases', ['别名']),
+    ('/candidates/0/extra', {'claim': '新对象'}),
+    ('/candidates/0/extra', [{'claim': '新对象'}]),
+])
+def test_repair_add_cannot_overwrite_or_create_object_structure(path, value):
+    from src.llm.structured import _apply_repair_edits
+    with pytest.raises(ValueError):
+        _apply_repair_edits({'candidates': [{'candidate_id': 'C1'}]},
+            {'edits': [dict(op='add', path=path, value=value)]})

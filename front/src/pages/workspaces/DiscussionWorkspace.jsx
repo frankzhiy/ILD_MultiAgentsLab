@@ -42,7 +42,6 @@ const REVIEW_OUTCOME = {
   request_clarification: ['请求原专科澄清', 'processing'],
   request_corroboration: ['请求其他专科佐证', 'processing'],
   flag_incompatibility: ['提出方发现不兼容', 'error'],
-  identify_conflict: ['提出方发现不兼容', 'error'],
   convert_to_evidence_need: ['转为证据需求', 'warning'],
 }
 
@@ -104,7 +103,10 @@ export function chairChangeSummary(current, previous) {
     ].filter(Boolean)
     return parts.length ? [`${label}：${parts.join('、')}`] : []
   })
-  return changes.length ? changes : ['相比上一轮，综合结构无变化']
+  for (const [key, label] of [['diagnostic_opinion', '整体诊断意见'], ['diagnostic_exploration', '候选形成与比较'], ['diagnostic_resolution', '诊断目标复核'], ['diagnostic_facets', '诊断维度'], ['issue_dispositions', '议题处理'], ['judgment_reviews', '判断采纳'], ['acceptance_records', '专科确认']]) {
+    if (JSON.stringify(current?.team_synthesis?.[key]) !== JSON.stringify(previous.team_synthesis?.[key])) changes.push(`${label}：更新`)
+  }
+  return changes.length ? changes : ['相比上一轮，综合内容无变化']
 }
 
 function specialtyLabel(value) {
@@ -331,7 +333,8 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
   const [expanded, setExpanded] = useState(false)
   useEffect(() => setExpanded(false), [task?.task_id])
   if (!task) return <Card title="问题与回答" className="discussion-panel"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请选择一个问题查看详情" /></Card>
-  const evidenceRows = answer?.evidence_uses?.length
+  const claimUses = (answer?.answer_claims || []).flatMap(claim => (claim.evidence_uses || []).map(item => ({ ...item, claim_statement: claim.statement })))
+  const evidenceRows = claimUses.length ? claimUses : answer?.evidence_uses?.length
     ? answer.evidence_uses
     : (task.evidence_candidates || []).map((item) => ({ ...item, interpretation: '等待专科完成分析后形成结论' }))
   const [answerLabel, answerColor] = ANSWERABILITY[answer?.answerability] || ['等待回答', 'default']
@@ -339,7 +342,7 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
   const evidenceColumns = [
     { title: '引用类别', width: 86, render: (_, item, index) => <Citation value={item} collection={evidenceRows} index={index} /> },
     { title: '引用原文（quote）', dataIndex: 'quote', width: 150, render: (value) => value || '该引用未携带原文' },
-    { title: '支持的结论', dataIndex: 'interpretation', render: (value) => value || '—' },
+    { title: '对应判断与使用理由', render: (_, item) => <>{item.claim_statement && <Paragraph>{item.claim_statement}</Paragraph>}{item.interpretation || '—'}</> },
   ]
   return (
     <Card title="问题与回答" className="discussion-panel discussion-detail-panel" extra={<Tag color={answerColor}>回答方自评：{answerLabel}</Tag>}>
@@ -428,7 +431,7 @@ function QuestionDetail({ task, answer, progress, reviews = [] }) {
       </div>
       <div className="discussion-detail-section">
         <div className="discussion-evidence-heading"><Text className="discussion-detail-label">证据使用路径</Text><Text type="secondary">引用类别 → 引用原文 → 支持的结论</Text></div>
-        <Table size="small" rowKey={(item) => item.evidence_ref} columns={evidenceColumns} dataSource={evidenceRows} pagination={false} tableLayout="fixed" locale={{ emptyText: '没有可用证据' }} />
+        <Table size="small" rowKey={(item) => `${item.evidence_ref}-${item.claim_statement || item.interpretation || ""}`} columns={evidenceColumns} dataSource={evidenceRows} pagination={false} tableLayout="fixed" locale={{ emptyText: '没有可用证据' }} />
         {answer?.guideline_evidence?.length > 0 && <div className="discussion-guidelines"><Text strong>指南依据：</Text><CitationGroup refs={answer.guideline_evidence} /></div>}
       </div>
     </Card>
@@ -444,13 +447,20 @@ function DiscussionSummary({ value, runId }) {
   const confirmations = team?.acceptance_records || []
   const rounds = value.rounds?.length || 0
   return <Card title="本次会诊进展" className="section-gap">
-    {value.status === 'completed' && !rounds && <Paragraph>本次未进入问答轮次；各专科对会前综合意见的确认情况如下。</Paragraph>}
+    {value.status === 'completed' && !rounds && <Paragraph>会前整合未保留开放议题，因此未分派专科问答；本次仅进行了综合意见确认。</Paragraph>}
     <Space wrap>
       <Tag>已完成问答 {rounds} 轮</Tag>
       {team && <Tag>已有意见覆盖 {covered} 条原始问题</Tag>}
       {team && <Tag>待处理议题 {team.issues?.length || 0} 项</Tag>}
       <Tag>已记录专科态度 {new Set(confirmations.map(item => item.specialty)).size} / 4</Tag>
     </Space>
+    {!rounds && team && <details className="section-gap"><summary>查看原始问题为何未进入讨论</summary>
+      {(team.issue_dispositions || []).map(item => <Paragraph key={item.issue_id}>
+        <Text strong>{team.source_catalog?.[item.issue_id]?.quote || item.issue_id}</Text><br />
+        {({ covered: '已有意见覆盖', bounded: '保留判断边界', deferred: '保留未决', answered: '已有回答', merged: '已合并', continue: '继续讨论' })[item.outcome] || item.outcome}：{item.rationale}
+      </Paragraph>)}
+      {!team.issue_dispositions?.length && <Paragraph>未保存原始问题处理记录。</Paragraph>}
+    </details>}
     {confirmations.length > 0 && <details className="section-gap"><summary>查看各专科确认意见</summary>
       {confirmations.map(item => <Paragraph key={item.specialty}>
         <Text strong>{specialtyLabel(item.specialty)} · {({ accept: '接受', accept_with_boundaries: '带边界接受', dissent: '保留异议' })[item.decision]}</Text><br />
@@ -482,8 +492,8 @@ function DiscussionSummary({ value, runId }) {
 export function DiscussionWorkspace({ runId, run }) {
   const queryClient = useQueryClient()
   const query = useQuery({
-    queryKey: ['discussion', runId, 'presented'],
-    queryFn: () => api.discussion(runId, true),
+    queryKey: ['discussion', runId],
+    queryFn: () => api.discussion(runId),
     refetchInterval: (current) => ['running', 'stopping'].includes(current.state.data?.status) || ['queued', 'running', 'stopping'].includes(run?.status) ? 2000 : false,
   })
   const refresh = useCallback(() => {
@@ -495,21 +505,22 @@ export function DiscussionWorkspace({ runId, run }) {
   const mutation = useMutation({
     mutationFn: () => api.runDiscussion(runId),
     onMutate: () => {
-      const previous = queryClient.getQueryData(['discussion', runId, 'presented'])
+      const previous = queryClient.getQueryData(['discussion', runId])
       queryClient.cancelQueries({ queryKey: ['discussion', runId] })
-      queryClient.setQueryData(['discussion', runId, 'presented'], (current = {}) => ({
+      queryClient.setQueryData(['discussion', runId], (current = {}) => ({
         ...current,
-        status: 'running',
-        error: null,
+        status: 'running', rounds: [], active_round: null, latest_chair_result: null,
+        decision_state: null, final_report: null, stop_reason: null, current_round: 0,
+        report_status: 'waiting', error: null,
       }))
       return { previous }
     },
     onSuccess: (value) => {
-      queryClient.setQueryData(['discussion', runId, 'presented'], value)
+      queryClient.setQueryData(['discussion', runId], value)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
     },
     onError: (_error, _variables, context) => {
-      queryClient.setQueryData(['discussion', runId, 'presented'], context?.previous)
+      queryClient.setQueryData(['discussion', runId], context?.previous)
     },
   })
   const [selectedRound, setSelectedRound] = useState()
@@ -527,7 +538,8 @@ export function DiscussionWorkspace({ runId, run }) {
     },
   })
 
-  const value = query.data || {}
+  const raw = query.data || {}
+  const value = ['outdated', 'unavailable', 'pending'].includes(raw.status) ? { ...raw, rounds: [], active_round: null, latest_chair_result: null, decision_state: null, final_report: null, stop_reason: null, current_round: 0 } : raw
   const running = ['running', 'stopping'].includes(value.status) || mutation.isPending
   const rounds = useMemo(() => {
     const completed = value.rounds || []
@@ -591,13 +603,12 @@ export function DiscussionWorkspace({ runId, run }) {
         </div>
       </div>
 
-      {value.presentation_status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="文字润色暂不可用" description="当前显示讨论原始记录；医学结论和证据记录未受影响。" />}
       {connection === 'disconnected' && <Alert className="section-gap" type="warning" showIcon title="实时事件流已断开" description="页面会自动重连，并每 2 秒从服务端恢复一次讨论进度。" />}
       {value.status === 'stopped' && <Alert className="section-gap" type="info" title="讨论已停止" description="下方为已保存的阶段结果，未生成最终统一报告。再次运行将从本阶段起点开始。" />}
-      {value.status === 'running' && <Alert className="section-gap" type="info" showIcon title="新一轮团队讨论已启动" description={hasResult ? '正在初始化任务；下方暂时保留上一次运行结果，新进度写入后会自动替换。' : '正在初始化任务与运行资源，新进度写入后会自动显示。'} />}
+      {value.status === 'running' && <Alert className="section-gap" type="info" showIcon title="新一轮团队讨论已启动" description="页面仅显示本次讨论已保存的进度与结果。" />}
       {value.status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="团队讨论尚不可运行" description={value.error} />}
       {value.status === 'pending' && <Alert className="section-gap" type="info" showIcon title="现有输出已就绪" description={['queued', 'running', 'stopping'].includes(run?.status) ? '完整运行将自动进入团队讨论。' : '从团队讨论开始运行，完成后自动生成最终报告。'} />}
-      {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="会前整合已更新" description="下方是基于旧会前整合结果的讨论记录，请重新运行以匹配当前结果。" />}
+      {value.status === 'outdated' && <Alert className="section-gap" type="warning" showIcon title="会前整合已更新" description="旧讨论仅保留在产物审计中，请重新运行以匹配当前结果。" />}
       {value.status === 'failed' && <Alert className="section-gap" type="error" showIcon title="团队讨论失败；已保留完成的步骤" description={value.error} />}
       {mutation.isError && <Alert className="section-gap" type="error" showIcon title="无法启动团队讨论" description={mutation.error.message} />}
       <Modal title="批量运行团队讨论" open={batchOpen} onCancel={() => setBatchOpen(false)} onOk={() => batchMutation.mutate()} okText="开始批量运行" confirmLoading={batchMutation.isPending} okButtonProps={{ disabled: !batchRunIds.length }} width={820}>
@@ -627,7 +638,7 @@ export function DiscussionWorkspace({ runId, run }) {
                   <Text strong>{previousChairResult ? '相比上一轮' : '本轮变化'}</Text>
                   <Space size={[6, 6]} wrap>{chairChangeSummary(round.chair_result, previousChairResult).map((item) => <Tag color="blue" key={item}>{item}</Tag>)}</Space>
                 </div>
-                <ChairResultTabs result={round.chair_result} />
+                <details><summary>查看本轮更新后的综合意见与依据</summary><ChairResultTabs result={round.chair_result} stage="discussion" /></details>
               </> : <div className="discussion-chair-pending">{['failed', 'stopped'].includes(chairProgress) ? <ExclamationCircleFilled className="discussion-icon-error" /> : <Spin />}<Text type="secondary">{chairProgress === 'running' ? '主持人正在整合本轮结果…' : chairProgress === 'stopped' ? '已停止；保留本轮完成内容' : chairProgress === 'failed' ? '主持人整合失败；已保留本轮已生成内容' : '等待全部专科回答后开始整合'}</Text></div>}
             </Card>
           )}
@@ -638,7 +649,6 @@ export function DiscussionWorkspace({ runId, run }) {
       ) : value.status !== 'completed' ? (
         <Card className="section-card discussion-empty-card"><Empty image={<FileSearchOutlined />} description={running ? '正在准备议题或汇总专科确认，尚无问答轮次。' : '尚未产生问答轮次；运行后会显示实际议题与处理进度。'} /></Card>
       ) : null}
-      {!rounds.length && value.latest_chair_result && <ChairResultTabs result={value.latest_chair_result} />}
       {value.stop_reason && <Alert className="section-gap" type={value.status === 'stopped' ? 'info' : 'success'} showIcon title="讨论停止原因" description={value.stop_reason} />}
     </div>
   )

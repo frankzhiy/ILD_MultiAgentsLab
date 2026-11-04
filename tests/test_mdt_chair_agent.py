@@ -1,6 +1,7 @@
 """Self-contained checks for active protocol paths; retired ledger/report tests removed."""
 
 import json
+from copy import deepcopy
 
 from src.agents.mdt_chair.agent import build_chair_prompt_bundle, build_semantic_evidence_catalog
 
@@ -23,6 +24,59 @@ SPECIALTIES = (
 )
 
 
+def test_chair_model_input_stores_patient_text_once_and_preserves_all_references():
+    from src.agents.mdt_chair.prompt_projection import build_chair_prompt_view
+
+    values = outputs()
+    values['pulmonology']['interspecialty_questions']['questions'][0]['related_assessment_ids'] = ['pulmonology_1']
+    for value in values.values():
+        item = value['specialty_assessments']['assessments'][0]
+        item['limitations'] = ['病变分布未明确，限制模式判断。']
+        item['conditions'] = {
+            'subject': '肺部病变', 'timeframe': {'kind': 'historical', 'start': '2023'},
+            'evidence_scope': {'scope_limitations': item['limitations']},
+            'applicability_conditions': [*item['limitations'], '仅针对本次病程。'],
+        }
+    semantic = {'seg_001_gu_001': {
+        'segment_id': 'seg_001',
+        'evidence_blocks': {
+            'seg_001_gu_001_ev_001': '病例原文证据。',
+            'seg_001_gu_001_ev_002': '尚未被专科引用的病例证据。',
+        },
+    }}
+    bundle = build_chair_prompt_bundle('case-1', values, semantic)
+    audit = deepcopy(bundle.prompt_input)
+    view = build_chair_prompt_view(bundle)
+    encoded = json.dumps(view, ensure_ascii=False)
+    assert encoded.count('病例原文证据。') == 1
+    assert encoded.count('尚未被专科引用的病例证据。') == 1
+    assert set(view['case_evidence']['references']) == set(bundle.evidence_registry)
+    for ref, text_ids in view['case_evidence']['references'].items():
+        assert ''.join(view['case_evidence']['texts'][key] for key in text_ids) == bundle.evidence_registry[ref].quote
+    for specialty in view['chair_input']['specialties']:
+        item = specialty['specialty_assessments'][0]
+        assert 'evidence_options' not in item
+        assert item['evidence_relations']['supporting']
+        assert item['limitations'] == ['病变分布未明确，限制模式判断。']
+        assert item['conditions']['applicability_conditions'] == ['仅针对本次病程。']
+        assert item['conditions']['timeframe']['start'] == '2023'
+        assert 'evidence_scope' not in item['conditions']
+    assert view['original_requests'][0]['related_assessment_ids'] == ['pulmonology_1']
+    assert bundle.prompt_input == audit
+
+
+def test_chair_request_text_is_not_duplicated_in_specialty_and_context():
+    from src.agents.mdt_chair.prompt_projection import build_chair_prompt_view
+
+    bundle = build_chair_prompt_bundle('case-1', outputs())
+    view = build_chair_prompt_view(bundle)
+    question = outputs()['pulmonology']['interspecialty_questions']['questions'][0]['question']
+    assert json.dumps(view, ensure_ascii=False).count(question) == 1
+    ref = view['chair_input']['specialties'][0]['interspecialty_questions'][0]
+    assert any(item['source_ref'] == ref and item['question'] == question
+               for item in view['original_requests'])
+
+
 def pointer(quote="病例原文证据。"):
     return {
         "segment_id": "seg_001",
@@ -34,12 +88,7 @@ def pointer(quote="病例原文证据。"):
 
 
 def evidence_bundle():
-    return {
-        "supporting": [pointer()],
-        "weakening": [],
-        "discriminating": [],
-        "background": [],
-    }
+    return {"evidence_relations": [{**pointer(), "direction": "supports", "function": "foundational"}]}
 
 
 def guideline():
@@ -112,12 +161,13 @@ def outputs():
                 "evidence_gaps": gaps,
                 "boundaries": ["不是最终 MDT 诊断。"],
             },
-            "clinical_reasoning": {"must_not_enter_prompt": "内部推理不得输入主持人。"},
+
         }
     for value in values.values():
         value['interspecialty_questions'] = {'questions': value['specialty_assessments'].pop('interspecialty_questions')}
         for item in value['specialty_assessments']['assessments']:
             item.update(assessability='partially_assessable', direction='indeterminate', confidence='unknown', clinical_role='boundary')
+            item['claims'] = [{'claim_id': item['assessment_id'] + '_c001', 'statement': item['statement'], 'evidence_relations': item['evidence']['evidence_relations']}]
     return values
 
 
@@ -409,7 +459,7 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
     }]}]}
     catalog = build_semantic_evidence_catalog(propositions, graphs)
     source = outputs()
-    source["pulmonology"]["specialty_assessments"]["assessments"][0]["evidence"]["supporting"][0].update(
+    source["pulmonology"]["specialty_assessments"]["assessments"][0]["evidence"]["evidence_relations"][0].update(
         {"segment_id": "wrong", "quote": "wrong", "node_ids": []}
     )
     bundle = build_chair_prompt_bundle("case-1", source, semantic_evidence=catalog)
@@ -420,7 +470,7 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
     assert "E001" not in bundle.evidence_registry
 
     source_with_proposition = outputs()
-    source_with_proposition["pulmonology"]["specialty_assessments"]["assessments"][0]["evidence"]["supporting"][0]["proposition_ids"] = ["prop_001"]
+    source_with_proposition["pulmonology"]["specialty_assessments"]["assessments"][0]["evidence"]["evidence_relations"][0]["proposition_ids"] = ["prop_001"]
     proposition_bundle = build_chair_prompt_bundle(
         "case-1",
         source_with_proposition,
@@ -431,7 +481,7 @@ def test_semantic_graph_catalog_repairs_specialty_locator():
     assert proposition_evidence.proposition_ids == ["seg_001_gu_001::prop_001"]
 
 
-def test_graph_unit_quote_is_rebuilt_from_unique_blocks_across_sources_and_rounds():
+def test_distinct_evidence_selections_keep_exact_quotes_across_sources_and_rounds():
     unit_id = "seg_001_gu_001"
     blocks = {f"{unit_id}_ev_{i:03d}": text for i, text in enumerate(
         ("患者咳嗽。", "活动后气短。", "近期加重。"), 1
@@ -441,11 +491,47 @@ def test_graph_unit_quote_is_rebuilt_from_unique_blocks_across_sources_and_round
     source = outputs()
     for specialty, selected in zip(SPECIALTIES, (ids[:2], ids[1:], ids[:2], ids[1:])):
         source[specialty]["specialty_assessments"]["assessments"][0]["evidence"] = {
-            "supporting": [{"graph_unit_id": unit_id, "evidence_ids": selected}]
+            "evidence_relations": [{"graph_unit_id": unit_id, "evidence_ids": selected, "direction": "supports", "function": "foundational"}]
         }
     bundle = build_chair_prompt_bundle("case-1", source, semantic_evidence=catalog)
-    evidence = bundle.evidence_registry[unit_id]
-    assert evidence.quote == "".join(blocks.values())
-    assert set(evidence.evidence_ids) == set(ids)
+    selections = list(bundle.evidence_registry.values())
+    selected_refs = {ref for specialty in bundle.prompt_input["specialties"] for ref in bundle.source_evidence[specialty["specialty_assessments"][0]["source_ref"]]["supporting"]}
+    assert len(selected_refs) == 2
+    assert {bundle.evidence_registry[ref].quote for ref in selected_refs} == {"患者咳嗽。活动后气短。", "活动后气短。近期加重。"}
+    for specialty in bundle.prompt_input["specialties"]:
+        source_ref = specialty["specialty_assessments"][0]["source_ref"]
+        selected_ref = bundle.source_evidence[source_ref]["supporting"][0]
+        selected_ids = source[specialty["specialty"]]["specialty_assessments"]["assessments"][0]["evidence"]["evidence_relations"][0]["evidence_ids"]
+        assert set(bundle.evidence_registry[selected_ref].evidence_ids) == set(selected_ids)
     later = build_chair_prompt_bundle("case-1", source, semantic_evidence=catalog, source_seed=bundle)
-    assert later.evidence_registry[unit_id].quote == evidence.quote
+    assert later.evidence_registry == bundle.evidence_registry
+
+
+def test_chair_citation_keeps_original_block_once_when_propositions_share_it():
+    from src.agents.mdt_chair.agent import _Registry
+
+    unit_id = "seg_001_gu_001"
+    block_id = f"{unit_id}_ev_001"
+    original = "双肺纹理增多紊乱，双肺胸膜下呈网格样及蜂窝样影；"
+    fragment = "双肺胸膜下呈网格样及蜂窝样影"
+    registry = _Registry({
+        unit_id: {
+            "segment_id": "seg_001",
+            "evidence_blocks": {block_id: original},
+            "propositions": {
+                key: {"evidence_ids": [block_id], "quote": fragment}
+                for key in ("prop_001", "prop_002")
+            },
+        },
+    })
+    direct = registry.pointer({"graph_unit_id": unit_id, "evidence_ids": [block_id]})
+    derived = registry.pointer({
+        "graph_unit_id": unit_id,
+        "proposition_ids": ["prop_001", "prop_002"],
+    })
+
+    assert derived == direct == block_id
+    assert registry.evidence[direct].quote == original
+    assert registry.evidence[direct].proposition_ids == [
+        f"{unit_id}::prop_001", f"{unit_id}::prop_002",
+    ]

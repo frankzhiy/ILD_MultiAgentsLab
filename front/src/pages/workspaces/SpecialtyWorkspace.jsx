@@ -1,3 +1,4 @@
+import { legacyStatusLabels, assessabilityLabels } from '../../components/clinicalConcepts'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Card, Empty, Segmented, Skeleton, Space, Tag, Typography } from 'antd'
@@ -7,6 +8,7 @@ import { EvidenceGroups } from '../../components/EvidenceGroups'
 import { EmptyState } from '../../components/EmptyState'
 import { QueryError } from '../../components/QueryState'
 import { JudgmentDimensions } from '../../components/JudgmentDimensions'
+import { isCurrentSpecialty } from '../../components/resultContract'
 import { ConditionalContributions } from '../../components/TeamSynthesis'
 
 const { Paragraph, Text, Title } = Typography
@@ -18,45 +20,11 @@ const SPECIALTY_LABELS = {
   pathology: '病理科',
 }
 
-const STATUS_LABELS = {
-  support: '支持',
-  supported: '支持',
-  favored: '倾向',
-  leaning: '倾向',
-  possible: '可能',
-  unclassifiable: '不能分类',
-  not_assessable: '不可评价',
-  not_applicable: '不适用',
-  assessable: '可评价',
-  partially_assessable: '部分可评价',
-  consistent: '一致',
-  partially_consistent: '部分一致',
-  inconsistent: '不一致',
-}
-
-const STATUS_COLORS = {
-  support: 'success',
-  supported: 'success',
-  favored: 'processing',
-  leaning: 'processing',
-  possible: 'warning',
-  unclassifiable: 'default',
-  not_assessable: 'default',
-  not_applicable: 'default',
-  assessable: 'success',
-  partially_assessable: 'warning',
-  consistent: 'success',
-  partially_consistent: 'warning',
-  inconsistent: 'error',
-}
-
 const ROLE_LABELS = {
-  primary: '主要判断',
-  important_alternative: '重要替代解释',
+  primary: '会诊重点',
+  important_alternative: '重要备选关注',
   cannot_safely_ignore: '不能安全忽略',
   scope_or_evaluability: '范围或可评价性判断',
-  leading: '主导解释',
-  not_currently_assessable: '当前不可评价',
 }
 
 const TYPE_LABELS = {
@@ -92,16 +60,30 @@ function Assessment({ item }) {
   return (
     <article className="formal-item conclusion-item">
       <Space size={[6, 6]} wrap>
-        <Tag color={STATUS_COLORS[item.status]}>{valueLabel(item.status, STATUS_LABELS)}</Tag>
-        {item.role && <Tag>{valueLabel(item.role, ROLE_LABELS)}</Tag>}
+        {item.role && <Tag>关注级别：{valueLabel(item.role, ROLE_LABELS)}</Tag>}
         {item.assessment_type && <Tag>{valueLabel(item.assessment_type, TYPE_LABELS)}</Tag>}
         <Text code>{item.assessment_id}</Text>
       </Space>
       <JudgmentDimensions item={item} />
+      {item.status && <details><summary>旧版判断摘要（不作为疾病确立状态）</summary><Paragraph>{legacyStatusLabels[item.status] || item.status}；旧版状态含义可能针对整句判断，不能据此推导疾病支持或排除。</Paragraph></details>}
       <Title level={5}>{item.statement}</Title>
       {item.medical_basis && <Paragraph>{item.medical_basis}</Paragraph>}
       {item.decision_impact && <Paragraph type="secondary"><Text strong>决策影响：</Text>{item.decision_impact}</Paragraph>}
-      <EvidenceGroups evidence={item.evidence} guidelineEvidence={item.guideline_evidence} />
+      <section aria-label="逐条判断与证据">
+        <Text strong>逐条判断与证据</Text>
+        {item.claims.map(claim => <div key={claim.claim_id} className="synthesis-note">
+          <Text code>{claim.claim_id}</Text><Paragraph>{claim.statement}</Paragraph>
+          <EvidenceGroups evidence={claim} claimStatement={claim.statement} />
+          {!claim.evidence_relations.length && <Text type="secondary">本条判断未引用直接病例证据</Text>}
+        </div>)}
+      </section>
+      <EvidenceGroups guidelineEvidence={item.guideline_evidence} />
+      <details><summary>查看判断适用条件</summary>
+        <Paragraph>判断对象：{item.conditions.subject}</Paragraph>
+        <Paragraph>时间范围：{item.conditions.timeframe?.description || '未明确'}</Paragraph>
+        <Paragraph>成立前提：{item.conditions.applicability_conditions?.join('；') || '未附加前提'}</Paragraph>
+        <Paragraph>证据边界：{item.conditions.evidence_scope?.scope_limitations?.join('；') || '未附加限制'}</Paragraph>
+      </details>
       {item.limitations?.length > 0 && <div className="limitation-note"><Text strong>判断限制：</Text>{item.limitations.join('；')}</div>}
     </article>
   )
@@ -112,10 +94,10 @@ function SpecialtyAssessments({ value }) {
     <Card title="专科初步判断" className="section-card formal-output-card professional-card">
       <Section title="专科问题定位">
         <Paragraph className="lead-text">{value.specialty_question}</Paragraph>
-        <Tag color={STATUS_COLORS[value.assessability]}>{valueLabel(value.assessability, STATUS_LABELS)}</Tag>
+        <Tag>{valueLabel(value.assessability, assessabilityLabels)}</Tag>
       </Section>
 
-      <Section title="初步判断" description="每项判断同时说明推理依据、反证、限制和决策影响。">
+      <Section title="初步判断" description="逐条展示保存的判断及证据对应关系、限制和决策影响。">
         {value.assessments?.length
           ? <div className="formal-list">{value.assessments.map((item) => <Assessment item={item} key={item.assessment_id} />)}</div>
           : <EmptyList description="当前没有可形成的专科初步判断" />}
@@ -170,20 +152,12 @@ function InterspecialtyQuestionsCard({ value }) {
   )
 }
 
-function isFormalOutput(output) {
-  return Boolean(
-    output
-    && Object.keys(output).length === 2
-    && output.specialty_assessments
-    && output.interspecialty_questions,
-  )
-}
 
 export function SpecialtyWorkspace({ runId, run }) {
   const [active, setActive] = useState('pulmonology')
   const query = useQuery({
-    queryKey: ['specialties', runId, 'presented'],
-    queryFn: () => api.specialties(runId, true),
+    queryKey: ['specialties', runId],
+    queryFn: () => api.specialties(runId),
     refetchInterval: (current) => {
       const results = current.state.data?.results
       if (results?.length && results.every((item) => item.status === 'completed')) return false
@@ -194,7 +168,8 @@ export function SpecialtyWorkspace({ runId, run }) {
   if (query.isError) return <QueryError error={query.error} retry={query.refetch} />
   if (query.isLoading) return <Skeleton active paragraph={{ rows: 12 }} />
 
-  const results = query.data?.results || []
+  const data = query.data
+  const results = data?.results || []
   const selected = results.find((item) => item.specialty === active) || results[0]
   const output = selected?.output
 
@@ -212,11 +187,12 @@ export function SpecialtyWorkspace({ runId, run }) {
         />
       </div>
 
-      {query.data?.presentation_status === 'unavailable' && <Alert className="section-gap" type="warning" showIcon title="文字润色暂不可用" description="当前显示专科原始判断；医学结论和证据记录未受影响。" />}
 
-      {!selected || !output ? (
+      {selected?.legacy ? (
+        <Alert type="warning" title="旧版专科结果仅保留在产物审计中，请重新运行。" />
+      ) : !selected || !output ? (
         <EmptyState description={`${selected?.label || '该专科'}尚无首轮正式输出，页面会自动刷新`} />
-      ) : !isFormalOutput(output) ? (
+      ) : !isCurrentSpecialty(output) ? (
         <Alert
           type="warning"
           showIcon

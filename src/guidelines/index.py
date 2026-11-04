@@ -19,7 +19,7 @@ from src.guidelines.models import GuidelineChunk
 
 DEFAULT_MODEL = "BAAI/bge-m3"
 COLLECTION = "ild_guidelines"
-CHUNKER_VERSION = "atomic"
+CHUNKER_VERSION = "clinical_passages_v3"
 MAX_UNIT_CHARS = 800
 
 _RECOMMENDATION = re.compile(
@@ -50,25 +50,9 @@ _THRESHOLD_CONTEXT = re.compile(
     r"\babsolute\s+decline\b|\brelative\s+decline\b|\bdose\b)",
     re.IGNORECASE,
 )
-_NOISE = re.compile(
-    r"(?:\bcontents\b|\bcorrespondence\b|\brequests?\s+for\s+reprints?\b|"
-    r"\bscreening\s+of\s+the\s+identified\s+studies\b|"
-    r"\bconsensus\s+required\b|\bguideline\s+committee\b|"
-    r"\bfuture\s+research\b|\bresearch\s+question\b|"
-    r"\bconditional\s+recommendations?\b|\brecommended\s+course\s+of\s+action\b|"
-    r"\boverwh?elming\s+majority\b|\bobservational\s+study\b|"
-    r"\bstatistically\s+significant\b|\blinear\s+no-threshold\b|"
-    r"\bage\s+\.$|\b(?:table|figure)\.$|"
-    r"\b\d+\s+radiological\s+evidence\b|"
-    r"基金项目|创新工程|提出建议)",
-    re.IGNORECASE,
-)
 _HEADING = re.compile(
     r"^(?:#{1,6}\s*|[一二三四五六七八九十]+、|"
     r"（[一二三四五六七八九十]+）|\d+(?:\.\d+)*[.)、]\s+)"
-)
-_SENTENCE_BOUNDARY = re.compile(
-    r"(?<=[。！？!?])\s*|(?<=[.;])\s+(?=[A-Z0-9*“\"【（])"
 )
 
 
@@ -83,8 +67,8 @@ def build_index(
     if model_name == DEFAULT_MODEL and local_bge.is_dir():
         model_name = os.path.relpath(local_bge, Path.cwd())
     catalog = load_catalog(guideline_dir / "catalog.yaml")
-    processed_dir = guideline_dir / "processed"
-    index_dir = guideline_dir / "index"
+    processed_dir = guideline_dir / "processed" / CHUNKER_VERSION
+    index_dir = guideline_dir / "index" / CHUNKER_VERSION
     qdrant_dir = index_dir / "qdrant"
     processed_dir.mkdir(parents=True, exist_ok=True)
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -223,11 +207,12 @@ def _chunk_document(document, pages: list[dict], document_hash: str) -> list[Gui
     chunks = []
     section = [document.title]
     seen = set()
+    references_started = False
     for page_number, page in enumerate(pages, start=1):
         passage = []
 
         def flush() -> None:
-            text = _normalize_text(" ".join(passage))
+            text = "\n\n".join(passage)
             passage.clear()
             for unit_type, unit_text in _atomic_units(text):
                 identity = (page_number, unit_text)
@@ -255,12 +240,18 @@ def _chunk_document(document, pages: list[dict], document_hash: str) -> list[Gui
 
         for block in _ordered_blocks(page, repeated_margins, document.language):
             text = _normalize_text(block["text"])
+            if re.match(r"^(?:references\b|参考文献)", text, re.I):
+                flush()
+                references_started = True
+                break
             heading = _heading(text)
             if heading:
                 flush()
                 section = [heading]
             else:
                 passage.append(text)
+        if references_started:
+            break
         flush()
     return chunks
 
@@ -322,68 +313,24 @@ def _column_order(blocks: list[dict], midpoint: float) -> list[dict]:
 
 
 def _atomic_units(text: str) -> list[tuple[str, str]]:
+    """Preserve clinical passages, sentences and table descriptions, not just rules.
+
+    RecursiveCharacterTextSplitter uses sentence boundaries before character fallback;
+    source quotes remain separate from embedding metadata.
+    """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
     if not text or _looks_corrupted(text, ""):
         return []
-    text = re.sub(
-        r"([。.!?])\s*(【\s*(?:强|中等|弱)推荐\s*】)",
-        r" \2\1",
-        text,
-    )
-    units = []
-    candidates = re.split(
-        r"(?=(?:【\s*推荐意见\s*\d+\s*】|We\s+(?:recommend|suggest)\b|"
-        r"The\s+committee\s+defined\b))",
-        text,
-        flags=re.IGNORECASE,
-    )
-    sentences = (
-        sentence
-        for candidate in candidates
-        for sentence in _SENTENCE_BOUNDARY.split(candidate)
-    )
-    for sentence in filter(None, (_normalize_text(item) for item in sentences)):
-        sentence = re.sub(r"\s+\d+\.$", ".", sentence)
-        if (
-            _NOISE.search(sentence)
-            or not _complete_statement(sentence)
-            or sentence.endswith(("?", "？"))
-            or re.match(r"^[\u4e00-\u9fff][,，]", sentence)
-            or sentence.startswith(("和", "及", "与"))
-        ):
-            continue
-        if len(re.findall(r"[（(]\s*\d+\s*[)）]", sentence)) > 1:
-            continue
-        unit_type = _unit_type(sentence)
-        if unit_type is None or len(sentence) < 12:
-            continue
-        for part in _split_long_unit(sentence):
-            if len(part) >= 12 and not _looks_corrupted(part, ""):
-                units.append((unit_type, part))
-    return units
-
-
-def _split_long_unit(text: str) -> list[str]:
-    if len(text) <= MAX_UNIT_CHARS:
-        return [text]
-    clauses = [
-        _normalize_text(item)
-        for item in re.split(r"(?<=[；;])\s*", text)
-        if _normalize_text(item)
-    ]
-    if any(len(item) > MAX_UNIT_CHARS for item in clauses):
+    text = "\n\n".join(_normalize_text(part) for part in text.split("\n\n"))
+    if re.match(r"^(?:References|参考文献)\b", text, re.I):
         return []
-    parts = []
-    current = ""
-    for clause in clauses:
-        candidate = f"{current} {clause}".strip()
-        if current and len(candidate) > MAX_UNIT_CHARS:
-            parts.append(current)
-            current = clause
-        else:
-            current = candidate
-    if current:
-        parts.append(current)
-    return parts
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=MAX_UNIT_CHARS, chunk_overlap=120,
+        separators=["\n\n", "。", ". ", "; ", "；", " ", ""],
+        keep_separator=True, strip_whitespace=True,
+    )
+    return [(_unit_type(part) or "clinical_description", part)
+            for part in splitter.split_text(text) if len(part) >= 12]
 
 
 def _unit_type(text: str) -> str | None:
@@ -423,10 +370,6 @@ def _valid_recommendation(text: str) -> bool:
             text,
         )
     )
-
-
-def _complete_statement(text: str) -> bool:
-    return text.endswith(("。", "！", "？", ".", "!", "?", "】", ")"))
 
 
 def _heading(text: str) -> str | None:

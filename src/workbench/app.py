@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from src.utils.config import load_yaml
 from src.workbench.catalog import RunCatalog
 from src.workbench.events import EventStore
-from src.workbench.presentation import present
 from src.workbench.runner import AGENTS, RunOrchestrator
 
 
@@ -38,7 +37,11 @@ class AgentOverride(BaseModel):
         return value.strip() if value is not None else None
 
 
+from src.agents.common.consultation import ConsultationContext
+
+
 class CreateRunRequest(BaseModel):
+    consultation: ConsultationContext = Field(default_factory=lambda: ConsultationContext(template="refine_diagnosis"))
     source: str = "library"
     case_id: str
     raw_text: str | None = None
@@ -57,8 +60,10 @@ class CreateRunRequest(BaseModel):
 
 class CreateBatchRequest(BaseModel):
     kind: Literal["run", "discussion"]
+    consultation: ConsultationContext = Field(default_factory=lambda: ConsultationContext(template="refine_diagnosis"))
     source: str = "library"
     case_ids: list[str] = Field(default_factory=list)
+    case_consultations: dict[str, ConsultationContext] = Field(default_factory=dict)
     run_ids: list[str] = Field(default_factory=list)
     max_concurrency: int = Field(default=6, ge=1, le=16)
     max_case_concurrency: int = Field(default=2, ge=1, le=16)
@@ -70,6 +75,8 @@ class CreateBatchRequest(BaseModel):
         if self.kind == "run":
             if self.source != "library":
                 raise ValueError("批量完整运行目前仅支持病例库输入。")
+            if set(self.case_consultations) - set(self.case_ids):
+                raise ValueError("会诊模板只能指定给选中的病例。")
             if not self.case_ids:
                 raise ValueError("请至少选择一个病例。")
         elif not self.run_ids:
@@ -90,6 +97,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def current_result_cache_policy(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/runs"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def not_found(error: FileNotFoundError) -> HTTPException:
@@ -251,15 +266,6 @@ def specialties(run_id: str) -> dict:
         raise not_found(FileNotFoundError(str(error))) from error
 
 
-@app.post("/api/runs/{run_id}/specialties/presented")
-def presented_specialties(run_id: str) -> dict:
-    try:
-        orchestrator.workflow._load_env()
-        return present(ROOT, catalog.run_dir(run_id), "specialties", catalog.specialties(run_id))
-    except (FileNotFoundError, ValueError) as error:
-        raise not_found(FileNotFoundError(str(error))) from error
-
-
 @app.get("/api/runs/{run_id}/chair")
 def chair(run_id: str) -> dict:
     try:
@@ -267,18 +273,6 @@ def chair(run_id: str) -> dict:
         if orchestrator.chair_running(run_id):
             result["status"] = "running"
         return result
-    except (FileNotFoundError, ValueError) as error:
-        raise not_found(FileNotFoundError(str(error))) from error
-
-
-@app.post("/api/runs/{run_id}/chair/presented")
-def presented_chair(run_id: str) -> dict:
-    try:
-        orchestrator.workflow._load_env()
-        result = catalog.chair(run_id)
-        if orchestrator.chair_running(run_id):
-            result["status"] = "running"
-        return present(ROOT, catalog.run_dir(run_id), "chair", result)
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
 
@@ -304,24 +298,19 @@ def discussion(run_id: str) -> dict:
         raise not_found(FileNotFoundError(str(error))) from error
 
 
-@app.post("/api/runs/{run_id}/discussion/presented")
-def presented_discussion(run_id: str) -> dict:
+@app.get("/api/runs/{run_id}/report")
+def report(run_id: str) -> dict:
     try:
-        orchestrator.workflow._load_env()
-        return present(ROOT, catalog.run_dir(run_id), "discussion", discussion_result(run_id))
-    except (FileNotFoundError, ValueError) as error:
-        raise not_found(FileNotFoundError(str(error))) from error
-
-
-@app.post("/api/runs/{run_id}/report/presented")
-def presented_report(run_id: str) -> dict:
-    try:
-        orchestrator.workflow._load_env()
         report = catalog.report(run_id)
         if run_id in orchestrator.active_reports:
             report["status"] = report["report_status"] = "running"
+        if report["report_status"] == "completed" and report["final_report"] is not None:
+            from src.agents.common.team_synthesis import TeamSynthesis
+            from src.agents.mdt_discussion.final_report import report_diagnosis
+            team = TeamSynthesis.model_validate(report["final_report"]["team_synthesis"])
+            report["diagnosis_conclusion"] = report_diagnosis(team)
         report["runnable"] = report["runnable"] and not orchestrator._busy(run_id)
-        return present(ROOT, catalog.run_dir(run_id), "report", report)
+        return report
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
 

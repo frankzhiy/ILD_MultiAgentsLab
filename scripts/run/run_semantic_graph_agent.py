@@ -58,7 +58,7 @@ def load_env_file(path: Path = ROOT / ".env") -> None:
             os.environ[key] = value
 
 
-def input_files(data_dir: str = "data/raw_cases") -> list[Path]:
+def input_files(data_dir: str = "data/reorganized_cases") -> list[Path]:
     candidates = sorted(
         path for path in Path(data_dir).glob("*.txt") if not path.name.startswith(".")
     )
@@ -67,10 +67,10 @@ def input_files(data_dir: str = "data/raw_cases") -> list[Path]:
     return candidates
 
 
-def choose_input_files(data_dir: str = "data/raw_cases") -> list[Path]:
+def choose_input_files(data_dir: str = "data/reorganized_cases") -> list[Path]:
     candidates = input_files(data_dir)
 
-    print("\n可用的原始病例文件：")
+    print("\n可用的病例文件：")
     print("  [0] 运行全部文件")
     for index, path in enumerate(candidates, start=1):
         print(f"  [{index}] {path.name}")
@@ -617,7 +617,7 @@ def main() -> int:
         default=None,
         help=(
             "Path to a free-text ILD case file. If omitted, choose from txt files under "
-            "data/raw_cases/."
+            "data/reorganized_cases/."
         ),
     )
     parser.add_argument("--case-id", default=None, help="Case identifier for outputs.")

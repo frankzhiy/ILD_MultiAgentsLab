@@ -26,7 +26,7 @@ PROMPT_RULES = """
 - guideline_evidence 必须填写 chunk_id、quote_unit_ids、relevance 和 application；quote、字符偏移、标题和页码由程序补全。
 - quote_unit_ids 必须属于对应 chunk；可选择多个直接相关单元，程序会按连续区间分别生成精确引用。
 - 所选单元应共同包含直接支持当前判断的完整推荐、定义或阈值，不得只选择疾病名称、数字或短语。
-- 没有适用片段时保持 guideline_evidence 为空，并在限制中说明，不得凭记忆引用。
+- 没有适用片段时引用留空；检索缺失不是患者资料缺失，不否定已有证据支持的医学解释。不得凭记忆编造来源。
 """.strip()
 
 
@@ -47,13 +47,11 @@ class GuidelineRuntime:
         self,
         retriever: GuidelineRetriever,
         scope: list[str],
-        queries: dict,
         limit: int = 6,
         limits: dict | None = None,
     ):
         self.retriever = retriever
         self.scope = scope
-        self.queries = queries
         self.limit = limit
         self.limits = limits or {}
 
@@ -74,14 +72,38 @@ class GuidelineRuntime:
         return cls(
             retriever,
             list(settings.get("scope") or []),
-            dict(settings.get("queries") or {}),
             int(settings.get("limit", 6)),
             dict(settings.get("limits") or {}),
         )
 
-    def prepare(self, stage: str) -> tuple[str, dict[str, GuidelineChunk], dict]:
-        query = str(self.queries.get(stage) or "").strip()
-        return self.prepare_query(query, limit=self.limits.get(stage, self.limit))
+    def prepare_case(self, stage: str, variables: dict) -> tuple[str, dict, dict]:
+        """Retrieve from patient phenotype and prior assessments, never a filename."""
+        from src.guidelines.queries import clinical_queries
+        return self.prepare_queries(clinical_queries(variables), limit=self.limits.get(stage, self.limit))
+
+    def prepare_queries(self, queries: list[str], *, limit: int | None = None) -> tuple[str, dict, dict]:
+        limit = self.limit if limit is None else int(limit)
+        queries = list(dict.fromkeys(q.strip() for q in queries if q.strip()))
+        if not queries or limit <= 0:
+            return "[]", {}, {"queries": queries, "candidates": [], "used_chunk_ids": []}
+        ranked, ranks = {}, {}
+        for query in queries:
+            for rank, hit in enumerate(self.retriever.search(query, guideline_ids=self.scope, limit=limit * 2), 1):
+                key = hit.chunk.chunk_id
+                ranked[key] = hit
+                ranks[key] = ranks.get(key, 0) + 1 / (60 + rank)
+        hits = sorted(ranked.values(), key=lambda h: ranks[h.chunk.chunk_id], reverse=True)[:limit]
+        chunks = {h.chunk.chunk_id: h.chunk for h in hits}
+        items = [{"chunk_id": h.chunk.chunk_id, "section_path": h.chunk.section_path,
+                  "unit_type": h.chunk.unit_type,
+                  "quote_units": [{"quote_unit_id": u.quote_unit_id, "text": u.text}
+                                  for u in guideline_quote_units(h.chunk)]} for h in hits]
+        return json.dumps(items, ensure_ascii=False, separators=(",", ":")), chunks, {
+            "queries": queries, "query": " | ".join(queries), "scope": self.scope,
+            "candidates": [{"chunk_id": h.chunk.chunk_id, "score": ranks[h.chunk.chunk_id]} for h in hits],
+            "used_chunk_ids": [],
+            "index_version": getattr(self.retriever, "manifest", {}).get("chunker_version"),
+        }
 
     def prepare_query(
         self,
@@ -89,44 +111,7 @@ class GuidelineRuntime:
         *,
         limit: int | None = None,
     ) -> tuple[str, dict[str, GuidelineChunk], dict]:
-        """Retrieve guideline context for a runtime question instead of a fixed stage."""
-
-        query = str(query or "").strip()
-        if not query:
-            return "[]", {}, {"query": "", "candidates": [], "used_chunk_ids": []}
-        limit = int(self.limit if limit is None else limit)
-        if limit <= 0:
-            return "[]", {}, {"query": query, "candidates": [], "used_chunk_ids": []}
-        hits = self.retriever.search(query, guideline_ids=self.scope, limit=limit)
-        chunks = {hit.chunk.chunk_id: hit.chunk for hit in hits}
-        prompt_items = [
-            {
-                "chunk_id": hit.chunk.chunk_id,
-                "section_path": hit.chunk.section_path,
-                "unit_type": hit.chunk.unit_type,
-                "quote_units": [
-                    {
-                        "quote_unit_id": unit.quote_unit_id,
-                        "text": unit.text,
-                    }
-                    for unit in guideline_quote_units(hit.chunk)
-                ],
-            }
-            for hit in hits
-        ]
-        trace = {
-            "query": query,
-            "scope": self.scope,
-            "candidates": [
-                {"chunk_id": hit.chunk.chunk_id, "score": hit.score} for hit in hits
-            ],
-            "used_chunk_ids": [],
-        }
-        return json.dumps(
-            prompt_items,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ), chunks, trace
+        return self.prepare_queries([query], limit=limit)
 
 
 @atexit.register
@@ -186,7 +171,7 @@ def resolve_guideline_evidence(value: object, allowed: dict[str, GuidelineChunk]
             if chunk.text.find(quote, start + 1) >= 0:
                 raise ValueError(f"Guideline quote is ambiguous within {pointer.chunk_id!r}")
             end = start + len(quote)
-        if len(quote) < 12:
+        if not pointer.quote_unit_ids and len(quote) < 12:
             raise ValueError(f"Guideline quote for {pointer.chunk_id!r} is too short")
         pointer.quote = quote
         pointer.quote_start = start

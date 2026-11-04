@@ -28,7 +28,9 @@ class RunCatalog:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.runs_dir = self.root / "outputs/runs"
-        self.cases_dir = self.root / "data/raw_cases"
+        self.cases_dir = self.root / "data/reorganized_cases"
+        if not self.cases_dir.is_dir():
+            self.cases_dir = self.root / "data/raw_cases"
         self.guidelines_dir = self.root / "data/guidelines"
 
     def list_cases(self) -> list[dict[str, Any]]:
@@ -80,9 +82,7 @@ class RunCatalog:
         files = list(run_dir.iterdir())
         names = {path.name for path in files if path.is_file()}
         semantic_complete = f"{case_id}_local_graphs.json" in names
-        chair_complete = self._is_current_chair_output(
-            self._json(run_dir / f"{case_id}_mdt_chair_integration.json", None)
-        )
+        chair_complete = self.chair(run_dir.name)["status"] == "completed"
         discussion = self.discussion(run_dir.name)
         report = self.report(run_dir.name)
         discussion_complete = (
@@ -93,7 +93,7 @@ class RunCatalog:
         completed_specialties = [
             specialty
             for specialty in SPECIALTIES
-            if f"{case_id}_{specialty}_initial.json" in names
+            if self._is_formal_output(self._json(run_dir / f"{case_id}_{specialty}_initial.json", None))
         ]
         has_error = any(name.endswith("_error.json") or "failure_trace" in name for name in names)
         candidates = []
@@ -259,14 +259,15 @@ class RunCatalog:
             output_path = run_dir / f"{case_id}_{specialty}_initial.json"
             input_path = run_dir / f"{case_id}_{specialty}_input.json"
             output = self._json(output_path, None)
+            current = self._is_formal_output(output)
             results.append(
                 {
                     "specialty": specialty,
                     "label": SPECIALTY_LABELS[specialty],
-                    "status": "completed" if output_path.exists() else "pending",
+                    "status": "completed" if current else "outdated" if output is not None else "pending",
                     "input_summary": self._json(input_path, {}).get("summary", {}),
-                    "output": output,
-                    "legacy": output is not None and not self._is_formal_output(output),
+                    "output": output if current else None,
+                    "legacy": output is not None and not current,
                 }
             )
         return {"case_id": case_id, "results": results}
@@ -307,7 +308,10 @@ class RunCatalog:
             / f"{case_id}_mdt_chair_cross_specialty_integration_failure_trace.json"
         )
         result = self._json(result_path, None)
-        current_result = self._is_current_chair_output(result)
+        current_result = self._is_current_chair_output(result) and runnable and all(
+            path.stat().st_mtime <= result_path.stat().st_mtime
+            for path in (*specialty_paths, *semantic_paths)
+        )
         latest_failure = failure_path.exists() and (
             not result_path.exists()
             or failure_path.stat().st_mtime > result_path.stat().st_mtime
@@ -328,7 +332,7 @@ class RunCatalog:
             "case_id": case_id,
             "status": status,
             "runnable": runnable,
-            "result": result if current_result else None,
+            "result": result if current_result and not latest_failure else None,
             "has_previous_result": result is not None,
             "error": failure.get("error") or readiness_error,
         }
@@ -357,8 +361,13 @@ class RunCatalog:
             if baseline_path.exists()
             else None
         )
-        current = bool(state and state.get("schema_version") == "mdt_discussion.v4"
+        current = bool(state and state.get("schema_version") == "mdt_discussion.v6"
                        and chair["status"] == "completed" and state.get("baseline_sha256") == baseline_hash)
+        if current:
+            snapshots = [state.get("latest_chair_result")] + [
+                item.get("chair_result") for item in state.get("rounds", [])
+            ] + [(state.get("active_round") or {}).get("chair_result")]
+            current = all(self._is_current_chair_output(item) for item in snapshots if item is not None)
         latest_failure = failure_path.exists() and (
             not state_path.exists() or failure_path.stat().st_mtime > state_path.stat().st_mtime
         )
@@ -371,22 +380,24 @@ class RunCatalog:
             status = state.get("status", "pending")
         else:
             status = "pending" if runnable else "unavailable"
+        # Keep historical files downloadable, but never expose their clinical contents as current.
+        visible = state if current else {}
         return {
             "case_id": case_id,
             "status": status,
             "runnable": runnable,
             "current_round": (
-                ((state or {}).get("active_round") or {}).get("round_number")
-                or len((state or {}).get("rounds", []))
+                (visible.get("active_round") or {}).get("round_number")
+                or len(visible.get("rounds", []))
             ),
             "max_rounds": (state or {}).get("max_rounds", 3),
-            "rounds": (state or {}).get("rounds", []) if (state or {}).get("schema_version") == "mdt_discussion.v4" else [],
-            "active_round": (state or {}).get("active_round") if (state or {}).get("schema_version") == "mdt_discussion.v4" else None,
-            "report_status": (state or {}).get("report_status", "waiting"),
-            "latest_chair_result": (state or {}).get("latest_chair_result") if (state or {}).get("schema_version") == "mdt_discussion.v4" else None,
-            "decision_state": decision_state,
-            "stop_reason": (state or {}).get("stop_reason"),
-            "final_report": (state or {}).get("final_report") if (state or {}).get("schema_version") == "mdt_discussion.v4" else None,
+            "rounds": visible.get("rounds", []),
+            "active_round": visible.get("active_round"),
+            "report_status": visible.get("report_status", "waiting"),
+            "latest_chair_result": visible.get("latest_chair_result"),
+            "decision_state": decision_state if current else None,
+            "stop_reason": visible.get("stop_reason"),
+            "final_report": visible.get("final_report") if self._is_current_report(visible.get("final_report"), visible.get("latest_chair_result")) else None,
             "error": (
                 failure.get("error") or (state or {}).get("error") or readiness_error
             ),
@@ -405,6 +416,10 @@ class RunCatalog:
         ) else {}
         if failure and runnable:
             status = "failed"
+        final = discussion["final_report"]
+        if runnable and status == "completed" and (not self._is_current_report(final, discussion["latest_chair_result"])
+                or self._json(report_path, None) != final):
+            status = "outdated"
         return {"case_id": discussion["case_id"], "status": status,
                 "report_status": status, "runnable": runnable,
                 "final_report": discussion["final_report"] if runnable and status == "completed" else None,
@@ -412,6 +427,13 @@ class RunCatalog:
 
     def artifacts(self, run_id: str) -> list[dict[str, Any]]:
         run_dir = self.run_dir(run_id)
+        case = self.case_id(run_dir)
+        current_names = {f"{case}_{item['specialty']}_initial.json"
+                         for item in self.specialties(run_id)["results"] if item["status"] == "completed"}
+        if self.chair(run_id)["result"] is not None:
+            current_names.add(f"{case}_mdt_chair_integration.json")
+        if self.report(run_id)["final_report"] is not None:
+            current_names.update({f"{case}_mdt_final_report.json", f"{case}_mdt_final_report.html"})
         result = []
         for path in sorted(item for item in run_dir.rglob("*") if item.is_file()):
             relative = path.relative_to(run_dir).as_posix()
@@ -420,6 +442,7 @@ class RunCatalog:
                     "name": relative,
                     "bytes": path.stat().st_size,
                     "kind": path.suffix.lstrip(".") or "file",
+                    "current": relative in current_names,
                     "updated_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
                 }
             )
@@ -518,21 +541,46 @@ class RunCatalog:
 
     @staticmethod
     def _is_formal_output(value: Any) -> bool:
-        return isinstance(value, dict) and set(value) == {
-            "specialty_assessments",
-            "interspecialty_questions",
-        }
+        from src.agents.common.initial_output import SpecialtyInitialOutput
+        if not isinstance(value, dict) or set(value) != {"specialty_assessments", "interspecialty_questions"}:
+            return False
+        assessments = value.get("specialty_assessments", {}).get("assessments", [])
+        if not assessments or any(not item.get("claims") or not item.get("conditions") or
+                any(key not in item for key in ("assessability", "direction", "confidence", "clinical_role")) or
+                any(not claim.get("claim_id") or "evidence_relations" not in claim for claim in item["claims"])
+                for item in assessments):
+            return False
+        try:
+            SpecialtyInitialOutput.model_validate(value)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _is_current_report(value: Any, latest: Any) -> bool:
+        from src.agents.common.team_synthesis import MDTTeamReport
+        if not isinstance(value, dict) or value.get("schema_version") != "mdt_final_report.v10":
+            return False
+        try:
+            report = MDTTeamReport.model_validate(value)
+        except ValueError:
+            return False
+        return bool(latest and RunCatalog._is_current_chair_output(latest) and
+                    report.team_synthesis.model_dump(mode="json") == latest["team_synthesis"])
 
     @staticmethod
     def _is_current_chair_output(value: Any) -> bool:
         from src.agents.common.team_synthesis import MDTChairResult
-        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v11":
+        from src.agents.mdt_chair.expert import synthesis_hash
+        if not isinstance(value, dict) or value.get("schema_version") != "mdt_chair.v13":
             return False
         try:
-            MDTChairResult.model_validate(value)
+            result = MDTChairResult.model_validate(value)
         except ValueError:
             return False
-        return True
+        return all(item is not None for item in (result.team_synthesis.diagnostic_opinion,
+                    result.team_synthesis.diagnostic_exploration, result.team_synthesis.diagnostic_resolution)) and (
+                    synthesis_hash(result.team_synthesis) == result.team_synthesis.snapshot_hash)
 
     @staticmethod
     def _error_agent(filename: str) -> str:

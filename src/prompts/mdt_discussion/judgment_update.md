@@ -10,7 +10,7 @@
 
 ## 分析任务
 
-新增患者证据、有效专业解释或原判断纠错可使判断增强、减弱或改变。逐条选择一种处理：
+将回答中的判别依据、纠错和限制逐项对照当前判断，复核首选的相对优势及重要发现的解释归属。领先依据改变时更新排序及相关结论，确定度变化时更新信度。逐条选择一种处理：
 1. maintain：内容、确定程度、条件及证据范围不变，解释回答为何一致或不影响它，不提供 proposed_content。
 2. supplement：核心结论、条件及限制不变，仅增加医学、患者或指南依据，提供完整 proposed_content。
 3. qualify：主体与专业层级保留，缩小范围、降低确定程度或增加限制，提供完整 proposed_content。
@@ -26,6 +26,7 @@
 
 - 现有判断用当前 version_id 作 base_version_id；proposed_content 为完整更新后判断而非补丁，未改变条件原样保留。
 - supplement 保留仍适用指南依据；qualify/revise 逐条复核原指南，仅保留支持新判断者。
+- 更新后的每条 claim 同时填写 evidence_relations，只引用当前输入中实际支持、削弱或限定该判断的 Evidence ID，沿用仍适用的关联，不枚举全部组合。空列表只用于无直接病例证据的判断；claim_id、target_claim_id 与原文位置由程序补全。
 - trigger_issue_ids 只用本轮任务编号；considered_source_refs 只用输入实际来源，包括专业来源、回答、回答中判断或复核编号。
 - supplement、qualify、revise、withdraw、create 均记录触发议题和实际参考来源。判断编号及版本号由程序生成。
 - 使用自然临床语言表达更新内容，只返回符合 schema 的简体中文 JSON。

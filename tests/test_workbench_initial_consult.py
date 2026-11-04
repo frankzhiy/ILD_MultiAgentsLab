@@ -15,10 +15,13 @@ from src.workbench.runner import AGENTS, RunOrchestrator
 from src.workbench.workflow import WorkbenchWorkflow
 
 
-FORMAL_OUTPUT = {
-    "specialty_assessments": {"specialty_question": "呼吸科首轮问题"},
-    "interspecialty_questions": {"questions": []},
-}
+from test_expert_protocol import setup_case
+from src.agents.common.decision_state import project_active_specialty_outputs
+
+FORMAL_OUTPUT = project_active_specialty_outputs(setup_case()[0])["pulmonology"]
+for assessment in FORMAL_OUTPUT["specialty_assessments"]["assessments"]:
+    for key in ("judgment_id", "version_id", "previous_version_id", "origin"):
+        assessment.pop(key, None)
 
 
 def write_json(path, value):
@@ -37,7 +40,7 @@ def test_web_specialty_run_writes_two_layers_and_no_html(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         "src.workbench.workflow.build_specialty_case_input",
-        lambda *_args, **_kwargs: {"case_id": "case-1"},
+        lambda *_args, **_kwargs: SimpleNamespace(case_id="case-1"),
     )
     monkeypatch.setattr("src.workbench.workflow.load_yaml", lambda _path: {})
     monkeypatch.setattr("src.workbench.workflow.build_llm_client", lambda _config: object())
@@ -131,7 +134,7 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     write_json(run_dir / "case-1_mdt_decision_state.json", {"judgments": ["initial"]})
     pending_discussion = catalog.discussion("run-1")
     assert pending_discussion["status"] == "pending"
-    assert pending_discussion["decision_state"] == {"judgments": ["initial"]}
+    assert pending_discussion["decision_state"] is None
 
     baseline_path = run_dir / "case-1_mdt_chair_integration.json"
     write_json(run_dir / ".workbench_run.json", {"case_id": "case-1", "status": "failed"})
@@ -150,7 +153,7 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     write_json(
         run_dir / "case-1_mdt_discussion_state.json",
         {
-            "schema_version": "mdt_discussion.v4",
+            "schema_version": "mdt_discussion.v6",
             "case_id": "case-1",
             "baseline_sha256": sha256(baseline_path.read_bytes()).hexdigest(),
             "status": "running",
@@ -164,7 +167,7 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
                 "chair_status": "waiting",
             },
             "report_status": "waiting",
-            "latest_chair_result": {},
+            "latest_chair_result": json.loads(baseline_path.read_text()),
         },
     )
     discussion = catalog.discussion("run-1")
@@ -192,14 +195,16 @@ def test_catalog_exposes_chair_readiness_after_four_specialties(tmp_path):
     ]
 
 
-def test_web_orchestrator_and_workflow_include_chair_without_html_reporting():
+def test_workbench_only_exports_html_at_final_report_stage():
     source = Path(workflow_module.__file__).read_text(encoding="utf-8")
 
     assert "mdt_chair" in AGENTS
     assert hasattr(WorkbenchWorkflow, "run_chair")
     assert "scripts.run" not in source
-    assert "src.reporting" not in source
-    assert ".html" not in source
+    upstream, report_stage = source.split("    def run_report(", 1)
+    assert "src.reporting" not in upstream
+    assert ".html" not in upstream
+    assert "_mdt_final_report.html" in report_stage
 
 
 @pytest.mark.parametrize("discussion_complete", [True, False])

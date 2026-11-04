@@ -20,6 +20,7 @@ from src.agents.mdt_chair.agent import (  # noqa: E402
     build_semantic_evidence_catalog,
 )
 from src.agents.common.decision_state import initialize_decision_state, project_active_specialty_outputs  # noqa: E402
+from src.agents.mdt_chair.prompt_projection import build_chair_prompt_view  # noqa: E402
 from src.llm.factory import build_llm_client  # noqa: E402
 from src.llm.structured import StructuredGenerationError  # noqa: E402
 from src.utils.config import load_yaml  # noqa: E402
@@ -136,9 +137,11 @@ def main() -> int:
         semantic_evidence,
     )
     compact_path = run_dir / f"{case_id}_mdt_chair_prompt_input.json"
-    write_json(compact_path, bundle.prompt_input)
+    prompt_view = build_chair_prompt_view(bundle)
+    write_json(compact_path, prompt_view)
+    write_json(run_dir / f"{case_id}_mdt_chair_audit_input.json", bundle.prompt_input)
     raw_chars = sum(len(json.dumps(value, ensure_ascii=False)) for value in outputs.values())
-    compact_chars = len(json.dumps(bundle.prompt_input, ensure_ascii=False))
+    compact_chars = len(json.dumps(prompt_view, ensure_ascii=False))
     print(
         f"主持人输入压缩完成：{raw_chars:,} → {compact_chars:,} 字符 "
         f"({compact_chars / raw_chars:.1%})",
@@ -158,7 +161,7 @@ def main() -> int:
         write_json(
             failure,
             {
-                "schema_version": "mdt_chair.v11",
+                "schema_version": "mdt_chair.v12",
                 "failed_stage": error.stage,
                 "error": str(error),
                 "attempts": error.attempts,

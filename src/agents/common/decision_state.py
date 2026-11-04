@@ -8,6 +8,11 @@ import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
+from src.agents.common.clinical_concepts import (
+    Assessability, Confidence, JudgmentDirection, ClinicalRole,
+    DIRECTION_DESCRIPTION, CONFIDENCE_DESCRIPTION, validate_judgment_dimensions,
+)
 
 from src.agents.common.initial_output import (
     AssessmentRole,
@@ -17,6 +22,7 @@ from src.agents.common.initial_output import (
     JudgmentConditions,
     SpecialtyAssessment,
     SpecialtyAtomicClaim,
+    synchronize_claim_evidence,
     synchronize_judgment_conditions,
 )
 from src.guidelines.models import GuidelineEvidencePointer
@@ -46,11 +52,11 @@ class JudgmentContent(BaseModel):
     role: AssessmentRole
     assessment_type: AssessmentType
     statement: str = Field(min_length=1)
-    status: AssessmentStatus
-    assessability: Literal["assessable", "partially_assessable", "not_assessable"]
-    direction: Literal["supports", "against", "indeterminate"]
-    confidence: Literal["high", "moderate", "low", "unknown"]
-    clinical_role: Literal["primary", "competing_explanation", "acute_contributor", "comorbidity", "unexplained_finding", "boundary"]
+    status: SkipJsonSchema[AssessmentStatus | None] = Field(default=None, exclude_if=lambda value: value is None)
+    assessability: Assessability
+    direction: JudgmentDirection = Field(description=DIRECTION_DESCRIPTION)
+    confidence: Confidence = Field(description=CONFIDENCE_DESCRIPTION)
+    clinical_role: ClinicalRole
     medical_basis: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
     claims: list[SpecialtyAtomicClaim] = Field(min_length=1)
@@ -61,9 +67,7 @@ class JudgmentContent(BaseModel):
 
     @model_validator(mode="after")
     def consistent_assessability(self):
-        if self.assessability == "not_assessable" and self.confidence != "unknown":
-            raise ValueError("An unassessable judgment cannot have diagnostic confidence")
-        return self
+        return validate_judgment_dimensions(self)
 
     @classmethod
     def from_assessment(cls, assessment: SpecialtyAssessment) -> "JudgmentContent":
@@ -456,8 +460,21 @@ def prepare_judgment_change(
     previous = current.assessment.model_copy(deep=True)
     synchronize_judgment_conditions(previous)
     assessment = proposal.proposed_content.to_assessment(current.judgment_id)
+    synchronize_claim_evidence(assessment)
     synchronize_judgment_conditions(assessment)
     if proposal.change_type == "supplement":
+        for old, new in zip(previous.claims, assessment.claims):
+            if old.statement != new.statement:
+                continue
+            for relation in old.evidence_relations:
+                if not any(
+                    item.evidence_ids == relation.evidence_ids
+                    and item.direction == relation.direction
+                    and item.function == relation.function
+                    for item in new.evidence_relations
+                ):
+                    new.evidence_relations.append(relation.model_copy(deep=True))
+        synchronize_claim_evidence(assessment)
         present = {
             json.dumps(relation.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
             for relation in assessment.evidence.evidence_relations
@@ -537,10 +554,10 @@ def record_discussion_answers(
                 })
             bucket.append({
                 "assessment_id": answer.answer_id,
-                "role": "primary",
                 "assessment_type": "other",
                 "statement": f"对问题 {answer.issue_id} 的会中回答：{answer.answer}",
-                "status": "not_assessable" if answer.answerability == "not_assessable" else "supported" if answer.confidence == "high" else "favored" if answer.confidence == "moderate" else "possible",
+                "answerability": answer.answerability,
+                "answer_confidence": answer.confidence,
                 "medical_basis": answer.medical_basis,
                 "decision_impact": "用于更新该问题的回答与复核状态。",
                 "claims": [
@@ -599,6 +616,8 @@ def _prepare_version_assessment(
     for index, claim in enumerate(assessment.claims, 1):
         if not claim.claim_id:
             claim.claim_id = f"{version_id}_c{index:03d}"
+    synchronize_claim_evidence(assessment)
+    synchronize_judgment_conditions(assessment)
     if len(assessment.claims) == 1:
         for relation in assessment.evidence.evidence_relations:
             if not relation.target_claim_id:
@@ -614,7 +633,14 @@ def _align_unchanged_claim_ids(
     ]:
         return
     for old, new in zip(previous.claims, current.claims, strict=True):
+        previous_id = new.claim_id
         new.claim_id = old.claim_id
+        for relation in new.evidence_relations:
+            relation.target_claim_id = new.claim_id
+        if previous_id:
+            for relation in current.evidence.evidence_relations:
+                if relation.target_claim_id == previous_id:
+                    relation.target_claim_id = new.claim_id
     if len(current.claims) == 1:
         for relation in current.evidence.evidence_relations:
             if not relation.target_claim_id:
@@ -653,7 +679,7 @@ def _validate_change_kind(change_type, previous, current, fields) -> None:
             "not_assessable": 1,
             "not_applicable": 0,
         }
-        if ranks[current.status] > ranks[previous.status]:
+        if current.status is not None and previous.status is not None and ranks[current.status] > ranks[previous.status]:
             raise ValueError("qualify cannot strengthen the judgment status")
         if not _is_superset(current.limitations, previous.limitations):
             raise ValueError("qualify cannot remove existing limitations")
@@ -694,7 +720,15 @@ def _validate_supplement_conditions(previous, current) -> None:
 def _changed_fields(previous: SpecialtyAssessment, current: SpecialtyAssessment) -> list[str]:
     old = previous.model_dump(mode="json")
     new = current.model_dump(mode="json")
-    return sorted(key for key in old if old[key] != new[key] and key != "assessment_id")
+    # Evidence changes do not change the clinical content of an atomic claim.
+    for value in (old, new):
+        value["claims"] = [
+            {key: item for key, item in claim.items() if key != "evidence_relations"}
+            for claim in value["claims"]
+        ]
+    return sorted(key for key in old.keys() | new.keys()
+                  if old.get(key) != new.get(key) and key != "assessment_id"
+                  and not (key == "status" and current.status is None))
 
 
 def _is_superset(current: list[Any], previous: list[Any]) -> bool:

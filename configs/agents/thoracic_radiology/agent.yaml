@@ -1,7 +1,6 @@
 protocol_version: expert.v1
 provider: apiyi
-model: gpt-6.1-sol
-# deepseek-v4-flash
+model: gpt-6.1-terra
 base_url: https://api.apiyi.com/v1
 # base_url: http://api.apiyi.com:16888/v1
 api_key_env: APIYI_API_KEY
@@ -29,10 +28,6 @@ guideline_retrieval:
     - ers-ats-iip-classification-2025
     - ats-ers-jrs-alat-ipf-ppf-2022
     - cts-ild-mdd-2023-zh
-  queries:
-    initial_case_reconstruction: ILD 影像会诊如何评价检查来源、HRCT 技术质量、可评价性和比较检查
-    initial_consult_formulation: ILD 影像表型、形态模式、UIP 分类、急性叠加和纵向进展如何解释
-    initial_reasoning_output: ILD 影像问题、形态候选、急性叠加、纵向变化和疾病关联边界应如何论证
 
 clinical_rules:
   morphology:

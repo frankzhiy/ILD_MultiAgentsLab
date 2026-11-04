@@ -129,6 +129,10 @@ class WorkbenchWorkflow:
         self._load_env()
         enum = MdtSpecialty(specialty)
         case = build_specialty_case_input(run_dir, enum, case_id=case_id)
+        from src.agents.common.consultation import ConsultationContext
+        manifest_path = run_dir / ".workbench_run.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        case.consultation = ConsultationContext.model_validate(manifest.get("consultation", {}))
         stem = f"{case_id}_{specialty}"
         self._write(run_dir / f"{stem}_input.json", case)
         callback = self._progress(run_id, specialty)
@@ -257,9 +261,16 @@ class WorkbenchWorkflow:
             case_id,
             project_active_specialty_outputs(decision_state),
             semantic_evidence=semantic_evidence,
+            consultation=json.loads((run_dir / ".workbench_run.json").read_text()).get("consultation", {})
+                if (run_dir / ".workbench_run.json").exists() else {},
         )
+        from src.agents.mdt_chair.prompt_projection import build_chair_prompt_view
         self._write(
             run_dir / f"{case_id}_mdt_chair_prompt_input.json",
+            build_chair_prompt_view(bundle),
+        )
+        self._write(
+            run_dir / f"{case_id}_mdt_chair_audit_input.json",
             bundle.prompt_input,
         )
         config = load_yaml(config_path)
@@ -347,6 +358,8 @@ class WorkbenchWorkflow:
             case_id,
             project_active_specialty_outputs(decision_state),
             semantic_evidence=semantic_evidence,
+            consultation=json.loads((run_dir / ".workbench_run.json").read_text()).get("consultation", {})
+                if (run_dir / ".workbench_run.json").exists() else {},
         )
         state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
         trace_path = run_dir / f"{case_id}_mdt_discussion_trace.json"
@@ -382,13 +395,12 @@ class WorkbenchWorkflow:
                     decision_state=state.decision_state,
                 )
                 if not tasks:
+                    resolution = latest.team_synthesis.diagnostic_resolution
+                    if resolution is None or resolution.status == "needs_discussion":
+                        raise ValueError("缺少有效诊断目标复核，请重新运行会前整合。")
                     latest.team_synthesis.stop_kind = "completed"
                     state.latest_chair_result = latest.model_dump(mode="json")
-                    state.stop_reason = (
-                        "讨论前主持人基线没有仍需专科处理的问题或真实冲突。"
-                        if round_number == 1
-                        else "当前已无仍需专科处理的问题或真实冲突。"
-                    )
+                    state.stop_reason = "已形成当前诊断意见并完成主要鉴别审查，现有输入下无可推进议题。"
                     break
                 grouped = group_tasks_by_specialty(tasks)
                 task_payloads = [task.model_dump(mode="json") for task in tasks]
@@ -539,18 +551,14 @@ class WorkbenchWorkflow:
                         response,
                     )
 
-                question_by_id = {
-                    question.issue_id: question for question in latest.team_synthesis.issues
-                }
                 task_by_id = {task.task_id: task for task in tasks}
                 review_jobs = []
                 for response in responses:
                     for answer in response.answers:
                         task = task_by_id[answer.task_id]
-                        question = question_by_id.get(answer.issue_id)
-                        if task.issue_type != "question" or question is None:
+                        if task.issue_type != "question":
                             continue
-                        for reviewer in question.raised_by:
+                        for reviewer in task.raised_by:
                             if reviewer == task.specialty:
                                 continue
                             review_id = f"{answer.answer_id}-RV-{reviewer}"
@@ -806,6 +814,8 @@ class WorkbenchWorkflow:
                     case_id,
                     project_active_specialty_outputs(state.decision_state),
                     semantic_evidence=semantic_evidence,
+                    consultation=json.loads((run_dir / ".workbench_run.json").read_text()).get("consultation", {})
+                        if (run_dir / ".workbench_run.json").exists() else {},
                     discussion_round=round_number,
                     source_seed=source_seed,
                 )
@@ -938,6 +948,7 @@ class WorkbenchWorkflow:
         verify_stage_snapshot(self.root, run_dir, "mdt_report")
         from src.agents.mdt_discussion.models import MDTDiscussionState
         from src.agents.mdt_discussion.final_report import project_team_report
+        from src.reporting.mdt_html import write_mdt_html
         state_path = run_dir / f"{case_id}_mdt_discussion_state.json"
         state = MDTDiscussionState.model_validate_json(state_path.read_text(encoding="utf-8"))
         baseline_path = run_dir / f"{case_id}_mdt_chair_integration.json"
@@ -956,6 +967,9 @@ class WorkbenchWorkflow:
                 json.loads(baseline_path.read_text()), state.decision_state,
             )
             self._check_stop(run_id)
+            self._write(run_dir / f"{case_id}_mdt_final_report.json", report)
+            self._write(run_dir / f"{case_id}_mdt_final_report_trace.json", trace)
+            write_mdt_html(run_dir / f"{case_id}_mdt_final_report.html", report, state)
         except RunStopped:
             state.report_status = "stopped"
             self._write(state_path, state)
@@ -967,8 +981,6 @@ class WorkbenchWorkflow:
             raise
         state.final_report = report
         state.report_status = "completed"
-        self._write(run_dir / f"{case_id}_mdt_final_report.json", report)
-        self._write(run_dir / f"{case_id}_mdt_final_report_trace.json", trace)
         self._write(state_path, state)
         self.events.append(run_id, "discussion_report_completed", {}, stage="mdt_report")
 

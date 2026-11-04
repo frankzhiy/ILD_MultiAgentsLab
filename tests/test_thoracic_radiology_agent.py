@@ -18,7 +18,6 @@ from src.agents.thoracic_radiology.models import CaseOrientation, CoreConsultAns
 from src.agents.thoracic_radiology.validation import resolve_proposition_pointers, validate_case_reconstruction
 from src.llm.base import LLMResponse
 from src.llm.structured import StructuredLLMGenerator
-from src.reporting.thoracic_radiology_report import render_thoracic_radiology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.semantic_graphing.clinical_proposition import PropositionType
 from src.schemas.semantic_graphing.document import SourceType
@@ -545,30 +544,6 @@ def test_unknown_proposition_id_is_rejected():
 
 
 
-
-def test_initial_report_leads_with_core_answer_and_keeps_guide_as_audit(tmp_path):
-    case = case_0714()
-    result = validate_initial_assessment(assessment_0714(), case)
-    output = tmp_path / "thoracic_radiology.html"
-
-    render_thoracic_radiology_report(result, case, output)
-
-    html = output.read_text(encoding="utf-8")
-    assert "胸部影像科 首轮评估" in html
-    assert "仅分析病例中的影像文字描述" in html
-    assert "当前影像问题" in html
-    assert "核心回答" in html
-    assert "影像审阅覆盖（内部审计）" in html
-    assert "七问处理状态" not in html
-    assert "双肺间质增粗纹理走形杂乱" in html
-    assert html.index("核心回答") < html.index("影像审阅覆盖")
-    pointer = result.core_answer.supporting_evidence[0]
-    assert "核心回答证据" in html
-    assert "片段 ·" in html and pointer.segment_id in html
-    assert "证据 ·" in html and pointer.evidence_ids[0] in html
-    assert "节点 ·" in html and pointer.node_ids[0] in html
-    assert "命题 ·" in html and pointer.proposition_ids[0] in html
-    assert all(quote in html for quote in pointer.quote.splitlines())
 
 
 def test_duplicate_task_feedback_requires_merging_entries_not_changing_activation():

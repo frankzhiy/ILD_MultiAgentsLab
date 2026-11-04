@@ -25,6 +25,40 @@ from src.llm.base import LLMResponse
 from src.llm.structured import json_schema_response_format
 
 
+def test_discussion_answer_does_not_retry_for_wording():
+    from test_expert_protocol import Responses
+    propositions, graphs = documents()
+    task = build_discussion_tasks(chair_result=current_chair_question(),
+        clinical_propositions=propositions, local_graphs=graphs,
+        round_number=1, previous_rounds=[])[0]
+    draft = dict(answerability='not_assessable', answer='本轮未直接阅片。',
+        confidence='unknown', medical_basis='未记载分布，无法区分模式。',
+        answer_claims=[dict(statement='本轮未直接阅片。', evidence_uses=[], guideline_evidence=[])])
+    agent = SpecialtyDiscussionAgent(Responses([draft]), specialty='pulmonology',
+        config={'max_attempts': 1, 'guideline_retrieval': {'enabled': False}})
+    answer, trace = agent.respond_to_task(task=task, specialty_initial_output={
+        'specialty_assessments': {'assessments': [], 'boundaries': []},
+        'interspecialty_questions': {'questions': []}}, chair_result=current_chair_question())
+    assert answer.answer == draft['answer']
+    assert len(trace['attempts']) == 1
+
+
+def test_synthesis_review_excludes_audit_without_retrying_for_wording():
+    from test_expert_protocol import Responses, setup_case, run_expert
+    state, bundle, payload = setup_case()
+    team = run_expert(bundle, [payload]).team_synthesis
+    team.source_catalog['S001']['quote'] = '不应进入模型的审计原文标记'
+    agent = SpecialtyDiscussionAgent(Responses([dict(decision='accept',
+        rationale='本轮未直接阅片。')]), specialty='pulmonology',
+        config={'max_attempts': 1, 'guideline_retrieval': {'enabled': False}})
+    from src.agents.common.decision_state import project_active_specialty_outputs
+    review, trace = agent.review_synthesis(team=team,
+        specialty_output=project_active_specialty_outputs(state)['pulmonology'])
+    assert review.rationale == '本轮未直接阅片。'
+    assert len(trace['attempts']) == 1
+    assert '不应进入模型的审计原文标记' not in trace['prompt']
+
+
 def documents():
     propositions = {
         "segments": [{
@@ -103,30 +137,19 @@ def chair_question_model():
 
 
 def test_specialty_initial_prompt_view_keeps_only_two_formal_sections():
-    view = build_specialty_initial_prompt_view({
-        "professional_conclusions": {"marker": "正式结论"},
-        "clinical_reasoning": {"marker": "内部推理"},
-    })
-
-    assert view == {
-        "specialty_assessments": {
-            "specialty_question": None,
-            "assessability": None,
-            "assessments": [],
-            "evidence_gaps": [],
-            "boundaries": [],
-        },
-        "interspecialty_questions": {"questions": []},
-    }
+    value = {"specialty_assessments": {"assessments": []}, "interspecialty_questions": {"questions": []}}
+    assert build_specialty_initial_prompt_view({**value, "internal_state": {"marker": "internal"}}) == value
+    with pytest.raises(ValueError):
+        build_specialty_initial_prompt_view({"professional_conclusions": {"marker": "old"}})
 
 
 def test_discussion_prompt_views_keep_only_the_current_issue_and_compact_baseline():
     chair = current_chair_question()
     chair_view = build_issue_chair_prompt_view(chair, "Q001")
     specialty_view = build_specialty_discussion_prompt_view({
-        "professional_conclusions": {
-            "conclusions": [{
-                "conclusion_id": "C001",
+        "specialty_assessments": {
+            "assessments": [{
+                "assessment_id": "C001",
                 "statement": "正式专科结论",
                 "status": "possible",
                 "medical_basis": "简要依据",
@@ -135,6 +158,7 @@ def test_discussion_prompt_views_keep_only_the_current_issue_and_compact_baselin
             }],
             "boundaries": ["既有边界"],
         },
+        "interspecialty_questions": {"questions": []},
     })
 
     assert chair_view["issue"]["issue_id"] == "Q001"
@@ -261,16 +285,17 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
     answer, trace = agent.respond_to_task(
         task=task,
         specialty_initial_output={
-            "professional_conclusions": {
-                "conclusions": [{
-                    "conclusion_id": "C001",
+            "specialty_assessments": {
+                "assessments": [{
+                    "assessment_id": "C001",
                     "statement": "正式专科结论",
                     "status": "possible",
                     "medical_basis": "既有依据",
                 }],
                 "boundaries": [],
             },
-            "clinical_reasoning": {"marker": "不应进入会中提示的内部推理"},
+            "interspecialty_questions": {"questions": []},
+            "internal_state": {"marker": "不应进入会中提示的内部推理"},
         },
         chair_result=current_chair_question(),
     )
@@ -284,7 +309,7 @@ def test_specialty_discussion_generates_one_answer_for_one_task():
     assert "不应进入会中提示的内部推理" not in trace["prompt"]
     assert "不应进入共享提示的完整专科原文" not in trace["prompt"]
     assert "`remaining_clarification` 是本轮真正需要解决的部分" in trace["prompt"]
-    assert "不能确认”也可以是对问题的完整回答" in trace["prompt"]
+    assert "不用资料不足、诊断未完成或待补检查代替回答" in trace["prompt"]
 
 
 def test_requester_review_uses_only_the_current_question_and_answer():
@@ -391,7 +416,8 @@ def test_requester_review_is_available_when_requester_updates_its_judgments():
     assert review.rationale in trace["prompt"]
 
 
-def test_judgment_update_preserves_validated_patient_and_guideline_locations():
+@pytest.mark.parametrize("inline", [False, True])
+def test_judgment_update_preserves_validated_patient_and_guideline_locations(inline):
     assessment = SpecialtyAssessment.model_validate({
         "assessability": "partially_assessable", "direction": "supports", "confidence": "moderate", "clinical_role": "primary",
         "assessment_id": "pulmonology_001",
@@ -431,6 +457,9 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations():
         content_hash="hash",
     )
     content = JudgmentContent.from_assessment(assessment)
+    if inline:
+        content.claims[0].evidence_relations = [content.evidence.evidence_relations[0].model_copy(deep=True)]
+        content.evidence.evidence_relations = []
     content.medical_basis += " 本轮回答补充了同一判断的解释。"
     proposal = JudgmentChangeProposal(
         change_type="supplement",
@@ -487,7 +516,13 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations():
     )
     resolved = update.proposals[0].proposed_content
 
-    assert resolved.evidence.evidence_relations[0].node_ids == ["gu-1::prop-1"]
+    if inline:
+        assert resolved.claims[0].evidence_relations[0].node_ids == ["gu-1::prop-1"]
+        prepared, _ = prepare_judgment_change(current, update.proposals[0])
+        assert prepared.claims[0].evidence_relations[0].target_claim_id == "claim-1"
+        assert prepared.evidence.evidence_relations[0].target_claim_id == "claim-1"
+    else:
+        assert resolved.evidence.evidence_relations[0].node_ids == ["gu-1::prop-1"]
     assert resolved.guideline_evidence[0].quote == "已核验的指南原文"
     assert resolved.guideline_evidence[0].guideline_id == "guide-1"
 
@@ -506,7 +541,7 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations():
 def test_judgment_update_repairs_change_type_before_committing_core_change():
     assessment = SpecialtyAssessment.model_validate({
         "assessability": "partially_assessable", "direction": "supports", "confidence": "moderate", "clinical_role": "primary",
-        "assessment_id": "pathology_001",
+        "assessment_id": "pathology_001", "claims": [{"statement": "现有切片支持纤维化。"}],
         "role": "primary",
         "assessment_type": "working_diagnosis",
         "statement": "现有切片支持纤维化。",
@@ -764,7 +799,7 @@ def test_judgment_update_evidence_deduplication_is_lossless():
 def test_incomplete_judgment_update_feedback_names_missing_targets_and_append_operation():
     from src.llm.structured import StructuredGenerationError
     assessment = SpecialtyAssessment.model_validate(dict(
-        assessment_id='a1', role='primary', assessment_type='working_diagnosis',
+        assessment_id='a1', claims=[{'statement': '有限判断'}], role='primary', assessment_type='working_diagnosis',
         statement='有限工作判断', assessability='partially_assessable', direction='supports',
         confidence='low', clinical_role='primary', status='possible', medical_basis='原文',
         decision_impact='病因定位', evidence={'evidence_relations': []}))
@@ -791,3 +826,54 @@ def test_incomplete_judgment_update_feedback_names_missing_targets_and_append_op
     llm.items = proposals
     update, _ = agent.propose_judgment_update(round_number=1, tasks=[], answers=[], active_judgments=judgments)
     assert len(update.proposals) == 2
+
+
+def original_question_chair():
+    chair = current_chair_question()
+    team = chair['team_synthesis']
+    team['issues'] = []
+    team['source_catalog']['SQ1'] = dict(source_ref='SQ1', specialty='thoracic_radiology',
+        source_type='interspecialty_question', target_specialty='pulmonology',
+        quote='气道异常是并存问题还是整体竞争解释？', why_it_matters='影响主诊断排序',
+        decision_unlocked='说明两种解释各自的支持范围')
+    team['issue_dispositions'] = [dict(issue_id='SQ1', outcome='covered',
+        rationale='已有首轮意见', source_refs=[team['judgment_reviews'][0]['source_ref']])]
+    return chair
+
+
+def test_original_specialty_question_is_answered_even_when_chair_marks_it_covered():
+    chair = original_question_chair()
+    propositions, graphs = documents()
+    tasks = build_discussion_tasks(chair_result=chair, clinical_propositions=propositions,
+        local_graphs=graphs, round_number=1, previous_rounds=[])
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.issue_id == 'SQ1'
+    assert task.specialty == 'pulmonology'
+    assert task.raised_by == ['thoracic_radiology']
+    assert task.origin == 'specialty'
+    assert task.prompt == chair['team_synthesis']['source_catalog']['SQ1']['quote']
+    assert task.evidence_candidates
+    assert build_issue_chair_prompt_view(chair, 'SQ1')['issue']['quote'] == task.prompt
+    assert chair['team_synthesis']['issues'] == []  # Keep the sealed baseline unchanged.
+
+
+@pytest.mark.parametrize('origin', ['chair', 'specialty'])
+def test_open_issue_does_not_duplicate_its_original_question_or_lose_its_requester(origin):
+    chair = original_question_chair()
+    issue = current_chair_question()['team_synthesis']['issues'][0]
+    issue.update(origin=origin, raised_by=['thoracic_radiology'] if origin == 'specialty' else [], source_refs=['SQ1'])
+    chair['team_synthesis']['issues'] = [issue]
+    propositions, graphs = documents()
+    tasks = build_discussion_tasks(chair_result=chair, clinical_propositions=propositions,
+        local_graphs=graphs, round_number=1, previous_rounds=[])
+    assert len(tasks) == 1
+    assert tasks[0].issue_id == 'Q001'
+    assert tasks[0].raised_by == ['thoracic_radiology']
+
+
+def test_original_question_is_not_automatically_repeated_in_later_rounds():
+    propositions, graphs = documents()
+    assert build_discussion_tasks(chair_result=original_question_chair(),
+        clinical_propositions=propositions, local_graphs=graphs,
+        round_number=2, previous_rounds=[]) == []

@@ -60,10 +60,11 @@ def test_cli_writes_pathology_input_and_outputs(monkeypatch, tmp_path):
         "evidence_input.json",
         "initial.json",
         "initial_trace.json",
-        "initial.html",
     ):
         assert (tmp_path / f"pathology-case_pathology_{suffix}").exists()
 
+
+    assert not list(tmp_path.glob("*.html"))
 
 def test_progress_reporter_labels_pathology_stage(capsys):
     reporter = runner.ProgressReporter()

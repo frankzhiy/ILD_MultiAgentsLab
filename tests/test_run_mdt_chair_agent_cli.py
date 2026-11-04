@@ -28,8 +28,13 @@ def test_cli_integrates_formal_specialty_files_without_top_level_case_id(monkeyp
     result = runner.read_json(tmp_path / 'synthetic-case_mdt_chair_integration.json')
     saved_state = runner.read_json(tmp_path / 'synthetic-case_mdt_decision_state.json')
     assert result['case_id'] == saved_state['case_id'] == 'synthetic-case'
-    assert result['schema_version'] == 'mdt_chair.v11'
+    assert result['schema_version'] == 'mdt_chair.v13'
     assert set(result['team_synthesis']['dependency_versions'].values()) == {
         history['active_version_id'] for history in saved_state['judgments']
     }
-    assert llm.calls == 1
+    assert llm.calls == 2
+    prompt_input = runner.read_json(tmp_path / 'synthetic-case_mdt_chair_prompt_input.json')
+    audit_input = runner.read_json(tmp_path / 'synthetic-case_mdt_chair_audit_input.json')
+    assert 'case_evidence' in prompt_input
+    assert 'evidence_options' in audit_input['specialties'][0]['specialty_assessments'][0]
+    assert 'evidence_options' not in prompt_input['chair_input']['specialties'][0]['specialty_assessments'][0]

@@ -7,7 +7,7 @@ import { OverviewWorkspace } from './OverviewWorkspace'
 
 vi.mock('../../api', () => ({
   api: {
-    specialties: vi.fn(), semantic: vi.fn(), chair: vi.fn(), discussion: vi.fn(),
+    specialties: vi.fn(), semantic: vi.fn(), chair: vi.fn(), discussion: vi.fn(), report: vi.fn(),
   },
 }))
 vi.mock('@xyflow/react', () => ({
@@ -30,6 +30,7 @@ it('restores the chair, discussion, and final report stages after refresh', asyn
   api.specialties.mockResolvedValue({ results: ['pulmonology', 'thoracic_radiology', 'rheumatology', 'pathology'].map((specialty) => ({ specialty, label: specialty, status: 'completed' })) })
   api.chair.mockResolvedValue({ status: 'completed' })
   api.discussion.mockResolvedValue({ status: 'completed', current_round: 1, report_status: 'completed', final_report: { primary_conclusion: '工作诊断' } })
+  api.report.mockResolvedValue({ report_status: "completed" })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<MemoryRouter><QueryClientProvider client={client}><OverviewWorkspace runId="run-1" run={{ manifest: { case_version_id: 'current-version', parent_case_version_id: 'previous-version', parent_run_id: 'prior-consultation' }, status: 'completed', semantic_complete: true, completed_specialties: ['pulmonology', 'thoracic_radiology', 'rheumatology', 'pathology'], chair_complete: true, discussion_complete: true }} /></QueryClientProvider></MemoryRouter>)
 

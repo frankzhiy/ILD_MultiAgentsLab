@@ -29,7 +29,6 @@ from src.agents.thoracic_radiology.evidence_projection import build_radiology_ev
 from src.llm.factory import build_llm_client
 from src.llm.prompting import llm_value
 from src.llm.structured import StructuredGenerationError
-from src.reporting.thoracic_radiology_report import render_thoracic_radiology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.utils.config import load_yaml
 
@@ -273,15 +272,12 @@ def main() -> int:
 
     output = run_dir / f"{output_stem}_{suffix}.json"
     trace_output = run_dir / f"{output_stem}_{suffix}_trace.json"
-    report_output = run_dir / f"{output_stem}_{suffix}.html"
-    with progress.step("写入 JSON、trace 和 HTML 报告"):
+    with progress.step("写入正式结果、内部状态和 trace"):
         write_json(output, consultation.formal_output.model_dump(mode="json"))
         write_json(run_dir / f"{case_input.case_id}_thoracic_radiology_internal_state.json", result.model_dump(mode="json"))
         write_json(trace_output, trace)
-        render_thoracic_radiology_report(result, case_input, report_output)
     progress.log(f"JSON 结果：{output.resolve()}")
     progress.log(f"Trace：{trace_output.resolve()}")
-    progress.log(f"HTML 报告：{report_output.resolve()}")
     progress.log(f"运行完成，总耗时 {progress.total_elapsed()}")
     return 0
 

@@ -1,6 +1,7 @@
 """The public stage lifecycle, without patient data or network requests."""
 import asyncio
 from copy import deepcopy
+from html import escape
 from threading import Event
 from types import SimpleNamespace
 
@@ -60,6 +61,7 @@ def test_stop_rerun_through_report_and_independent_report_retry(monkeypatch, tmp
             def integrate(self, bundle, **context):
                 calls.append('chair')
                 candidate = deepcopy(payload)
+                candidate['diagnostic_resolution']['status'] = 'needs_discussion' if candidate['issues'] and not context else 'provisional_diagnosis'
                 if context:
                     candidate['issues'] = []
                     candidate['issue_dispositions'] = [dict(issue_id=a.issue_id, outcome='bounded',
@@ -119,6 +121,20 @@ def test_stop_rerun_through_report_and_independent_report_retry(monkeypatch, tmp
         assert catalog.discussion('run-1')['status'] == 'completed'
         assert calls.count('R01-I1-pulmonology') == 2  # Whole stage restarts, including completed tasks.
         assert catalog.report('run-1')['final_report'] is not None
+        html_path = run_dir / f'{case}_mdt_final_report.html'
+        html = html_path.read_text(encoding='utf-8')
+        from src.agents.mdt_discussion.final_report import report_diagnosis
+        from src.agents.common.team_synthesis import TeamSynthesis
+        team = TeamSynthesis.model_validate(catalog.report('run-1')['final_report']['team_synthesis'])
+        diagnosis = report_diagnosis(team)
+        assert f'<p class="diagnosis-result">{escape(diagnosis)}</p>' in html
+        assert all(label in html for label in (
+            '诊断结果', '诊断依据与鉴别诊断', '尚待明确的问题', '待核实资料',
+            '第 1 轮', '现有资料无法回答', '本轮处理', '尚待明确',
+        ))
+        sections = ('id="result"', 'id="diagnosis"', 'id="boundaries"', 'id="needs"')
+        assert [html.index(section) for section in sections] == sorted(html.index(section) for section in sections)
+        assert any(item['name'] == html_path.name and item['current'] for item in catalog.artifacts('run-1'))
         assert catalog.run_summary(run_dir)['status'] == 'completed'
         assert list((run_dir / 'stage_history').glob(f'*/{case}_mdt_discussion_state.json'))
         from src.agents.mdt_discussion import final_report
@@ -130,16 +146,19 @@ def test_stop_rerun_through_report_and_independent_report_retry(monkeypatch, tmp
         await asyncio.sleep(0)
         assert catalog.report('run-1')['status'] == 'failed'
         assert catalog.discussion('run-1')['status'] == 'completed'
+        assert not html_path.exists()
+        assert list((run_dir / 'stage_history').glob(f'*/{html_path.name}'))
         calls_before = list(calls)
         monkeypatch.setattr(final_report, 'project_team_report', project)
         await runner.start_report('run-1')
         await asyncio.sleep(0)
         report = catalog.report('run-1')
         assert report['status'] == 'completed'
-        assert report['final_report']['schema_version'] == 'mdt_final_report.v8'
+        assert report['final_report']['schema_version'] == 'mdt_final_report.v10'
         assert report['final_report']['team_synthesis']['schema_version'] == 'team_synthesis.v2'
         assert len(report['final_report']['team_synthesis']['acceptance_records']) == 4
         assert report['final_report']['team_synthesis']['acceptance'] == 'accepted_with_boundaries'
+        assert html_path.read_text(encoding='utf-8') == html
         assert calls == calls_before  # Report retry never reruns upstream agents.
         # A failure before the report worker clears the previous state must still hide it.
         original_report = runner.workflow.run_report
@@ -357,3 +376,81 @@ def test_stage_failure_trace_keeps_attempts_from_wrapped_semantic_errors(tmp_pat
         asyncio.run(runner._stage('run-case', directory, 'semantic_graphing', 'semantic_graphing', fail))
     saved = json.loads((directory / 'case_semantic_graphing_semantic_graphing_failure_trace.json').read_text())
     assert saved['attempts'] == attempts
+
+
+def test_covered_original_question_reaches_answerer_requester_and_chair(monkeypatch, tmp_path):
+    from src.agents.common.team_synthesis import MDTChairResult, SynthesisAcceptance
+    from src.agents.mdt_discussion.models import SpecialtyAnswerReview
+    from src.workbench.workflow import WorkbenchWorkflow
+    from test_mdt_discussion import original_question_chair
+
+    state, _, _ = setup_case()
+    baseline = MDTChairResult.model_validate(original_question_chair())
+    case = baseline.case_id
+    run_dir = tmp_path / 'run-1'
+    run_dir.mkdir()
+    for specialty, output in project_active_specialty_outputs(state).items():
+        for assessment in output['specialty_assessments']['assessments']:
+            for key in ('judgment_id', 'version_id', 'previous_version_id', 'origin'):
+                assessment.pop(key, None)
+        if specialty == 'thoracic_radiology':
+            output['interspecialty_questions']['questions'] = [dict(
+                question=baseline.team_synthesis.source_catalog['SQ1']['quote'],
+                target_specialty='pulmonology', why_it_matters='影响诊断排序', decision_unlocked='解释诊断依据')]
+        write_json(run_dir / f'{case}_{specialty}_initial.json', output)
+    for name in ('clinical_propositions', 'local_graphs'):
+        write_json(run_dir / f'{case}_{name}.json', {'segments': []})
+    write_json(run_dir / f'{case}_mdt_chair_integration.json', baseline)
+    baseline_bytes = (run_dir / f'{case}_mdt_chair_integration.json').read_bytes()
+    config_paths = {}
+    for specialty in (*SPECIALTIES, 'mdt_chair'):
+        config_paths[specialty] = tmp_path / f'{specialty}.yaml'
+        config_paths[specialty].write_text('{}')
+    monkeypatch.setattr('src.workbench.workflow.build_llm_client', lambda _: None)
+    calls = []
+
+    def specialty_factory(_cls, *_args, specialty, **_kwargs):
+        def respond(*, task, **_):
+            calls.append(('answer', specialty, task.issue_id))
+            return SpecialtyTaskAnswer(answer_id=task.task_id + '-A', task_id=task.task_id,
+                issue_type=task.issue_type, issue_id=task.issue_id, answerability='partially_answered',
+                answer='仅支持并存成分，不能据此改为主诊断', confidence='low',
+                medical_basis='已有文字证据', changed_from_previous=False), {}
+        def review(*, task, answer):
+            calls.append(('review', specialty, task.issue_id))
+            return SpecialtyAnswerReview(review_id=answer.answer_id + '-RV-' + specialty,
+                issue_id=task.issue_id, answer_id=answer.answer_id, reviewer_specialty=specialty,
+                outcome='accept_boundary', rationale='原问题已得到有边界的解释'), {}
+        def update(**_):
+            return SpecialtyJudgmentUpdate(specialty=specialty, transaction_id='update-' + specialty), {}
+        def accept(*, team, **_):
+            return SynthesisAcceptance(specialty=specialty, revision=team.revision,
+                snapshot_hash=team.snapshot_hash, decision='accept', rationale='接受当前解释'), {}
+        return SimpleNamespace(respond_to_task=respond, review_answer=review,
+            propose_judgment_update=update, review_synthesis=accept)
+
+    def chair_factory(_cls, *_args, **_kwargs):
+        def integrate(bundle, **context):
+            calls.append(('chair',))
+            assert len(context['discussion_reviews']) == 1
+            assert context['discussion_reviews'][0].reviewer_specialty == 'thoracic_radiology'
+            answer = context['discussion_responses'][0].answers[0]
+            result = context['discussion_previous'].model_copy(deep=True)
+            disposition = result.team_synthesis.issue_dispositions[0]
+            disposition.outcome = 'answered'
+            disposition.response_refs = [answer.answer_id]
+            return result, {}
+        return SimpleNamespace(integrate=integrate)
+
+    monkeypatch.setattr(SpecialtyDiscussionAgent, 'from_config', classmethod(specialty_factory))
+    monkeypatch.setattr(MDTChairAgent, 'from_config', classmethod(chair_factory))
+    workflow = WorkbenchWorkflow(tmp_path, EventStore(tmp_path / 'events.sqlite3'))
+    workflow.run_discussion('run-1', run_dir, case, config_paths)
+    import json
+    saved = json.loads((run_dir / f'{case}_mdt_discussion_state.json').read_text())
+    assert saved['status'] == 'completed'
+    assert len(saved['rounds']) == 1
+    assert calls[:3] == [('answer', 'pulmonology', 'SQ1'),
+                         ('review', 'thoracic_radiology', 'SQ1'), ('chair',)]
+    assert len(saved['rounds'][0]['answer_reviews']) == 1
+    assert (run_dir / f'{case}_mdt_chair_integration.json').read_bytes() == baseline_bytes

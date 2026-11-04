@@ -15,5 +15,5 @@ export const useWorkbenchStore = create((set) => ({
     evidence: state.evidenceList[evidenceIndex],
     evidenceIndex,
   })),
-  closeEvidence: () => set({ evidenceOpen: false }),
+  closeEvidence: () => set({ evidenceOpen: false, evidence: null, evidenceList: [], evidenceIndex: 0 }),
 }))

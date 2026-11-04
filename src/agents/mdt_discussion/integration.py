@@ -83,7 +83,13 @@ def decide_discussion_continuation(
                "actionable_conflicts": sum(d.status == "open" for d in team.disagreements),
                "changed_judgments": changed, "forward_reviews": forward}
     if not team.issues:
-        kind, reason = "completed", "当前已无可通过专科回答推进的议题；判断边界及资料需求保留。"
+        resolution = team.diagnostic_resolution
+        if resolution is None:
+            raise ValueError("Missing diagnostic completion review; rerun chair integration")
+        if resolution.status == "needs_discussion":
+            raise ValueError("Unresolved diagnostic reasoning has no routed discussion task")
+        kind = "completed"
+        reason = "已形成当前诊断意见并完成主要鉴别审查，现有输入下无可推进议题。"
     elif round_number >= max_rounds:
         kind, reason = "budget", f"已达到最多{max_rounds}轮团队讨论。"
     elif not changed and not forward and targets(team.issues) == targets(previous.team_synthesis.issues):

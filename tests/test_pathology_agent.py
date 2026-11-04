@@ -7,7 +7,6 @@ from src.agents.pathology.agent import PathologyAgent
 from src.agents.pathology.models import EvidencePointer, HistopathologicPattern, HistopathologicPatternAssessment, InitialConsultFormulation, InitialMorphologicAssessment, InitialSpecimenReconstruction, MorphologicFeature, PathologyDomain, PathologyFormulation, PathologyInitialAssessment, SourceAssessment, SpecimenRecord
 from src.agents.pathology.validation import validate_initial_assessment, validate_initial_stage, validate_material_plan
 from src.llm.base import LLMResponse
-from src.reporting.pathology_report import render_pathology_report
 from src.schemas.semantic_graphing.clinical_proposition import (
     ClinicalProposition,
     DocumentClinicalPropositions,
@@ -360,7 +359,7 @@ def test_shared_input_builder_already_supports_pathology_target(tmp_path):
     assert rebuilt.segments[0].units[0].evidence_role == EvidenceRole.OWNED
 
 
-def test_initial_assessment_aggregates_three_stages_and_renders(tmp_path):
+def test_initial_assessment_aggregates_three_stages(tmp_path):
     case = case_input()
     stages = initial_stages()
     result, trace = agent([payload(item) for item in stages]).initial_assessment(case)
@@ -373,16 +372,6 @@ def test_initial_assessment_aggregates_three_stages_and_renders(tmp_path):
         "initial_morphologic_assessment",
         "initial_consult_formulation",
     ]
-    report = render_pathology_report(result, case, tmp_path / "report.html")
-    html = report.read_text(encoding="utf-8")
-    resolved = result.pathology_formulation.supporting_evidence[0]
-    assert "病理科首轮评估" in html
-    assert "片段 ·" in html and resolved.segment_id in html
-    assert "证据 ·" in html and resolved.evidence_ids[0] in html
-    assert "节点 ·" in html
-    expected_node = resolved.node_ids[0] if resolved.node_ids else "节点 · 无"
-    assert expected_node in html
-    assert resolved.quote in html
 
 
 def test_no_material_state_cannot_contain_pattern_findings():

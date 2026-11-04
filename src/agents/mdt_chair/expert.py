@@ -1,11 +1,13 @@
 """Expert review uses existing evidence registries and the existing discussion loop."""
 
 from hashlib import sha256
+from pathlib import Path
 import json
 
 from src.agents.common.judgment_protocol import judgment_system_prompt
-from src.agents.common.team_synthesis import TeamSynthesis, MDTChairResult, synthesis_acceptance_status
-from src.llm.prompting import build_shared_prompt_view, prompt_json, prompt_schema_json
+from src.agents.common.team_synthesis import ChairSynthesisDraft, MDTChairResult, case_diagnosis_text, synthesis_acceptance_status
+from src.llm.prompting import build_shared_prompt_view, llm_value, prompt_json, prompt_schema_json
+from src.agents.mdt_chair.prompt_projection import build_chair_prompt_view
 from src.utils.config import render_template
 from src.guidelines.runtime import resolve_guideline_evidence, guideline_evidence_schema_constraints, PROMPT_RULES
 
@@ -36,7 +38,7 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     evidence_refs = set(bundle.evidence_registry)
     constraints = {
         name: {"source_refs": valid_refs, "evidence_refs": evidence_refs}
-        for name in ("ClinicalProblem", "ClinicalIssue", "DiagnosticFacet", "KeyEvidenceNeed", "JudgmentBoundary", "SpecialtyPosition", "IssueDisposition")
+        for name in ("ClinicalProblem", "ClinicalIssue", "DiagnosticFacet", "KeyEvidenceNeed", "JudgmentBoundary", "SpecialtyPosition", "IssueDisposition", "ChairDiagnosticOpinion")
     }
     constraints["JudgmentReview"] = {"source_ref": review_refs, "evidence_refs": evidence_refs}
     constraints["DiagnosticCandidate"] = {"source_refs": valid_refs,
@@ -50,29 +52,63 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                      for ref in valid_refs if bundle.source_registry[ref].source_type == "discussion_answer"}
     answer_issues.update({answer.answer_id: answer.issue_id for answer in answers})
     constraints["IssueDisposition"]["response_refs"] = answer_ids
+    view = build_chair_prompt_view(bundle)
     context = {
-        "previous": previous_team.model_dump(mode="json") if previous_team else None,
-        "answers": [a.model_dump(mode="json") for a in answers],
-        "requester_reviews": [r.model_dump(mode="json") for r in reviews or []],
-        "original_requests": [{**bundle.source_registry[ref].model_dump(mode="json"),
-                               **bundle.source_metadata[ref]}
-                              for ref in sorted(question_refs | need_refs_to_cover)],
-        "conditional_contributions": [{**bundle.source_registry[ref].model_dump(mode="json"),
-                                       **bundle.source_metadata[ref]}
-                                      for ref in sorted(conditional_refs)],
+        "previous": llm_value(previous_team) if previous_team else None,
+        "answers": [llm_value(a) for a in answers],
+        "requester_reviews": [llm_value(r) for r in reviews or []],
+        "original_requests": view["original_requests"],
+        "conditional_contributions": view["conditional_contributions"],
     }
-    query = "肺部疾病多学科诊断 鉴别病因 " + " ".join(
-        item["statement"][:100] for item in current.values()
-    )[:900]
-    if previous_team:
-        query += " " + " ".join(i.question for i in previous_team.issues)[:500]
-    guidelines, allowed_guidelines, guideline_trace = (
-        agent.guideline_runtime.prepare_query(query) if agent.guideline_runtime else ("[]", {}, {})
+    from src.agents.common.diagnostic_resolution import DiagnosticExploration
+    from src.utils.config import load_text
+    phenotype_guidelines, _, phenotype_trace = (
+        agent.guideline_runtime.prepare_case("candidate_exploration", {"evidence": [
+            {"text": evidence.quote} for evidence in bundle.evidence_registry.values()
+        ]}) if agent.guideline_runtime else ("[]", {}, {})
     )
+    exploration_prompt = render_template(
+        load_text(Path(__file__).resolve().parents[2] / "prompts/mdt_chair/candidate_exploration.md"),
+        {"consultation": prompt_json(view["chair_input"].get("consultation", {})),
+         "case_evidence": prompt_json(view["case_evidence"]),
+         "guideline_context": phenotype_guidelines + "\n" + PROMPT_RULES,
+         "previous_exploration": prompt_json({
+             "exploration": llm_value(previous_team.diagnostic_exploration) if previous_team else None,
+             "answers": context["answers"], "reviews": context["requester_reviews"],
+         })},
+    )
+    exploration_prompt += "\n输出要求：\n" + (
+        "由API严格JSON Schema提供。" if agent.generator.response_format_mode == "json_schema"
+        else prompt_schema_json(DiagnosticExploration)
+    )
+    def validate_exploration(value):
+        unknown = {ref for c in value.candidates for ref in c.supporting_evidence_refs} - evidence_refs
+        if unknown:
+            raise ValueError(f"Unknown candidate evidence refs: {sorted(unknown)}")
+        if previous_team and previous_team.diagnostic_exploration:
+            value.validate_successor(previous_team.diagnostic_exploration)
+        return value
+
+    exploration, exploration_trace = agent.generator.generate(
+        schema_model=DiagnosticExploration, schema_name="diagnostic_exploration",
+        system_prompt=judgment_system_prompt("你是ILD会诊主持人，依据患者证据独立形成候选；只返回JSON。"),
+        user_prompt=exploration_prompt,
+        extra_validation=validate_exploration,
+        string_field_constraints={"DiagnosticHypothesis": {"supporting_evidence_refs": evidence_refs}},
+        repair_on_validation_error=True,
+    )
+    candidate_ids = {candidate.candidate_id for candidate in exploration.candidates}
+    constraints["DiagnosticCandidate"]["candidate_id"] = candidate_ids
+    queries = [c.retrieval_question for c in exploration.candidates]
+    if not queries:
+        queries = [exploration.problem_representation]
+    guidelines, allowed_guidelines, guideline_trace = (
+        agent.guideline_runtime.prepare_queries(queries) if agent.guideline_runtime else ("[]", {}, {})
+    )
+    context["candidate_exploration"] = llm_value(exploration)
     shared = build_shared_prompt_view({
-        "chair_input": bundle.prompt_input,
-        "case_evidence": [{"evidence_ref": ref, "quote": e.quote}
-                          for ref, e in bundle.evidence_registry.items()],
+        "chair_input": view["chair_input"],
+        "case_evidence": view["case_evidence"],
         "discussion_context": context,
     })
     prompt = render_template(agent.prompt, {
@@ -81,7 +117,7 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         "output_schema": (
             "由 API 的严格 JSON Schema response_format 提供。"
             if agent.generator.response_format_mode == "json_schema"
-            else prompt_schema_json(TeamSynthesis)
+            else prompt_schema_json(ChairSynthesisDraft)
         ),
     })
     prompt += "\n共享输入值目录与展开规则：\n" + prompt_json({
@@ -89,8 +125,30 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     })
 
     def validate(team):
+        team.diagnostic_exploration = exploration
+        decisions = team.diagnostic_resolution.candidate_dispositions
+        expected = {c.candidate_id for c in exploration.candidates}
+        if {d.candidate_id for d in decisions} != expected or len(decisions) != len(expected):
+            raise ValueError("Review every explored candidate exactly once; do not erase unconsidered candidates")
+        team.validate_candidate_identity(require_current_ids=True)
+        if any(not f.subject or f.assessability is None or f.direction is None or f.confidence == "not_applicable" for f in team.diagnostic_facets):
+            raise ValueError("Current diagnostic facets require a neutral subject and separate assessability, direction and confidence")
+        if {ref for d in decisions for ref in d.exclusion_evidence_refs} - evidence_refs:
+            raise ValueError("Candidate exclusion uses unknown patient evidence")
+        for decision in decisions:
+            if (decision.outcome == "needs_discussion" and decision.scope == "primary_diagnosis"
+                    and team.diagnostic_resolution.status != "needs_discussion"):
+                raise ValueError("Unresolved candidates require an explicit discussion issue")
         guideline_trace["used_chunk_ids"] = resolve_guideline_evidence(team, allowed_guidelines)
         coverage_errors = []
+        retained = {review.source_ref for review in team.judgment_reviews
+                    if review.source_ref in current and review.disposition in {"adopt", "qualify"}}
+        invalid = set(team.diagnostic_opinion.source_refs) - retained
+        if invalid:
+            coverage_errors.append(
+                f"diagnostic_opinion.source_refs 只能将保留的专科判断作为依据：{sorted(invalid)}；"
+                "未采纳的判断可作为鉴别或反证讨论；新的整体推断可直接引用病例 evidence_refs"
+            )
         reviewed = {review.source_ref for review in team.judgment_reviews}
         if reviewed != review_refs:
             obsolete = [index for index, review in enumerate(team.judgment_reviews)
@@ -136,6 +194,14 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                         "Linked discussion issue must preserve its original question source: "
                         f"{disposition.issue_id}; add it to the linked open issue's source_refs"
                     )
+        missing_questions = question_refs - set(dispositions)
+        if missing_questions:
+            coverage_errors.append(
+                f"Missing disposition for specialty requests: {sorted(missing_questions)}; "
+                "append one complete disposition per missing request to /issue_dispositions. "
+                f"Preserve existing disposition IDs={sorted(dispositions)} and their links; "
+                "do not rename an existing disposition to fill a missing request."
+            )
         for old in previous_team.issues if previous_team else []:
             disposition = dispositions.get(old.issue_id)
             if disposition is None:
@@ -177,9 +243,6 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         for disposition in team.issue_dispositions:
             if set(disposition.response_refs) - answer_ids:
                 raise ValueError("Disposition references an unknown round answer")
-        for ref in question_refs:
-            if ref not in dispositions:
-                raise ValueError(f"Missing disposition for specialty request {ref}")
         for disposition in team.issue_dispositions:
             if disposition.outcome == "covered" and not disposition.source_refs:
                 raise ValueError(f"Covered request needs actual specialty sources: {disposition.issue_id}")
@@ -252,12 +315,13 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                 team.source_catalog[question["source_ref"]].update(
                     quote=question["question"], target_specialty=question["target_specialty"])
         team.evidence_catalog = {ref: item.model_dump(mode="json") for ref, item in bundle.evidence_registry.items()}
+        team.diagnostic_opinion.diagnosis = case_diagnosis_text(team)
         team.acceptance = synthesis_acceptance_status(team)
         team.snapshot_hash = synthesis_hash(team)
         return team
 
     team, trace = agent.generator.generate(
-        schema_model=TeamSynthesis, schema_name="mdt_expert_synthesis",
+        schema_model=ChairSynthesisDraft, schema_name="mdt_expert_synthesis",
         system_prompt=judgment_system_prompt("你是ILD多学科会诊的资深呼吸科主持人，负责审查专业意见并形成团队临床综合。只返回JSON。"),
         user_prompt=prompt + "\n审阅编号（正式判断与条件性贡献每项恰好一次，不连续、不重编号；原始问题与资料需求不进入 judgment_reviews）：\n" + prompt_json(sorted(review_refs)),
         extra_validation=validate, repair_on_validation_error=True,
@@ -265,6 +329,8 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         pointer_field_constraints=guideline_evidence_schema_constraints(allowed_guidelines),
     )
     result = MDTChairResult(case_id=bundle.case_id, team_synthesis=team)
+    trace["candidate_exploration"] = exploration_trace
+    trace["phenotype_retrieval"] = phenotype_trace
     trace["guideline_retrieval"] = guideline_trace
     trace["synthesis_revision"] = team.revision
     return result, trace

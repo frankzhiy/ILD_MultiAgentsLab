@@ -26,7 +26,6 @@ from src.agents.pulmonology.models import (
 from src.llm.apiyi_client import APIYIClient
 from src.llm.base import LLMResponse
 from src.llm.factory import build_llm_client
-from src.reporting.pulmonology_report import render_pulmonology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.schemas.specialty_agent_input import EvidenceRole
 from src.utils.config import load_yaml
@@ -192,7 +191,7 @@ def test_pulmonology_yaml_builds_apiyi_client(monkeypatch):
     client = build_llm_client(load_yaml(CONFIG))
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-6.1-sol"
+    assert client.model == "gpt-6.1-terra"
     assert client.base_url == "https://api.apiyi.com/v1"
     assert client.supports_json_schema is True
 
@@ -244,10 +243,14 @@ def test_initial_assessment_runs_three_ordered_stages():
         "initial_diagnostic_formulation",
     ]
     assert len(llm.prompts) == 3
+    for messages in llm.prompts:
+        assert '缺少确证检查时，用工作诊断及信度表达已获支持的具体倾向' in messages[0].content
+        assert 'statement、diagnosis、leading_diagnosis 只写诊断' in messages[0].content
+    assert '缺少确证检查时保留有患者支持的具体工作诊断' in llm.prompts[2][1].content
     assert "所有面向人的文本字段必须使用简体中文" in llm.prompts[0][0].content
     assert "简明、可审计的临床理由" in llm.prompts[0][1].content
     assert "第 1 阶段临床基础" in llm.prompts[1][1].content
-    assert "第 2 阶段肺部评估" in llm.prompts[2][1].content
+    assert "前两阶段评估" in llm.prompts[2][1].content
     assert [event for event, _ in events].count("stage_completed") == 3
     assert [event for event, _ in events].count("llm_attempt_completed") == 3
     assert [event for event, _ in events].count("validation_completed") == 3
@@ -431,36 +434,6 @@ def test_stage2_can_route_non_authoritative_imaging_to_related_evidence():
     assert result.specialist_dependencies[0].specialty == MdtSpecialty.THORACIC_RADIOLOGY
     assert result.reference_observations[0].related_evidence[0].quote
     assert "rule_source" not in result.progression_assessment.model_dump(mode="json")
-
-
-def test_initial_report_shows_clinical_results_and_coverage_audit(tmp_path):
-    case = case_input()
-    assessment = assessment_for(case)
-    assessment.missing_data = [
-        DataGap(
-            gap_type="no_longitudinal_comparator",
-            available_information="已有本次肺功能检查。",
-            missing_information="缺少带日期且指标可比的历史肺功能结果。",
-            why_it_matters="无法判断肺功能下降速度。",
-            decision_unlocked="能否评价生理进展与 PPF。",
-            related_evidence=[assessment.clinical_phenotype.supporting_evidence[0]],
-        )
-    ]
-    result = validate_initial_assessment(assessment, case)
-    output = tmp_path / "pulmonology.html"
-
-    render_pulmonology_report(result, case, output)
-
-    html = output.read_text(encoding="utf-8")
-    pointer = result.clinical_phenotype.supporting_evidence[0]
-    assert "呼吸科 首轮评估" in html
-    assert result.clinical_phenotype.assessment in html
-    assert pointer.evidence_ids[0] in html and pointer.quote in html
-    assert "八问处理状态" in html
-    assert "可解锁的决策" in html
-    assert "ILD 多学科团队 · 呼吸科" in html
-    assert "片段 ·" in html and "segment ·" not in html
-
 
 
 

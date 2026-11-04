@@ -152,7 +152,7 @@ export function EvidenceDrawer() {
     enabled: Boolean(evidenceOpen && runId && evidence?.graph_unit_id),
   })
   const guideline = evidence?.kind === 'guideline'
-    ? guidelines.find((item) => item.filename === evidence.source_file || item.filename.includes(evidence.guideline_id || evidence.document_id || ''))
+    ? guidelines.find((item) => item.filename === evidence.source_file)
     : null
   const unit = semanticUnit(semantic, evidence?.graph_unit_id)
   const propositionIds = evidence?.proposition_ids?.length
@@ -233,7 +233,7 @@ export function EvidenceDrawer() {
               <Text type="secondary">该证据图与当前原子判断的关系</Text>
               {evidence.relations.map((relation, index) => (
                 <Paragraph key={`${relation.target_claim_id || 'claim'}-${relation.relation || relation}-${index}`}>
-                  <Tag color={relation.legacy ? 'default' : 'blue'}>
+                  <Tag color="blue">
                     {RELATION_LABELS[relation.relation || relation] || relation.relation || relation}
                   </Tag>
                   {relation.target_claim_id && <Text code>{relation.target_claim_id}</Text>}

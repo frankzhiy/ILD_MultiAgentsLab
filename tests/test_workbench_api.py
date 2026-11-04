@@ -22,7 +22,7 @@ def test_workbench_exposes_synthetic_run_and_semantic_projection():
     assert first["local_graph"]["nodes"]
 
 
-def test_workbench_exposes_unique_unit_routing_and_current_specialty_outputs():
+def test_workbench_routes_units_and_blocks_historical_specialty_outputs():
     client = TestClient(app)
     routing = client.get(f"/api/runs/{RUN_ID}/routing").json()
     assert len(routing["specialties"]) == 4
@@ -31,7 +31,8 @@ def test_workbench_exposes_unique_unit_routing_and_current_specialty_outputs():
 
     specialties = client.get(f"/api/runs/{RUN_ID}/specialties").json()["results"]
     assert len(specialties) == 4
-    assert all(not item["legacy"] for item in specialties)
+    assert all(item["output"] is None for item in specialties if item["legacy"])
+    assert any(item["legacy"] for item in specialties)
     assert all("trace" not in item and "internal_state" not in item for item in specialties)
 
 
@@ -40,7 +41,7 @@ def test_workbench_exposes_chair_endpoint_and_model():
 
     response = client.get(f"/api/runs/{RUN_ID}/chair")
     assert response.status_code == 200
-    assert response.json()["status"] == "pending"
+    assert response.json()["status"] == "unavailable"
     assert "mdt_chair" in {
         item["agent_id"] for item in client.get("/api/models").json()["agents"]
     }
@@ -57,11 +58,11 @@ def test_chair_endpoint_starts_from_chair(monkeypatch):
     assert started == [RUN_ID]
 
 
-def test_discussion_endpoint_is_ready_from_existing_chair_outputs():
+def test_discussion_endpoint_blocks_historical_chair_outputs():
     response = TestClient(app).get(f"/api/runs/{DISCUSSION_RUN_ID}/discussion")
 
     assert response.status_code == 200
-    assert response.json()["runnable"] is True
+    assert response.json()["runnable"] is False
     assert response.json()["max_rounds"] == 3
 
 

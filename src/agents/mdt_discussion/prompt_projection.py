@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from src.agents.common.clinical_concepts import LEGACY_JUDGMENT_NOTE
 
 
 def build_chair_prompt_view(chair_result: dict[str, Any]) -> dict[str, Any]:
@@ -23,22 +24,7 @@ def build_specialty_initial_prompt_view(
             "specialty_assessments": assessments,
             "interspecialty_questions": questions,
         }
-    legacy = initial_output.get("professional_conclusions")
-    if not isinstance(legacy, dict):
-        raise ValueError("Specialty initial output is missing specialty_assessments")
-    return {
-        "specialty_assessments": {
-            "specialty_question": legacy.get("specialty_question"),
-            "assessability": legacy.get("assessability"),
-            "assessments": legacy.get("conclusions") or [],
-            "evidence_gaps": legacy.get("evidence_gaps") or [],
-            "boundaries": legacy.get("boundaries") or [],
-        },
-        "interspecialty_questions": {
-            "questions": legacy.get("interspecialty_questions") or []
-        },
-    }
-
+    raise ValueError("Specialty initial output is missing current formal sections")
 
 def build_specialty_discussion_prompt_view(
     initial_output: dict[str, Any],
@@ -50,20 +36,18 @@ def build_specialty_discussion_prompt_view(
     items = [
         item
         for item in (
-            assessments.get("assessments") or assessments.get("conclusions") or []
+            assessments.get("assessments") or []
         )
         if item.get("origin") != "discussion_answer"
     ]
     return {
         "specialty_assessments": [
-            _select(
+            {**_select(
                 assessment,
                 "assessment_id",
-                "conclusion_id",
                 "judgment_id",
                 "version_id",
                 "statement",
-                "status",
                 "assessability",
                 "direction",
                 "confidence",
@@ -71,7 +55,7 @@ def build_specialty_discussion_prompt_view(
                 "medical_basis",
                 "limitations",
                 "conditions",
-            )
+            ), **({"legacy_semantics": LEGACY_JUDGMENT_NOTE} if assessment.get("status") else {})}
             for assessment in items
         ],
         "boundaries": assessments.get("boundaries") or [],
@@ -88,6 +72,10 @@ def build_issue_chair_prompt_view(
     if not team:
         raise ValueError("MDT discussion requires the current team synthesis")
     issue = next((i for i in team["issues"] if i["issue_id"] == issue_id), None)
+    if issue is None:
+        source = team["source_catalog"].get(issue_id)
+        if source and source.get("source_type") == "interspecialty_question":
+            issue = source
     return {"issue": issue, "judgment_boundaries": team["judgment_boundaries"],
             "disagreements": team["disagreements"], "evidence_needs": team["evidence_needs"]}
 

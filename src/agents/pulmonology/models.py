@@ -251,14 +251,6 @@ class ProgressionAssessment(BaseModel):
     reasoning_summary: str = Field(min_length=1)
     guideline_evidence: list[GuidelineEvidencePointer] = Field(default_factory=list)
 
-    @model_validator(mode="before")
-    @classmethod
-    def discard_legacy_rule_source(cls, value):
-        if isinstance(value, dict) and "rule_source" in value:
-            value = dict(value)
-            value.pop("rule_source")
-        return value
-
     @model_validator(mode="after")
     def unique_components(self):
         names = [item.component for item in self.components]
@@ -279,6 +271,7 @@ class DiagnosticFormulation(BaseModel):
     leading_diagnosis: str | None = Field(
         default=None,
         description=(
+            "现有证据下最可能的具体工作诊断；确定程度在confidence中表达。"
             "classification_status 不是 insufficient_data 时必须填写非空主导诊断；"
             "insufficient_data 时可以为 null。"
         ),
@@ -350,106 +343,13 @@ class PulmonologyInitialAssessment(PulmonologyClinicalState):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_v1_saved_output(cls, value):
-        if not isinstance(value, dict):
+    def coerce_domain_reviews(cls, value):
+        if not isinstance(value, dict) or not value.get("domain_reviews"):
             return value
-        migrated = dict(value)
-        if migrated.get("domain_reviews"):
-            migrated["domain_reviews"] = [
-                item.model_dump(mode="python") if isinstance(item, DomainReview) else item
-                for item in migrated["domain_reviews"]
-            ]
-            return migrated
-        migrated["schema_version"] = "pulmonology.v2"
-        migrated["phase"] = "initial_assessment"
-        old_differential = migrated.pop("working_differential", [])
-        old_progression = migrated.pop("progression_components", [])
-        old_questions = migrated.pop("questions_for_specialists", [])
-        migrated["missing_data"] = [
-            item.model_dump(mode="python") if isinstance(item, BaseModel) else dict(item)
-            for item in migrated.get("missing_data") or []
-        ]
-        for gap in migrated["missing_data"]:
-            gap.setdefault("gap_type", "uncertain_availability")
-            gap.setdefault(
-                "available_information",
-                "旧版输出未明确区分已有资料与真正缺口。",
-            )
-            gap.setdefault("decision_unlocked", gap.get("why_it_matters", "影响诊断判断。"))
-        old_questions = [
-            item.model_dump(mode="python") if isinstance(item, BaseModel) else dict(item)
-            for item in old_questions
-        ]
-        old_progression = [
-            item.model_dump(mode="python") if isinstance(item, BaseModel) else dict(item)
-            for item in old_progression
-        ]
-        old_differential = [
-            item.model_dump(mode="python") if isinstance(item, BaseModel) else dict(item)
-            for item in old_differential
-        ]
-        for question in old_questions:
-            question.setdefault("why_it_matters", "需要正式专科意见以完成呼吸科诊断判断。")
-        migrated["specialist_dependencies"] = old_questions
-        migrated["progression_assessment"] = (
-            {
-                "recent_worsening": "not_assessable",
-                "acute_exacerbation_status": "not_assessable",
-                "ppf_status": "not_assessable",
-                "assessment_window": "legacy output: assessment window not recorded",
-                "components": [
-                    {
-                        "component": (
-                            "symptoms"
-                            if index == 0
-                            else "physiology"
-                            if index == 1
-                            else "radiology"
-                        ),
-                        "status": "not_assessable",
-                        "assessment": item["assessment"],
-                        "supporting_evidence": item.get("supporting_evidence", []),
-                        "specialist_opinion_ids": item.get("specialist_opinion_ids", []),
-                    }
-                    for index, item in enumerate(old_progression[:3])
-                ],
-                "reasoning_summary": "由旧版非结构化进展条目迁移，不能据此判定 PPF。",
-            }
-            if old_progression
-            else None
-        )
-        migrated["diagnostic_formulation"] = (
-            {
-                "classification_status": "provisional_diagnosis",
-                "leading_diagnosis": old_differential[0]["diagnosis"],
-                "confidence": old_differential[0].get("confidence", "unknown"),
-                "reasoning_summary": "由旧版鉴别诊断列表迁移；分类状态需在新版流程复核。",
-                "differential_diagnoses": old_differential,
-            }
-            if old_differential
-            else None
-        )
-        presence = {
-            PulmonologyDomain.CLINICAL_PHENOTYPE: bool(migrated.get("clinical_phenotype")),
-            PulmonologyDomain.SECONDARY_CAUSES: bool(migrated.get("secondary_cause_assessment")),
-            PulmonologyDomain.PULMONARY_SEVERITY: bool(migrated.get("pulmonary_severity")),
-            PulmonologyDomain.RESPIRATORY_TESTS: bool(
-                migrated.get("respiratory_test_interpretation")
-            ),
-            PulmonologyDomain.SPECIALIST_INTEGRATION: bool(old_questions),
-            PulmonologyDomain.PROGRESSION: bool(old_progression),
-            PulmonologyDomain.DIAGNOSTIC_FORMULATION: bool(old_differential),
-            PulmonologyDomain.DECISION_RELEVANT_GAPS: bool(migrated.get("missing_data")),
-        }
-        migrated["domain_reviews"] = [
-            {
-                "domain": domain,
-                "status": "partially_assessable" if presence[domain] else "not_assessable",
-                "rationale": "旧版输出迁移：仅确认存在相关产物，未记录完整覆盖状态。",
-            }
-            for domain in INITIAL_DOMAINS
-        ]
-        return migrated
+        return {**value, "domain_reviews": [
+            item.model_dump(mode="python") if isinstance(item, DomainReview) else item
+            for item in value["domain_reviews"]
+        ]}
 
 
 class InitialFoundation(BaseModel):

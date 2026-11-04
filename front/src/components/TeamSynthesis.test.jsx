@@ -13,12 +13,35 @@ vi.mock('../api', async (importOriginal) => ({
 }))
 
 afterEach(cleanup)
-it('shows a graph unit once across evidence roles and resolves overlapping historical quotes', async () => {
+it('puts the chair case-level diagnosis and reasoning before the specialty review ledger', () => {
+  render(<TeamSynthesis team={fixture} />)
+  const opinion = screen.getByRole('region', { name: '主持人全病例诊断意见' })
+  expect(within(opinion).getByText(fixture.diagnostic_opinion.diagnosis)).toBeVisible()
+  expect(within(opinion).getByText(fixture.diagnostic_opinion.reasoning)).toBeVisible()
+  expect(within(opinion).getByText(fixture.diagnostic_opinion.differential_reasoning)).toBeVisible()
+  expect(opinion.compareDocumentPosition(screen.getByRole('tab', { name: '判断采纳与依据' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('identifies historical summaries without inventing a chair diagnosis', () => {
+  const historical = { ...fixture, diagnostic_opinion: null }
+  render(<TeamSynthesis team={historical} final />)
+  expect(screen.getByText('请按新结构重新运行本阶段。')).toBeVisible()
+  expect(screen.queryByRole('region', { name: '主持人全病例诊断意见' })).not.toBeInTheDocument()
+})
+
+it('keeps previous input-limited results out of the current clinical view', () => {
+  const historical = { ...fixture, diagnostic_resolution: { ...fixture.diagnostic_resolution, status: 'input_limited' } }
+  render(<TeamSynthesis team={historical} final />)
+  expect(screen.getByText('请按新结构重新运行本阶段。')).toBeVisible()
+  expect(screen.queryByRole('region', { name: '主持人全病例诊断意见' })).not.toBeInTheDocument()
+})
+
+it('keeps evidence roles and distinct selections traceable without changing saved quotes', async () => {
   const team = structuredClone(fixture)
   const unitId = 'seg_001_gu_001'
   const blocks = ['患者咳嗽。', '活动后气短。', '近期加重。'].map((text, index) => ({ evidence_id: `ev-${index + 1}`, text }))
   team.evidence_catalog = {
-    [unitId]: { graph_unit_id: unitId, evidence_ref: unitId, evidence_ids: blocks.map(b => b.evidence_id), quote: '患者咳嗽。活动后气短。\n活动后气短。近期加重。\n患者咳嗽。活动后气短。近期加重。' },
+    [unitId]: { graph_unit_id: unitId, evidence_ref: unitId, evidence_ids: blocks.map(b => b.evidence_id), quote: '患者咳嗽。活动后气短。近期加重。' },
     'ev-2': { graph_unit_id: unitId, evidence_ref: 'ev-2', evidence_ids: ['ev-2'], quote: '活动后气短。' },
   }
   team.source_catalog.S2.evidence_relations = {
@@ -33,10 +56,10 @@ it('shows a graph unit once across evidence roles and resolves overlapping histo
   fireEvent.click(screen.getByRole('tab', { name: '证据需求及满足状态' }))
   const panel = screen.getByRole('tabpanel')
   await waitFor(() => expect(panel.querySelector('blockquote > .ant-typography')?.textContent).toBe('患者咳嗽。活动后气短。近期加重。'))
-  expect(panel.querySelectorAll('blockquote')).toHaveLength(1)
+  expect(panel.querySelectorAll('blockquote')).toHaveLength(4)
   expect(panel.querySelector('blockquote')).not.toHaveTextContent('患者咳嗽。活动后气短。\n活动后气短。')
-  for (const label of ['支持证据', '鉴别证据', '限定依据']) expect(within(panel).getByText(label)).toBeVisible()
-  fireEvent.click(within(panel).getByRole('button', { name: /病历原文/ }))
+  for (const label of ['支持证据', '鉴别证据', '限定依据']) expect(within(panel).getAllByText(label)[0]).toBeVisible()
+  fireEvent.click(within(panel).getAllByRole('button', { name: /病历原文/ })[0])
   expect(useWorkbenchStore.getState().evidence.quote).toBe('患者咳嗽。活动后气短。近期加重。')
   expect(useWorkbenchStore.getState().evidence.evidence_ids).toEqual(['ev-1', 'ev-2', 'ev-3'])
   expect(team).toEqual(original)
@@ -44,6 +67,7 @@ it('shows a graph unit once across evidence roles and resolves overlapping histo
 
 it('keeps clinical problems separate and reveals conditional reasoning and adoption', () => {
   const team = {
+    ...structuredClone(fixture),
     schema_version: 'team_synthesis.v2', judgment_boundaries: [], disagreements: [], revision: 2, acceptance: 'explicit_dissent', stop_kind: 'budget',
     problems: [{ problem_id: 'P1', title: '慢性肺病', relationship: 'primary', statement: '病因尚未明确', rationale: '继发原因评估不足', confidence: 'low', limitations: ['不能直接归因特发性'], source_refs: [], evidence_refs: [], candidates: [] },
       { problem_id: 'P2', title: '近期急性变化', relationship: 'acute_contributor', statement: '感染可能参与', rationale: '近期症状改变', confidence: 'low', limitations: [], source_refs: [], evidence_refs: [], candidates: [] }],
@@ -52,10 +76,11 @@ it('keeps clinical problems separate and reveals conditional reasoning and adopt
     synthesis_rationale: '分别评价慢性与急性过程', coverage_review: '已核对伴随因素',
     conditional_contributions: [{ question: '病理能解决什么', possible_result: '特异形态', decision_if_found: '改变病因归属', cannot_establish: '非特异结果不能定病因', acquisition_value: '当前不值得取材' }],
   }
-  render(<TeamSynthesis team={team} final />)
+  render(<TeamSynthesis team={team} />)
   expect(screen.getByText('已达到讨论轮数上限，未决事项保留')).toBeInTheDocument()
   expect(screen.getByText('病因尚未明确')).toBeInTheDocument()
   expect(screen.getByText('急性叠加因素')).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: '急性叠加、伴随问题及其他发现（不计入 ILD 主诊断鉴别）' })).toHaveTextContent('感染可能参与')
   expect(screen.queryByText('七层诊断判断')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('tab', { name: '证据需求及满足状态' }))
   expect(screen.getByText('获取价值：当前不值得取材')).toBeInTheDocument()
@@ -80,7 +105,7 @@ it('prints every section with opened evidence, stop reason and problem dimension
   const print = vi.spyOn(window, 'print').mockImplementation(() => {
     window.dispatchEvent(new Event('beforeprint'))
     window.dispatchEvent(new Event('beforeprint'))
-    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(6)
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
     expect(document.querySelectorAll('.team-synthesis details:not([open])')).toHaveLength(0)
     expect(document.querySelector('.report-stop-reason')).toHaveTextContent('实际停止原因')
     expect(screen.getAllByText('正式判断版本：A2.v3').length).toBeGreaterThan(0)
@@ -94,9 +119,24 @@ it('prints every section with opened evidence, stop reason and problem dimension
     expect(screen.getAllByText('影像原文：须核对病变分布').length).toBeGreaterThan(0)
     window.dispatchEvent(new Event('afterprint'))
   })
-  render(<FinalReport report={{ schema_version: 'mdt_final_report.v8', team_synthesis: team, stop_reason: '实际停止原因', discussion_rounds: 2 }} />)
+  render(<FinalReport report={{ schema_version: 'mdt_final_report.v10', team_synthesis: team, stop_reason: '实际停止原因', discussion_rounds: 2 }} />)
   fireEvent.click(screen.getByRole('button', { name: /打印/ }))
   expect(print).toHaveBeenCalledOnce()
   expect(document.querySelectorAll('.team-synthesis details[open]')).toHaveLength(0)
   print.mockRestore()
+})
+
+it('shows retained atomic judgments with exact evidence and missing reference notices', () => {
+  const team = structuredClone(fixture)
+  team.source_catalog.S2.claims = [
+    { claim_id: 'C1', statement: '判断A的原始表述', evidence_relations: [{ evidence_ref: 'E1', direction: 'supports', function: 'qualifying' }] },
+    { claim_id: 'C2', statement: '判断B的原始表述', evidence_relations: [{ evidence_ref: 'missing', direction: 'weakens', function: 'foundational' }] },
+  ]
+  team.evidence_catalog.E1 = { evidence_ref: 'E1', graph_unit_id: 'U1', evidence_ids: ['B1'], quote: '病例原文：只有第一处发现。' }
+  const original = structuredClone(team)
+  render(<TeamSynthesis team={team} />)
+  expect(screen.getAllByText('判断A的原始表述').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('病例原文：只有第一处发现。').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('引用未找到：missing').length).toBeGreaterThan(0)
+  expect(team).toEqual(original)
 })

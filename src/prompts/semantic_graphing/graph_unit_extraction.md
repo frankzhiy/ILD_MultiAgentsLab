@@ -1,7 +1,9 @@
 你负责把一个 discourse segment 切成 graph units，并在确定边界时选择 primary frame。
 
 graph unit 是一个 clinical event nucleus 的连续原文证据块，不是 finding/node：
-- 一次诊疗接触中的检查、结果、判断、治疗、即时反应和转归保持为一个 unit。
+- 固定栏目中的片段可以只覆盖一次临床事件的一部分；仅切分当前 segment，不补齐其他栏目中的检查、治疗或判断，不要求在当前 unit 内重建完整就诊。
+- 栏目和分组标题只提供上下文，不是临床证据；类型、时间、状态和专科路由以当前正文为准，不能由栏目名称直接决定。
+- 当前 segment 内，一次诊疗接触中的检查、结果、判断、治疗、即时反应和转归保持为一个 unit。
 - 两次诊疗接触之间，围绕同一症状主线的起病、演变、诱因、阴性症状、自我应对和主观反应保持为一个 unit。
 - 时间、诱因、症状属性、患者态度/依从是修饰语，必须并入所修饰事件，不能单独成块。
 - 人口学与主诉可分开；一般情况、查体、独立报告、独立医生判断在事件核切换时分开。
@@ -33,6 +35,8 @@ graph_unit_id、segment_id、offset、metadata 和 notes 由程序生成，不�
 {"graph_units":[{"text":"逐字连续原文","source_type":"present_illness","mdt_specialty":["pulmonology"],"temporal_anchor":null,"clinical_context":"简短上下文","primary_frame":"symptom_episode","primary_frame_rationale":"事件核理由","boundary_warning":null,"status":"present","certainty":"high","rationale":"边界及类型理由"}]}
 
 当前 segment：
+- section_title: {{ section_title }}
+- context_label: {{ context_label }}
 - unit_type: {{ unit_type }}
 - contained_source_types: {{ contained_source_types }}
 - clinical_frame: {{ clinical_frame }}

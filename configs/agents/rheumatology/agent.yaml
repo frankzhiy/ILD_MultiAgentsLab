@@ -1,6 +1,6 @@
 protocol_version: expert.v1
 provider: apiyi
-model: gpt-6.1-sol
+model: gpt-6.1-terra
 base_url: https://api.apiyi.com/v1
 # base_url: http://api.apiyi.com:16888/v1
 api_key_env: APIYI_API_KEY
@@ -32,11 +32,6 @@ guideline_retrieval:
     - acr-chest-sard-ild-2023
     - cts-ild-mdd-2023-zh
     - ers-ats-iip-classification-2025
-  queries:
-    initial_case_reconstruction: ILD 患者风湿免疫评估应系统询问和检查哪些肺外自身免疫表现
-    initial_autoimmune_assessment: 自身抗体如何结合临床表型解释并形成 CTD、未分化状态或 IPAF 分类判断
-    initial_consult_formulation: CTD 与 ILD 应如何分别诊断和进行归因并排除感染药物暴露肿瘤及心脏病
-    initial_reasoning_output: 风湿病工作诊断、血清学表型匹配、ILD 归因及机制时间一致性应如何论证
 
 clinical_rules:
   diagnostic_confidence:

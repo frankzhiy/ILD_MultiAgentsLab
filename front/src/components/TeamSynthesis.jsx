@@ -1,25 +1,17 @@
+import { confidenceLabels as confidence, candidatePositionLabels as position, acceptanceLabels, diagnosticDimensionLabels as dimensions, candidateName, problemRelationshipLabels as relation, evidenceNeedStatusLabels as evidenceStatus, evidenceNeedActionLabels as evidenceAction } from './clinicalConcepts'
+import { isCurrentTeam } from './resultContract'
+import { DiagnosticResolution } from './Consultation'
+import { ClinicalReport } from './ClinicalReport'
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Empty, Space, Tabs, Tag, Typography } from 'antd'
-import { PrinterOutlined } from '@ant-design/icons'
-import { useQuery } from '@tanstack/react-query'
-import { useParams } from 'react-router-dom'
-import { api } from '../api'
-import { assessabilityLabels } from './JudgmentDimensions'
+import { assessabilityLabels, JudgmentDimensions, FacetJudgment } from './JudgmentDimensions'
 import { aggregateCitations, CitationGroup } from './Citation'
 
 const { Title, Paragraph, Text } = Typography
-const confidence = { high: '高把握度', moderate: '中等把握度', low: '低把握度', unknown: '尚不能评定把握度' }
-const relation = { primary: '主要临床问题', acute_contributor: '急性叠加因素', comorbidity: '并存疾病', unexplained_finding: '尚未定性的发现' }
 const adoption = { adopt: '采纳', qualify: '限定后采纳', defer: '暂缓采纳', reject: '不采纳' }
 const specialty = { pulmonology: '呼吸科', thoracic_radiology: '影像科', rheumatology: '风湿免疫科', pathology: '病理科' }
-const acceptanceLabels = { jointly_accepted: '共同接受', accepted_with_boundaries: '带边界共同接受', chair_adjudicated: '主持人综合，尚未形成共同接受', explicit_dissent: '保留明确分歧' }
 const disposition = { covered: '已有专科意见覆盖', continue: '继续讨论', answered: '已有回答', bounded: '形成有限判断', deferred: '保留未决', merged: '合并处理' }
-const evidenceStatus = { available: '已满足', partially_available: '部分满足', missing: '尚缺资料' }
-const evidenceAction = { retrieve_existing: '核对已有结果', obtain_new: '建议获取新资料', retain_boundary: '保留判断边界', no_further_request: '本轮不再追索' }
-const position = { preferred: '当前首选', alternative: '竞争解释', unresolved: '尚未定性' }
-const dimensions = { ild_presence: 'ILD是否存在', radiologic_pattern: '影像文字模式', histopathologic_pattern: '组织学模式', etiologic_attribution: '病因归属', disease_behavior: '疾病行为', acute_or_comorbid_factors: '急性与伴随因素', severity: '严重度' }
 
-const facetStatus = { supported: '支持', favored: '倾向', possible: '可能', indeterminate: '尚未确定', not_assessable: '不可评价', not_applicable: '不适用', unclassifiable: '不能分类' }
 const evidenceRoles = { supporting: '支持证据', weakening: '反对证据', discriminating: '鉴别证据', qualifying: '限定依据', background: '背景证据' }
 
 function Timeframe({ value }) {
@@ -34,17 +26,8 @@ function Guidelines({ items = [] }) {
 }
 
 function SourceEvidence({ items }) {
-  const { runId } = useParams()
-  const { data: semantic } = useQuery({ queryKey: ['semantic', runId], queryFn: () => api.semantic(runId), enabled: Boolean(runId) })
-  const units = (semantic?.segments || []).flatMap(segment => segment.units || [])
-  const citations = aggregateCitations(items).map(item => {
-    const unit = units.find(unit => unit.graph_unit_id === item.graph_unit_id)
-    const ids = new Set(item.evidence_ids || [])
-    const quote = (unit?.clinical_propositions?.evidence_blocks || [])
-      .filter(block => ids.has(block.evidence_id)).map(block => block.text).join('')
-    return { ...item, quote: quote || item.quote }
-  })
-  return <><CitationGroup caseEvidence={citations} />{citations.map((item, index) => <blockquote key={item.graph_unit_id || item.evidence_ref || index}>
+  const citations = aggregateCitations(items)
+  return <><CitationGroup caseEvidence={citations} />{citations.map((item, index) => <blockquote key={`${item.evidence_ref || item.graph_unit_id || index}-${index}`}>
     <Space wrap><Text type="secondary">{item.graph_unit_id || item.evidence_ref}</Text>
       {[...new Set((item.relations || []).map(r => r.relation))].map(role => <Tag key={role}>{evidenceRoles[role] || role}</Tag>)}
     </Space><Paragraph>{item.quote || '原文未保留'}</Paragraph>
@@ -52,7 +35,7 @@ function SourceEvidence({ items }) {
 }
 
 function Sources({ team, refs = [], evidence = [] }) {
-  const citations = ids => ids.map(ref => team.evidence_catalog?.[ref]).filter(Boolean)
+  const citations = ids => ids.map(ref => team.evidence_catalog?.[ref] || { evidence_ref: ref, quote: `引用未找到：${ref}` })
   const evidenceView = items => items.length > 0 && <SourceEvidence items={items} />
   return <div className="synthesis-sources">
     {refs.map(ref => {
@@ -61,11 +44,19 @@ function Sources({ team, refs = [], evidence = [] }) {
       return <article className="synthesis-note" key={ref}>
         <CitationGroup sourceCitations={[source]} />
         <Paragraph>{source.quote}</Paragraph>
+        <JudgmentDimensions item={source} />
         {(source.version_id || team.dependency_versions?.[ref]) && <Paragraph>正式判断版本：{source.version_id || team.dependency_versions[ref]}</Paragraph>}
         {source.conditions && <><Paragraph>判断对象：{source.conditions.subject}</Paragraph><Timeframe value={source.conditions.timeframe} />
           <Paragraph>成立前提：{source.conditions.applicability_conditions?.join('；') || '未附加前提'}</Paragraph>
           <Paragraph>证据边界：{source.conditions.evidence_scope?.scope_limitations?.join('；') || '未附加限制'}</Paragraph></>}
-        {evidenceView(Object.entries(source.evidence_relations || {}).flatMap(([role, ids]) => citations(ids).map(item => ({ ...item, relations: [{ relation: role }] }))))}
+        {source.claims?.map(claim => <section key={claim.claim_id}>
+          <Text code>{claim.claim_id}</Text><Paragraph>{claim.statement}</Paragraph>
+          {evidenceView((claim.evidence_relations || []).map(item => ({ ...(team.evidence_catalog?.[item.evidence_ref] || { quote: `引用未找到：${item.evidence_ref}` }), evidence_ref: item.evidence_ref, claim_statement: claim.statement,
+            relations: [{ relation: item.direction === 'weakens' ? 'weakening' : item.direction === 'supports' ? 'supporting' : item.function, target_claim_id: claim.claim_id },
+              item.direction !== 'neutral' && item.function !== 'foundational' && { relation: item.function, target_claim_id: claim.claim_id }].filter(Boolean),
+          })))}
+        </section>)}
+        {!source.claims?.length && evidenceView(Object.entries(source.evidence_relations || {}).flatMap(([role, ids]) => citations(ids).map(item => ({ ...item, relations: [{ relation: role }] }))))}
         <Guidelines items={source.guideline_evidence} />
       </article>
     })}
@@ -85,7 +76,7 @@ export function ConditionalContributions({ items = [] }) {
   </section>
 }
 
-export function TeamSynthesis({ team, final = false, stopReason, discussionRounds }) {
+export function TeamSynthesis({ team, final = false, stopReason, discussionRounds, stage, diagnosisConclusion }) {
   const [activeTab, setActiveTab] = useState('clinical')
   const root = useRef(null)
   useEffect(() => {
@@ -101,20 +92,24 @@ export function TeamSynthesis({ team, final = false, stopReason, discussionRound
     return () => { window.removeEventListener('beforeprint', expand); window.removeEventListener('afterprint', restore) }
   }, [])
   if (!team) return null
-  if (team.schema_version !== 'team_synthesis.v2') return <Alert type="warning" title="请按新结构重新运行本阶段。" />
-  const primary = team.problems.find(p => p.relationship === 'primary')
+  if (!isCurrentTeam(team)) return <Alert type="warning" title="请按新结构重新运行本阶段。" />
+  const opinion = team.diagnostic_opinion
   const clinical = <div className="synthesis-layout">
     <nav className="synthesis-nav" aria-label="临床问题导航">
       <Text className="eyebrow">临床问题</Text>
       {team.problems.map((p, index) => <a key={p.problem_id} href={`#problem-${p.problem_id}`}><span>{String(index + 1).padStart(2, '0')}</span>{p.title}</a>)}
     </nav>
-    <div className="synthesis-problems">{team.problems.map(p => <article id={`problem-${p.problem_id}`} key={p.problem_id} className={`synthesis-problem ${p.relationship === 'primary' ? 'is-primary' : ''}`}>
+    <div className="synthesis-problems">{[
+      ['ILD 主要诊断问题', team.problems.filter(p => p.relationship === 'primary')],
+      ['急性叠加、伴随问题及其他发现（不计入 ILD 主诊断鉴别）', team.problems.filter(p => p.relationship !== 'primary')],
+    ].filter(([, problems]) => problems.length).map(([label, problems]) => <section key={label} aria-label={label}>
+      <Title level={4}>{label}</Title>{problems.map(p => <article id={`problem-${p.problem_id}`} key={p.problem_id} className={`synthesis-problem ${p.relationship === 'primary' ? 'is-primary' : ''}`}>
       <Space wrap><Tag color={p.relationship === 'primary' ? 'blue' : 'default'}>{relation[p.relationship]}</Tag><Tag>{confidence[p.confidence]}</Tag><Tag>{assessabilityLabels[p.assessability] || '可评价性未记录'}</Tag></Space>
       <Title level={4}>{p.title}</Title><Timeframe value={p.timeframe} /><Paragraph className="synthesis-statement">{p.statement}</Paragraph><Paragraph>{p.rationale}</Paragraph>
       {p.limitations.length > 0 && <div className="synthesis-limits"><Text strong>关键限制</Text><ul>{p.limitations.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}
-      {p.candidates.length > 0 && <section className="synthesis-candidates"><Title level={5}>针对这一问题的诊断比较</Title>
+      {(p.relationship === 'primary' ? p.candidates.length > 0 : p.candidates.length > 1) && <section className="synthesis-candidates"><Title level={5}>{p.relationship === 'primary' ? 'ILD 主诊断比较' : '该伴随问题的鉴别解释'}</Title>
         {p.candidates.map((candidate, i) => <div className="synthesis-candidate" key={i}>
-          <div className="candidate-heading"><Text strong>{candidate.diagnosis}</Text><Space wrap><Tag>{position[candidate.position]}</Tag><Tag>{confidence[candidate.confidence]}</Tag></Space></div>
+          <div className="candidate-heading"><Text strong>{candidateName(team, candidate)}</Text><Space wrap><Tag>{position[candidate.position]}</Tag><Tag>{confidence[candidate.confidence]}</Tag></Space></div>
           <Timeframe value={candidate.timeframe} /><Paragraph>{candidate.rationale}</Paragraph>
           {candidate.limitations.length > 0 && <Paragraph type="secondary">{candidate.limitations.join('；')}</Paragraph>}
           <details><summary>查看此候选的依据与反证</summary><Sources team={team} refs={candidate.source_refs} evidence={candidate.supporting_evidence_refs} />
@@ -123,9 +118,9 @@ export function TeamSynthesis({ team, final = false, stopReason, discussionRound
         </div>)}
       </section>}
       <details><summary>展开原始证据与专科来源</summary><Sources team={team} refs={p.source_refs} evidence={p.evidence_refs} /></details>
-    </article>)}
+    </article>)}</section>)}
       {team.diagnostic_facets?.length > 0 && <details className="synthesis-problem"><summary>按诊断层级核对</summary>
-        {team.diagnostic_facets.map(f => <article className="synthesis-note" key={`${f.problem_id}-${f.dimension}-${JSON.stringify(f.timeframe)}`}><Text strong>{team.problems.find(p => p.problem_id === f.problem_id)?.title} · {dimensions[f.dimension]}</Text><Tag>{facetStatus[f.status]}</Tag><Timeframe value={f.timeframe} /><Tag>{confidence[f.confidence] || '不适用'}</Tag><Paragraph>{f.statement}</Paragraph><Paragraph type="secondary">{f.rationale}</Paragraph>{f.limitations.length > 0 && <Paragraph>{f.limitations.join('；')}</Paragraph>}<Sources team={team} refs={f.source_refs} /></article>)}
+        {team.diagnostic_facets.map(f => <article className="synthesis-note" key={`${f.problem_id}-${f.dimension}-${JSON.stringify(f.timeframe)}`}><Text strong>{team.problems.find(p => p.problem_id === f.problem_id)?.title} · {dimensions[f.dimension]}</Text><FacetJudgment item={f} /><Timeframe value={f.timeframe} /><Paragraph>{f.statement}</Paragraph><Paragraph type="secondary">{f.rationale}</Paragraph>{f.limitations.length > 0 && <Paragraph>{f.limitations.join('；')}</Paragraph>}<Sources team={team} refs={f.source_refs} /></article>)}
       </details>}
     </div>
   </div>
@@ -167,7 +162,7 @@ export function TeamSynthesis({ team, final = false, stopReason, discussionRound
       {i.assignments.map(a => <Paragraph key={a.specialty}><Text strong>{specialty[a.specialty]}回答：</Text>{a.question}</Paragraph>)}
       <Paragraph type="secondary">结束标准：{i.closure_criterion}</Paragraph><Sources team={team} refs={i.source_refs} evidence={i.evidence_refs} />
     </article>)}
-    <details><summary>查看历轮议题处理记录</summary>{team.issue_dispositions.filter(d => team.source_catalog?.[d.issue_id]?.source_type !== 'interspecialty_question').map(d => <article className="synthesis-note" key={d.issue_id}><Tag>{disposition[d.outcome]}</Tag><Text>{d.issue_id}</Text><Paragraph>{d.rationale}</Paragraph></article>)}</details>
+    <details><summary>查看历轮议题处理记录</summary>{team.issue_dispositions.filter(d => team.source_catalog?.[d.issue_id]?.source_type !== 'interspecialty_question').map(d => <article className="synthesis-note" key={d.issue_id}><Tag>{disposition[d.outcome]}</Tag><Text>{d.issue_id}</Text><Paragraph>{d.rationale}</Paragraph><Sources team={team} refs={d.source_refs} />{d.response_refs?.length > 0 && <Paragraph>对应答复：{d.response_refs.join("、")}</Paragraph>}{d.linked_issue_ids?.length > 0 && <Paragraph>关联议题：{d.linked_issue_ids.join("、")}</Paragraph>}</article>)}</details>
   </div>
   const boundaries = <div>{team.judgment_boundaries.length ? team.judgment_boundaries.map(b => <article className="synthesis-note" key={b.boundary_id}>
     <Title level={4}>{team.problems.find(p => p.problem_id === b.problem_id)?.title}</Title>
@@ -186,7 +181,7 @@ export function TeamSynthesis({ team, final = false, stopReason, discussionRound
   const next = <div className="synthesis-next">
     {!team.evidence_needs.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本轮没有资料需求" />}
     {team.evidence_needs.map(need => <article className="synthesis-note" key={need.need_id}>
-      <Title level={4}>{need.information}</Title><Tag>{evidenceStatus[need.status]}</Tag><Tag>{evidenceAction[need.action]}</Tag>
+      <Text type="secondary">{need.need_id} · 关联问题：{team.problems.find(p => p.problem_id === need.problem_id)?.title || need.problem_id}</Text><Title level={4}>{need.information}</Title><Tag>{evidenceStatus[need.status]}</Tag><Tag>{evidenceAction[need.action]}</Tag>
       <Paragraph><Text strong>当前已有：</Text>{need.available_information || '暂无'}</Paragraph>
       <Paragraph><Text strong>仍然缺少：</Text>{need.missing_information || '无'}</Paragraph>
       <ul>{need.branches.map((b, j) => <li key={j}><Text strong>{b.result}</Text> → {b.changed_decision}</li>)}</ul>
@@ -194,10 +189,26 @@ export function TeamSynthesis({ team, final = false, stopReason, discussionRound
       <Sources team={team} refs={need.source_refs} />
     </article>)}<ConditionalContributions items={team.conditional_contributions} />
   </div>
+  if (final || stage === 'premeeting') return <Card className="team-synthesis clinical-report-card" ref={root}>
+    <ClinicalReport team={team} final={final} stopReason={stopReason} discussionRounds={discussionRounds} diagnosisConclusion={diagnosisConclusion}
+      renderSources={(refs, evidence) => <Sources team={team} refs={refs} evidence={evidence} />}
+      reviews={reviews} questions={questions}
+      conditionalContributions={team.conditional_contributions?.length > 0 && <ConditionalContributions items={team.conditional_contributions} />} />
+  </Card>
   return <Card className="team-synthesis" ref={root}>
-    <header className="synthesis-header"><div><Text className="eyebrow">{final ? 'MDT 诊断报告' : 'MDT 综合意见'}</Text><Title level={3}>{primary?.title}</Title></div>
-      <Space wrap><Tag color={team.acceptance === 'explicit_dissent' ? 'orange' : 'blue'}>{acceptanceLabels[team.acceptance] || '尚未记录接受情况'}</Tag><Tag>第 {team.revision} 版</Tag>{final && <Button className="no-print" icon={<PrinterOutlined />} onClick={() => window.print()}>打印</Button>}</Space>
+    <header className="synthesis-header"><div><Text className="eyebrow">MDT 综合意见</Text><Title level={3}>{team.diagnostic_resolution.primary_diagnosis}</Title></div>
+      <Space wrap><Tag color={team.acceptance === 'explicit_dissent' ? 'orange' : 'blue'}>{acceptanceLabels[team.acceptance] || '尚未记录接受情况'}</Tag><Tag>第 {team.revision} 版</Tag></Space>
     </header>
+    <DiagnosticResolution value={team.diagnostic_resolution} exploration={team.diagnostic_exploration} renderEvidence={refs => <Sources team={team} evidence={refs} />} />
+    <section className="synthesis-problem is-primary" aria-label="主持人全病例诊断意见">
+      <Title level={4}>主持人全病例诊断意见</Title>
+      <Paragraph><Text strong>病例整体认识：</Text>{opinion.case_formulation}</Paragraph>
+      <Paragraph className="synthesis-statement">{opinion.diagnosis}</Paragraph>
+      <Title level={5}>综合诊断依据</Title><Paragraph>{opinion.reasoning}</Paragraph>
+      <Title level={5}>主要鉴别及取舍</Title><Paragraph>{opinion.differential_reasoning}</Paragraph>
+      {opinion.limitations?.length > 0 && <Paragraph><Text strong>关键未决：</Text>{opinion.limitations.join('；')}</Paragraph>}
+      <details><summary>查看整体诊断的证据与保留的专科判断</summary><Sources team={team} refs={opinion.source_refs} evidence={opinion.evidence_refs} /></details>
+    </section>
     {team.stop_kind === 'budget' && <Alert type="warning" showIcon title="已达到讨论轮数上限，未决事项保留" />}
     {team.stop_kind === 'no_progress' && <Alert type="warning" showIcon title="本轮已无可推进的讨论路径，未决事项保留" />}
     {stopReason && <Paragraph className="report-stop-reason"><Text strong>结束原因：</Text>{stopReason}</Paragraph>}

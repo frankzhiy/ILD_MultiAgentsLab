@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from src.guidelines.models import GuidelineEvidencePointer
@@ -127,7 +127,6 @@ class ReportedImagingStatement(BaseModel):
         "report_excerpt",
         "clinician_paraphrase",
         "clinical_working_diagnosis",
-        "legacy_import",
     ]
     text: str = Field(min_length=1)
     assertion_status: Literal[
@@ -263,7 +262,6 @@ class InitialConsultFormulation(BaseModel):
     core_answer: CoreConsultAnswer
     review_coverage: list[ReviewDomainCoverage] = Field(
         default_factory=list,
-        validation_alias=AliasChoices("review_coverage", "guide_coverage"),
     )
     specialist_questions: list[SpecialistQuestion] = Field(default_factory=list)
     action_items: list[RadiologyActionItem] = Field(default_factory=list)
@@ -274,7 +272,6 @@ class ThoracicRadiologyInitialAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["thoracic_radiology.v2"] = "thoracic_radiology.v2"
-    legacy_import: SkipJsonSchema[bool] = Field(default=False, exclude=True)
     case_id: str = Field(min_length=1)
     phase: Literal["initial_assessment"] = "initial_assessment"
     reconstruction: InitialCaseReconstruction
@@ -282,18 +279,10 @@ class ThoracicRadiologyInitialAssessment(BaseModel):
     core_answer: CoreConsultAnswer
     review_coverage: list[ReviewDomainCoverage] = Field(
         default_factory=list,
-        validation_alias=AliasChoices("review_coverage", "guide_coverage"),
     )
     specialist_questions: list[SpecialistQuestion] = Field(default_factory=list)
     action_items: list[RadiologyActionItem] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_v1(cls, value):
-        if isinstance(value, dict) and value.get("schema_version") == "thoracic_radiology.v1":
-            return _migrate_legacy_initial(value)
-        return value
 
     @model_validator(mode="after")
     def validate_tasks(self):
@@ -366,237 +355,3 @@ def _require_unique(values: list[str], label: str) -> None:
             if label in {"task plan", "task assessment"} else ""
         )
         raise ValueError(f"Duplicate {label} values: {duplicates}; array indexes={positions}.{guidance}")
-
-
-def _legacy_pointer(value: Any) -> list[dict]:
-    if not value:
-        return []
-    return [
-        {
-            "graph_unit_id": item.get("graph_unit_id", ""),
-            "evidence_ids": item.get("evidence_ids") or [],
-        }
-        for item in value
-        if item.get("evidence_ids")
-    ]
-
-
-def _migrate_legacy_initial(value: dict) -> dict:
-    """Best-effort migration so existing v1 initial JSON can enter v2 discussion."""
-
-    source = value.get("source_state") or {}
-    observations = (value.get("observation_state") or {}).get("observations") or []
-    interpretation = value.get("interpretation_state") or {}
-    examinations = []
-    authority_map = {
-        "formal_imaging_report": "formal_report",
-        "report_excerpt": "report_excerpt",
-        "clinician_paraphrase": "clinician_paraphrase",
-        "diagnostic_label_only": "label_only",
-        "unknown": "unknown",
-    }
-    level_map = {
-        "sufficient": "feature_level",
-        "partial": "impression_level",
-        "insufficient": "label_only",
-        "unknown": "uncertain",
-    }
-    for index, item in enumerate(source.get("examinations") or [], start=1):
-        evidence = _legacy_pointer(item.get("supporting_evidence"))
-        if not evidence:
-            continue
-        examinations.append(
-            {
-                "exam_id": item.get("exam_id") or f"legacy_exam_{index:03d}",
-                "temporal_anchor": item.get("temporal_anchor") or "时间未提供",
-                "modality": item.get("modality") or "unknown",
-                "purpose": "unknown",
-                "body_scope": "thoracic",
-                "source_authority": authority_map.get(
-                    item.get("source_authority"), "unknown"
-                ),
-                "evidence_level": level_map.get(
-                    item.get("description_sufficiency"), "uncertain"
-                ),
-                "description": item.get("assessment") or "由v1状态迁移的检查记录。",
-                "source_evidence": evidence,
-                "direct_images_reviewed": False,
-            }
-        )
-    if not examinations:
-        fallback = next(
-            (
-                _legacy_pointer(item.get("supporting_evidence"))
-                for item in observations
-                if item.get("supporting_evidence")
-            ),
-            [],
-        )
-        if fallback:
-            examinations.append(
-                {
-                    "exam_id": "legacy_exam_001",
-                    "temporal_anchor": "时间未提供",
-                    "modality": "unknown",
-                    "purpose": "unknown",
-                    "body_scope": "uncertain",
-                    "source_authority": "unknown",
-                    "evidence_level": "uncertain",
-                    "description": "由v1观察状态迁移的检查记录。",
-                    "source_evidence": fallback,
-                }
-            )
-    exam_id = examinations[0]["exam_id"] if examinations else "legacy_exam_001"
-    exam_by_unit = {
-        pointer["graph_unit_id"]: exam["exam_id"]
-        for exam in examinations
-        for pointer in exam["source_evidence"]
-    }
-    statements = []
-    for index, item in enumerate(observations, start=1):
-        evidence = _legacy_pointer(item.get("supporting_evidence"))
-        if not evidence:
-            continue
-        status_map = {
-            "reported_present": "reported_present",
-            "reported_absent": "reported_absent",
-            "possible": "reported_possible",
-        }
-        statements.append(
-            {
-                "statement_id": f"legacy_statement_{index:03d}",
-                "exam_id": exam_by_unit.get(
-                    evidence[0].get("graph_unit_id"), exam_id
-                ),
-                "statement_type": "finding",
-                "origin": "legacy_import",
-                "text": item.get("finding") or "v1影像观察",
-                "assertion_status": status_map.get(
-                    item.get("status"), "reported_unknown"
-                ),
-                "certainty": item.get("confidence") or "unknown",
-                "evidence": evidence,
-            }
-        )
-    pattern = interpretation.get("morphologic_pattern") or {}
-    longitudinal = interpretation.get("longitudinal_assessment") or {}
-    tasks = [
-        {
-            "task": "ild_morphologic_pattern",
-            "priority": "secondary",
-            "activation": "active",
-            "rationale": "由v1形态模式状态迁移。",
-        }
-    ]
-    assessments = [
-        {
-            "task": "ild_morphologic_pattern",
-            "priority": "secondary",
-            "answerability": (
-                "not_answerable"
-                if pattern.get("classification_status") == "not_assessable"
-                else "partially_answered"
-            ),
-            "conclusion": pattern.get("primary_pattern") or "现有文字不能可靠完成形态分型。",
-            "confidence": pattern.get("confidence") or "unknown",
-            "reasoning_summary": pattern.get("reasoning_summary")
-            or "由v1状态迁移，建议在新问题框架下复核。",
-            "reported_statement_ids": [item["statement_id"] for item in statements],
-            "supporting_evidence": _legacy_pointer(pattern.get("supporting_evidence")),
-            "related_evidence": _legacy_pointer(pattern.get("related_evidence")),
-            "decision_impact": "保留旧版模式判断供会中参考，不能替代重新归一影像文字。",
-        }
-    ]
-    if longitudinal:
-        tasks.append(
-            {
-                "task": "longitudinal_change",
-                "priority": "conditional",
-                "activation": "active",
-                "rationale": "由v1纵向状态迁移。",
-            }
-        )
-        assessments.append(
-            {
-                "task": "longitudinal_change",
-                "priority": "conditional",
-                "answerability": (
-                    "requires_comparator"
-                    if longitudinal.get("status") == "requires_comparator"
-                    else "partially_answered"
-                ),
-                "conclusion": longitudinal.get("status") or "纵向状态不可评价",
-                "confidence": longitudinal.get("confidence") or "unknown",
-                "reasoning_summary": longitudinal.get("reasoning_summary")
-                or "由v1状态迁移。",
-                "reported_statement_ids": [],
-                "supporting_evidence": _legacy_pointer(
-                    longitudinal.get("supporting_evidence")
-                ),
-                "related_evidence": _legacy_pointer(longitudinal.get("related_evidence")),
-                "decision_impact": "比较资料不足时不能确认影像进展。",
-            }
-        )
-    orientation_summary = source.get("reasoning_summary") or "由v1状态迁移。"
-    coverage = [
-        {
-            "domain": item.get("domain"),
-            "status": (
-                "not_assessable"
-                if item.get("status") in {"not_assessable", "requires_direct_image_review"}
-                else "addressed_by_active_task"
-            ),
-            "rationale": item.get("rationale") or "由v1状态迁移。",
-        }
-        for item in value.get("domain_reviews") or []
-    ]
-    return {
-        "schema_version": "thoracic_radiology.v2",
-        "legacy_import": True,
-        "case_id": value.get("case_id") or "legacy_case",
-        "phase": "initial_assessment",
-        "reconstruction": {
-            "orientation": {
-                "clinical_trigger": "由v1首轮状态迁移，原始临床触发需复核。",
-                "primary_imaging_question": "现有影像文字能够支持什么结论？",
-                "secondary_imaging_questions": [],
-                "urgency": "unknown",
-                "relevant_clinical_context": [],
-                "context_evidence": [],
-            },
-            "examinations": examinations,
-            "reported_statements": statements,
-            "task_plan": tasks,
-            "excluded_candidate_notes": [],
-            "limitations": [orientation_summary],
-        },
-        "task_assessments": assessments,
-        "core_answer": {
-            "primary_question": "现有影像文字能够支持什么结论？",
-            "answer": pattern.get("reasoning_summary") or orientation_summary,
-            "confidence": pattern.get("confidence") or "unknown",
-            "decision_impact": "这是v1兼容迁移结果，后续应按v2问题驱动模型复核。",
-            "decisive_next_step": None,
-        },
-        "review_coverage": coverage,
-        "specialist_questions": [
-            {
-                "specialty": item.get("specialty"),
-                "question": item.get("question"),
-                "why_it_matters": item.get("why_it_matters"),
-                "related_evidence": _legacy_pointer(item.get("related_evidence")),
-            }
-            for item in value.get("specialist_dependencies") or []
-        ],
-        "action_items": [
-            {
-                "action": item.get("request"),
-                "reason": item.get("reason"),
-                "decision_unlocked": item.get("decision_unlocked"),
-                "priority": "routine",
-                "related_evidence": _legacy_pointer(item.get("related_evidence")),
-            }
-            for item in value.get("direct_review_requests") or []
-        ],
-        "limitations": value.get("limitations") or [],
-    }

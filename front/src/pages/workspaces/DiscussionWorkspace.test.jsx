@@ -185,7 +185,7 @@ describe('DiscussionWorkspace', () => {
     fireEvent.click(await screen.findByRole('button', { name: '从讨论重新运行' }))
 
     expect(await screen.findByText('新一轮团队讨论已启动')).toBeInTheDocument()
-    expect(screen.getByText(/下方暂时保留上一次运行结果/)).toBeInTheDocument()
+    expect(screen.getByText(/页面仅显示本次讨论已保存的进度与结果/)).toBeInTheDocument()
     expect(screen.queryByText('团队讨论失败；已保留完成的步骤')).not.toBeInTheDocument()
 
     finishStart({ ...active, status: 'running', error: null })
@@ -202,7 +202,7 @@ describe('DiscussionWorkspace', () => {
     expect(screen.getByText('现有资料不足。')).toBeInTheDocument()
     expect(screen.getByText('影像提示肺实质因素可能参与。')).toBeInTheDocument()
     expect(screen.getByText('区分肺实质与肺血管因素。')).toBeInTheDocument()
-    expect(screen.getByText('现有证据支持低氧存在，但不能量化各因素贡献。')).toBeInTheDocument()
+    expect(screen.getAllByText('现有证据支持低氧存在，但不能量化各因素贡献。').length).toBeGreaterThan(0)
     expect(screen.getByText('证明低氧存在，但不能单独证明病因。')).toBeInTheDocument()
     expect(screen.queryByText('gu-1::prop-1')).not.toBeInTheDocument()
     expect(screen.queryByText('E006')).not.toBeInTheDocument()
@@ -284,7 +284,7 @@ describe('DiscussionWorkspace', () => {
     })
     FakeEventSource.instances[0].emit('discussion_task_completed')
 
-    expect(await screen.findByText(answer.answer)).toBeInTheDocument()
+    expect((await screen.findAllByText(answer.answer)).length).toBeGreaterThan(0)
     await waitFor(() => expect(api.discussion).toHaveBeenCalledTimes(2))
   })
 
@@ -337,11 +337,19 @@ it('explains zero-round completion and displays recorded acceptance without pret
   }
   api.discussion.mockResolvedValue({ status: 'completed', runnable: true, rounds: [], latest_chair_result: { ...chairResult, team_synthesis: team }, report_status: 'waiting' })
   renderWorkspace()
-  expect(await screen.findByText('本次未进入问答轮次；各专科对会前综合意见的确认情况如下。')).toBeInTheDocument()
+  expect(await screen.findByText('会前整合未保留开放议题，因此未分派专科问答；本次仅进行了综合意见确认。')).toBeInTheDocument()
+  expect(screen.queryByText('查看候选形成与取舍')).not.toBeInTheDocument()
+  expect(screen.getByText('查看原始问题为何未进入讨论')).toBeInTheDocument()
   expect(screen.getByText('已完成问答 0 轮')).toBeInTheDocument()
   expect(screen.getByText('已记录专科态度 2 / 4')).toBeInTheDocument()
   expect(screen.getByText('专科判断未发生变更。')).toBeInTheDocument()
   fireEvent.click(screen.getByText('查看各专科确认意见'))
   expect(screen.getByText('病理科 · 保留异议')).toBeVisible()
   expect(screen.queryByText(/运行后会显示实际议题/)).not.toBeInTheDocument()
+})
+
+it('records a diagnosis change with unchanged problem IDs', () => {
+  const previous = { team_synthesis: { diagnostic_resolution: { primary_diagnosis: '候选A' } } }
+  const current = { team_synthesis: { diagnostic_resolution: { primary_diagnosis: '候选B' } } }
+  expect(chairChangeSummary(current, previous)).toEqual(['诊断目标复核：更新'])
 })

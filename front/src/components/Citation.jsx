@@ -13,9 +13,7 @@ const SPECIALTIES = {
 
 const SOURCE_TYPES = {
   specialty_assessment: '专科结论',
-  native_conclusion: '专科结论',
   interspecialty_question: '专科问题',
-  native_question: '专科问题',
   assessment_evidence_need: '证据缺口',
   conditional_contribution: '条件性贡献',
   evidence_gap: '证据缺口',
@@ -60,7 +58,6 @@ export function citationCategory(value) {
   if (value?.evidence_ids?.length || value?.evidence_fragments?.length) return ['evidence_block', '原文证据']
   if (value?.node_ids?.length) return ['graph_node', '图节点']
   if (value?.proposition_ids?.length || value?.propositions?.length) return ['proposition', '临床命题']
-  if (value?.graph_unit_id) return ['graph_unit', '证据单元']
   if (value?.segment_id) return ['source_fragment', '原文片段']
   return ['other', '其他依据']
 }
@@ -125,7 +122,7 @@ export function CitationGroup({ sourceCitations = [], caseEvidence = [], refs = 
         if (typeof item === 'string') return <Tag key={`text-${index}`}>{item}</Tag>
         const currentIndex = evidenceIndex
         evidenceIndex += 1
-        return <Citation key={item.evidence_ref || item.source_ref || item.guideline_id || item.node_id || index} value={item} collection={evidenceList} index={currentIndex} />
+        return <Citation key={`${item.evidence_ref || item.source_ref || item.guideline_id || item.node_id || "ref"}-${index}`} value={item} collection={evidenceList} index={currentIndex} />
       })}
     </Space>
   )
@@ -171,11 +168,11 @@ export function aggregateCitations(items = []) {
     }
     const [kind] = citationCategory(item)
     const key = kind === 'patient_graph'
-      ? `patient_graph:${item.graph_unit_id}`
+      ? `patient_graph:${item.graph_unit_id}:${item.quote || ""}:${JSON.stringify(item.proposition_ids || [])}:${item.claim_statement || ''}:${item.interpretation || ''}:${JSON.stringify(item.evidence_ids || [])}:${JSON.stringify(item.relations || [])}`
       : item.source_ref
         ? `source:${item.source_ref}`
         : item.guideline_id || item.document_id
-          ? `guideline:${item.guideline_id || item.document_id}`
+          ? `guideline:${item.guideline_id || item.document_id}:${item.source_file || ''}:${item.chunk_id || ''}:${item.page || item.page_number || ''}:${item.quote_start ?? ''}:${item.quote_end ?? ''}:${JSON.stringify(item.quote_units || item.quote_unit_ids || [])}:${item.quote || ''}:${item.application || ''}:${item.relevance || ''}`
           : null
     if (!key || !positions.has(key)) {
       if (key) positions.set(key, result.length)
@@ -190,7 +187,7 @@ export function aggregateCitations(items = []) {
     current.evidence_ids = [...new Set([...(current.evidence_ids || []), ...(item.evidence_ids || [])])]
     current.proposition_ids = [...new Set([...(current.proposition_ids || []), ...(item.proposition_ids || [])])]
     current.node_ids = [...new Set([...(current.node_ids || []), ...(item.node_ids || [])])]
-    current.relations = [...current.relations, ...(item.relations || [])]
+    current.relations = [...new Map([...current.relations, ...(item.relations || [])].map(relation => [JSON.stringify(relation), relation])).values()]
     current.quotes = [...new Set([...current.quotes, ...(item.quotes || []), ...(item.quote ? [item.quote] : [])])]
     current.quote = mergedQuote(current.quotes)
   })

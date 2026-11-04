@@ -36,6 +36,8 @@ function formalOutput(question = '判断疾病层面的首轮工作诊断') {
         status: 'favored', assessability: 'partially_assessable', direction: 'supports', confidence: 'moderate', clinical_role: 'primary',
         medical_basis: '病程和现有肺部资料形成连贯解释。',
         decision_impact: '影响后续病因审阅。',
+        conditions: { subject: '肺部异常', timeframe: { description: '本次' }, applicability_conditions: [], evidence_scope: { scope_limitations: [] } },
+        claims: [{ claim_id: 'C1', statement: '病程资料支持慢性肺部异常', evidence_relations: [{ ...pointer, target_claim_id: 'C1', direction: 'supports', function: 'qualifying' }] }],
         evidence: {
           evidence_relations: [{
             ...pointer,
@@ -130,12 +132,41 @@ afterEach(() => {
 })
 
 describe('SpecialtyWorkspace', () => {
+  it('renders saved wording without a second model request', async () => {
+    const source = payload()
+    source.results = source.results.slice(0, 2)
+    source.results.filter(item => item.output?.specialty_assessments?.assessments[0]?.claims).forEach(item => {
+      const assessment = item.output.specialty_assessments.assessments[0]
+      assessment.claims[0].evidence_relations = assessment.evidence.evidence_relations
+    })
+    api.specialties.mockResolvedValue(source)
+    renderWorkspace({ run: { status: 'completed' } })
+    expect(await screen.findByText('专科初步判断')).toBeInTheDocument()
+    expect(screen.getByText('倾向慢性纤维化性间质性肺病')).toBeInTheDocument()
+    expect(screen.getByText('病程资料支持慢性肺部异常')).toBeInTheDocument()
+    expect(screen.queryByText(/文字润色/)).not.toBeInTheDocument()
+    expect(api.specialties.mock.calls).toEqual([['run-1']])
+  })
+
+  it('blocks a partial old contract even with the two current top-level fields', async () => {
+    const source = payload()
+    delete source.results[0].output.specialty_assessments.assessments[0].claims
+    source.results.filter(item => item.output?.specialty_assessments?.assessments[0]?.claims).forEach(item => {
+      const assessment = item.output.specialty_assessments.assessments[0]
+      assessment.claims[0].evidence_relations = assessment.evidence.evidence_relations
+    })
+    api.specialties.mockResolvedValue(source)
+    renderWorkspace({ run: { status: 'completed' } })
+    expect(await screen.findByText('旧版专科输出不在此页面展示')).toBeInTheDocument()
+    expect(screen.queryByText('倾向慢性纤维化性间质性肺病')).not.toBeInTheDocument()
+  })
+
   it('renders the two formal boards with every required reasoning section and traceable evidence', async () => {
     api.specialties.mockResolvedValue(payload())
     renderWorkspace({ run: { status: 'completed' }, drawer: true })
 
     expect(await screen.findByText('专科初步判断')).toBeInTheDocument()
-    for (const label of ['可评价性：部分可评价', '方向：支持', '信度：中等把握度', '临床角色：主要解释']) expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+    for (const label of ['可评价性：部分可评价', '判断方向：旧版支持方向（按原始陈述理解）', '判断把握度：中等把握度', '临床关系：主要解释']) expect(screen.getAllByText(label).length).toBeGreaterThan(0)
     expect(screen.getAllByText('需其他专科回答的问题').length).toBeGreaterThan(0)
     ;['专科问题定位', '初步判断', '决策相关证据缺口', '本专科判断边界'].forEach((label) => expect(screen.getByText(label)).toBeInTheDocument())
     expect(screen.queryByText('临床推理论证')).not.toBeInTheDocument()

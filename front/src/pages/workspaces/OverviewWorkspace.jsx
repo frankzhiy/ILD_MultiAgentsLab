@@ -1,3 +1,5 @@
+import { StatusTag } from '../../components/StatusTag'
+import { DiagnosticResolution, ConsultationBackground } from '../../components/Consultation'
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Background, Controls, MarkerType, ReactFlow } from '@xyflow/react'
@@ -39,7 +41,8 @@ export function OverviewWorkspace({ runId, run }) {
   const { events, connection } = useRunEvents(runId)
   const chairStatus = chair.data?.status || 'pending'
   const discussionStatus = discussion.data?.status || 'pending'
-  const reportStatus = discussionStatus === 'completed' ? discussion.data?.report_status || 'waiting' : 'waiting'
+  const report = useQuery({ queryKey: ['report', runId], queryFn: () => api.report(runId), refetchInterval: terminal ? false : 4000 })
+  const reportStatus = report.data?.report_status || 'waiting'
   const graph = useMemo(() => {
     const nodes = [
       { id: 'input', position: { x: 0, y: 365 }, data: { label: '病例原文' }, className: 'flow-source' },
@@ -61,7 +64,7 @@ export function OverviewWorkspace({ runId, run }) {
     ]
     return { nodes, edges }
   }, [run, chairStatus, discussionStatus, reportStatus])
-  if (specialties.isError || semantic.isError || chair.isError || discussion.isError) return <QueryError error={specialties.error || semantic.error || chair.error || discussion.error} retry={() => { specialties.refetch(); semantic.refetch(); chair.refetch(); discussion.refetch() }} />
+  if (specialties.isError || semantic.isError || chair.isError || discussion.isError || report.isError) return <QueryError error={specialties.error || semantic.error || chair.error || discussion.error || report.error} retry={() => { specialties.refetch(); semantic.refetch(); chair.refetch(); discussion.refetch(); report.refetch() }} />
   const completed = specialties.data?.results.filter((item) => item.status === 'completed').length || 0
   const lifecycle = events.length ? events.map((item) => ({ color: item.type.includes('failed') || item.type.includes('error') ? 'red' : item.type.includes('completed') ? 'green' : 'blue', children: <><Text strong>{item.stage || item.agent_id || item.type}</Text><br /><Text type="secondary">{item.type}</Text></> })) : [
     { color: run?.semantic_complete ? 'green' : 'blue', children: '语义图产物' },
@@ -74,6 +77,8 @@ export function OverviewWorkspace({ runId, run }) {
     <div>
       <div className="workspace-title"><div><Text className="eyebrow">RUN OVERVIEW</Text><Title level={3}>运行总览</Title></div><Tag icon={connection === 'connected' ? <ApiOutlined /> : <DisconnectOutlined />} color={connection === 'connected' ? 'success' : connection === 'connecting' ? 'processing' : 'error'}>{connection === 'connected' ? '事件流已连接' : connection === 'connecting' ? '连接事件流' : '事件流断开'}</Tag></div>
       {connection === 'disconnected' && <Alert type="warning" showIcon title="实时事件流已断开" description="历史产物仍可查看；浏览器会自动尝试重连。若持续失败，请到“错误与诊断”检查后端服务。" className="section-gap" />}
+      <ConsultationBackground value={run?.manifest?.consultation} />
+      {(report.data?.final_report?.team_synthesis || discussion.data?.latest_chair_result?.team_synthesis || chair.data?.result?.team_synthesis) && <DiagnosticResolution value={(report.data?.final_report?.team_synthesis || discussion.data?.latest_chair_result?.team_synthesis || chair.data?.result?.team_synthesis).diagnostic_resolution} />}
       {run?.manifest?.case_version_id && <Card title="病例资料版本" className="section-card"><Text>本版：{run.manifest.case_version_id.slice(0, 12)}</Text>{run.manifest.parent_run_id && <Space><Text> · 前版：{run.manifest.parent_case_version_id?.slice(0, 12)}</Text><Link to={`/runs/${encodeURIComponent(run.manifest.parent_run_id)}/overview`}>查看前序会诊</Link></Space>}</Card>}
       <Row gutter={14} className="metric-row">
         <Col span={4}><Card><Statistic title="Discourse segments" value={semantic.data?.summary.segment_count || 0} /></Card></Col>
@@ -87,11 +92,11 @@ export function OverviewWorkspace({ runId, run }) {
         <div className="pipeline-flow"><ReactFlow nodes={graph.nodes} edges={graph.edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}><Background gap={18} color="#dce4f0" /><Controls showInteractive={false} /></ReactFlow></div>
       </Card>
       <Row gutter={14}>
-        <Col span={15}><Card title="阶段状态" className="section-card"><div className="agent-status-list">{(specialties.data?.results || []).map((item) => <div className="agent-status-row" key={item.specialty}><div className="agent-status-icon">{item.status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{item.label}</Text><Text type="secondary">owned {item.input_summary?.owned_unit_count || 0} · shared {item.input_summary?.shared_context_unit_count || 0} · degraded {item.input_summary?.degraded_locator_count || 0}</Text></div><Tag color={item.status === 'completed' ? 'success' : 'default'}>{item.status === 'completed' ? '已完成' : '等待中'}</Tag></div>)}{[
+        <Col span={15}><Card title="阶段状态" className="section-card"><div className="agent-status-list">{(specialties.data?.results || []).map((item) => <div className="agent-status-row" key={item.specialty}><div className="agent-status-icon">{item.status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{item.label}</Text><Text type="secondary">owned {item.input_summary?.owned_unit_count || 0} · shared {item.input_summary?.shared_context_unit_count || 0} · degraded {item.input_summary?.degraded_locator_count || 0}</Text></div><StatusTag status={item.status} /></div>)}{[
           ['chair', 'MDT 会前整合', run?.chair_complete ? 'completed' : chairStatus],
           ['discussion', `MDT 团队讨论 · 第 ${discussion.data?.current_round || 0} 轮`, discussionStatus],
           ['report', '最终报告', reportStatus],
-        ].map(([id, label, status]) => <div className="agent-status-row" key={id}><div className="agent-status-icon">{status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{label}</Text></div><Tag color={status === 'completed' ? 'success' : status === 'failed' ? 'error' : status === 'running' ? 'processing' : 'default'}>{status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : status === 'stopped' ? '已停止' : status === 'stopping' ? '正在停止' : '等待中'}</Tag></div>)}</div>{reportStatus === 'completed' && <Link to={`/runs/${encodeURIComponent(runId)}/report`}>查看最终报告</Link>}</Card></Col>
+        ].map(([id, label, status]) => <div className="agent-status-row" key={id}><div className="agent-status-icon">{status === 'completed' ? <CheckCircleOutlined className="success-icon" /> : <ClockCircleOutlined />}</div><div className="agent-status-text"><Text strong>{label}</Text></div><Tag color={status === 'completed' ? 'success' : status === 'failed' ? 'error' : status === 'running' ? 'processing' : 'default'}>{status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : status === 'stopped' ? '已停止' : status === 'stopping' ? '正在停止' : status === 'outdated' ? '需要重跑' : status === 'unavailable' ? '不可运行' : '等待中'}</Tag></div>)}</div>{reportStatus === 'completed' && <Link to={`/runs/${encodeURIComponent(runId)}/report`}>查看最终报告</Link>}</Card></Col>
         <Col span={9}><Card title="生命周期" className="section-card"><Timeline items={lifecycle} /></Card></Col>
       </Row>
     </div>

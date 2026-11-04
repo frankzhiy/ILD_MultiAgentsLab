@@ -135,9 +135,6 @@ a { color: inherit; }
 .chair-board > .ant-card-head { border-bottom-color: #dfe6ef; }
 .chair-board > .ant-card-head .ant-card-head-title { color: #13213a; font-size: 17px; }
 .chair-board > .ant-card-body { padding: 18px 20px; }
-.chair-conclusions { border-top: 3px solid #2f6fed; }
-.chair-boundaries { border-top: 3px solid #8b7a5b; }
-.chair-boundaries > .ant-card-head { background: #f5f1e8; }
 .chair-conflicts { border-top: 3px solid #dc2626; }
 .chair-questions { border-top: 3px solid #7c5ce5; }
 .chair-needs { border-top: 3px solid #d39b2a; }
@@ -404,10 +401,79 @@ a { color: inherit; }
 }
 
 .print-section-title { display: none; }
+.stage-run-help { margin: -8px 0 18px; color: #64748b; font-size: 13px; }
+.stage-run-help summary { cursor: pointer; margin-bottom: 6px; }
+.clinical-report-card > .ant-card-body { padding: 28px 32px; }
+.clinical-report { container: clinical-report / inline-size; color: #243b53; line-height: 1.85; overflow-wrap: anywhere; }
+.clinical-report-header { display: flex; justify-content: space-between; align-items: start; gap: 18px; }
+.clinical-report-header h3 { margin: 12px 0 !important; font-size: 28px; color: #183b56; }
+.clinical-diagnosis-status { display: flex; margin-top: 12px; }
+.clinical-diagnosis-statement { margin: 0 !important; font-size: 16px; }
+.clinical-report-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 18px; padding: 16px 0; font-size: 13px; }
+.clinical-report-nav { display: flex; flex-wrap: wrap; gap: 6px 20px; padding: 14px 0; border-block: 1px solid #dce5ee; margin: 0 0 12px; font-size: 13px; }
+.clinical-report-nav a { color: #285d88; padding: 4px 0; }
+.clinical-report-nav a:focus-visible { outline: 2px solid #3475c5; outline-offset: 3px; }
+.clinical-report-section { padding: 24px 0; border-bottom: 1px solid #dce5ee; scroll-margin-top: 90px; }
+.clinical-report-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.clinical-section-heading { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+.clinical-section-heading > span { color: #6d879e; font-size: 13px; font-variant-numeric: tabular-nums; }
+.clinical-section-heading h4 { margin: 0 !important; color: #183b56; }
+.clinical-problem + .clinical-problem { margin-top: 24px; }
+.clinical-problem-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.clinical-problem-heading h5 { margin: 0 0 8px; }
+.clinical-table-wrap { border: 1px solid #dce5ee; border-radius: 8px; overflow: hidden; margin: 12px 0 20px; }
+.clinical-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 14px; line-height: 1.8; }
+.clinical-table th, .clinical-table td { text-align: left; vertical-align: top; padding: 16px; border-bottom: 1px solid #e5ebf1; overflow-wrap: anywhere; }
+.clinical-table thead th { background: #f3f6fa; color: #536b80; font-size: 12px; font-weight: 600; }
+.clinical-table tbody th { font-weight: 600; }
+.clinical-table tr:last-child > * { border-bottom: 0; }
+.candidate-table th:first-child { width: 23%; }
+.candidate-table th:nth-child(2) { width: 19%; }
+.clinical-table .is-preferred { background: #f5f9fe; }
+.clinical-table .ant-typography { margin-bottom: 8px; }
+.clinical-cell-note { display: block; margin-top: 10px; font-size: 12px; font-weight: 400; color: #718297; }
+.clinical-evidence-label { display: block; margin-top: 12px; }
+.clinical-print-source { display: none; }
+.needs-table th:first-child { width: 23%; }
+.needs-table th:nth-child(2) { width: 12%; }
+.needs-table th:nth-child(3) { width: 31%; }
+.clinical-associated { margin-top: 24px; }
+.clinical-associated > article { padding: 16px 0; border-top: 1px solid #edf1f5; }
+.clinical-associated > article > .ant-typography { margin: 8px 0; }
+.clinical-key-reason { background: #f3f7fb; border-left: 3px solid #477ba8; padding: 16px 20px; margin-bottom: 20px; }
+.clinical-key-reason .ant-typography { margin-bottom: 0; }
+.clinical-boundary { border-left: 3px solid #dfc48c; padding: 16px 20px; margin: 16px 0; background: #fdfbf7; }
+.clinical-facts { margin: 12px 0; }
+.clinical-facts > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 16px; margin: 8px 0; }
+.clinical-facts dt { font-weight: 600; color: #536b80; }
+.clinical-facts dd { margin: 0; }
+.clinical-agenda-item { padding: 18px 0; border-top: 1px solid #e5ebf1; }
+.clinical-agenda-item h5 { margin: 0 0 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@container clinical-report (max-width: 760px) {
+  .clinical-table, .clinical-table tbody, .clinical-table tr, .clinical-table td, .clinical-table tbody th { display: block; width: 100%; }
+  .clinical-table thead { display: none; }
+  .clinical-table tbody tr { border-bottom: 1px solid #dce5ee; padding: 12px 0; }
+  .clinical-table tbody tr:last-child { border-bottom: 0; }
+  .clinical-table td, .clinical-table tbody th { border: 0; padding: 6px 16px; }
+  .clinical-table tbody th:first-child { width: 100%; }
+  .clinical-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: #718297; }
+  .clinical-facts > div { grid-template-columns: 1fr; gap: 3px; }
+}
+@media (max-width: 900px) {
+  .clinical-report-card > .ant-card-body { padding: 20px; }
+}
 @media print {
   .synthesis-tabs [role="tabpanel"] { display: block !important; visibility: visible !important; height: auto !important; }
   .print-section-title { display: block; margin-top: 24px; }
   .team-synthesis details > * { display: block !important; }
   .team-synthesis .citation-button { display: none; }
   .team-synthesis, .team-synthesis .synthesis-problem { break-inside: auto; }
+  .clinical-report { container-type: normal; }
+  .clinical-print-source { display: inline; }
+  .clinical-report-card > .ant-card-body { padding: 0; }
+  .clinical-report-header h3 { font-size: 22px; }
+  .clinical-section-heading { break-after: avoid; }
+  .clinical-table-wrap { overflow: visible; }
+  .clinical-table tr { break-inside: avoid; }
 }

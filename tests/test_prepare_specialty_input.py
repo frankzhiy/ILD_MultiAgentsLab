@@ -128,7 +128,7 @@ def test_later_specialty_and_radiology_stage_payloads_are_bounded():
     )
     evidence = prompt_json(build_radiology_evidence_prompt_input(audit))
     assert len(reconstruction) < len(audit.model_dump_json()) * 0.5
-    assert len(evidence) < len(audit.model_dump_json()) * 0.4
+    assert len(evidence) < len(audit.model_dump_json()) * 0.5
 
 
 def test_rejects_conflicting_embedded_and_separate_primary_frames(tmp_path):
@@ -207,3 +207,16 @@ def test_keeps_unit_text_when_locator_is_degraded(tmp_path):
 def test_shared_context_cannot_be_target_specialty():
     with pytest.raises(ValueError, match="not a target specialty"):
         build_specialty_case_input(RUN_DIR, MdtSpecialty.SHARED_CONTEXT)
+
+
+def test_radiology_prompt_preserves_exact_evidence_ids_for_each_statement():
+    radiology = build_specialty_case_input(RUN_DIR, MdtSpecialty.THORACIC_RADIOLOGY)
+    audit = build_radiology_working_input(radiology)
+    value = json.loads(prompt_json(build_radiology_evidence_prompt_input(audit)))
+    expected = {statement.proposition_id: statement.evidence_ids
+                for unit in audit.evidence_units for statement in unit.statements}
+    mapped = [statement for key in ('imaging_evidence', 'clinical_context')
+              for unit in value.get(key, []) for statement in unit['statements']]
+    assert len({tuple(statement['evidence_ids']) for statement in mapped}) > 1
+    for statement in mapped:
+        assert statement['evidence_ids'] == expected[statement['proposition_id']]

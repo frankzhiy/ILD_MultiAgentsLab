@@ -31,10 +31,11 @@ Build the index once in the same environment used to run the agents:
 /opt/anaconda3/envs/multiAgent/bin/python scripts/guidelines/build_guideline_index.py
 ```
 
-The command parses the PDFs, embeds their page-level chunks with `BAAI/bge-m3`, and persists Qdrant
-local-mode data under `data/guidelines/index/`. No database server or Homebrew service is required.
-An unchanged second run exits without parsing or embedding; when one PDF changes, only that document
-is re-parsed and re-embedded. Agent execution fails clearly when the index is missing or stale.
+The command preserves clinical passages and figure/table descriptions, excludes reference sections,
+embeds them with `BAAI/bge-m3`, and persists a versioned local Qdrant index under
+`data/guidelines/index/clinical_passages_v3/`. Retrieval combines dense and BM25 rankings.
+No database server or Homebrew service is required. An unchanged second run exits without
+parsing or embedding; a PDF, catalog, or chunker change rebuilds the index. Agent execution fails clearly when the index is missing or stale.
 
 In networks where Hugging Face is slow, the same official BAAI weights can be downloaded from
 [BAAI's ModelScope repository](https://modelscope.cn/models/BAAI/bge-m3) into
@@ -55,11 +56,28 @@ Inspect retrieval independently of an LLM call:
   "ILD 诊断信度和未分类 ILD 如何定义"
 ```
 
-At runtime, each stage receives only its configured retrieved chunks. The LLM may cite only those
+At runtime, queries come from patient facts and current diagnostic candidates; stage limits control
+how many passages are supplied. The LLM may cite only those
 `chunk_id` values. Local validation then fills the canonical title, organization, section, PDF page,
 exact passage, and source file. Stage traces record the query, candidates, scores, and citations used.
-Specialty HTML reports keep patient evidence, conflicting evidence, related context, and guideline
-knowledge visually separate and link citations to the corresponding local PDF page.
+Clinical review uses the saved formal results in the workbench, including per-claim evidence and exact guideline locations.
+
+## Consultation tasks and diagnostic completion
+
+The workbench provides three referral templates: refine a suspected/established ILD diagnosis
+(default), assess whether ILD is present, and review a recorded diagnosis. Optional questions and
+per-case batch overrides are stored separately from patient evidence; retries preserve the task.
+
+Specialty formal opinions select evidence while generating each atomic claim. There is no
+claim-by-evidence Cartesian annotation stage. The chair retrieves phenotype knowledge, generates
+patient-grounded candidates independently of specialist conclusions, then retrieves candidate
+knowledge and adjudicates the case. Candidate coverage and evidence IDs are validated locally.
+
+Results distinguish specific disease/syndrome diagnoses, provisional diagnoses, specific
+differentials, patient-information limits, and unresolved reasoning. Category/pattern/finding
+results cannot claim specific diagnostic completion. Unresolved candidates route to discussion;
+missing patient discriminators remain explicit. Historical artifacts are retained, but a new
+report requires the candidate and completion review. See [the design record](docs/diagnostic_pipeline_redesign.md).
 
 ## Manual LLM Run
 
@@ -72,16 +90,17 @@ export APIYI_API_KEY="..."
 Set `provider`, model, base URL, API key environment variable, and timeout in
 `configs/agents/semantic_graphing/agent.yaml`.
 
-Semantic graphing uses `gpt-6.1-sol` through APIYI's OpenAI-compatible endpoint, with
-`medium` reasoning effort for every stage.
+Semantic graphing uses `gpt-6.1-terra` through APIYI's OpenAI-compatible endpoint, with
+`high` reasoning effort for every stage.
 
 ```yaml
 provider: apiyi
-model: gpt-6.1-sol
+model: gpt-6.1-terra
 base_url: https://api.apiyi.com/v1
 api_key_env: APIYI_API_KEY
 request_options:
-  reasoning_effort: medium
+  reasoning_effort: high
+supports_json_schema: true
 ```
 
 The same config also controls `max_concurrency`, `max_attempts`, per-stage token limits, and
@@ -131,18 +150,11 @@ run, preventing mixed-version outputs.
 
 ## Downstream Multi-Agent LLM
 
-The downstream multi-agent system has an independent LLM configuration at
-`configs/agents/multi_agent_system/llm.yaml`. It does not reuse or change the semantic-graphing
-agent configuration.
+Each specialty and the MDT chair use `configs/agents/<agent>/agent.yaml`.
+Set `APIYI_API_KEY` before running the agents.
 
-Set the APIYI credential before running the future multi-agent system:
-
-```bash
-export APIYI_API_KEY="..."
-```
-
-The four specialty agents and MDT chair default to `gpt-6.1-sol` with `high` reasoning effort
-through APIYI's OpenAI-compatible endpoint. Discussion reuses their respective configurations.
+The four specialty agents and MDT chair default to `gpt-6.1-terra` with `high` reasoning effort
+through APIYI's OpenAI-compatible endpoint. Discussion reuses their respective configurations. These defaults request strict JSON Schema output.
 The APIYI client omits custom temperature for GPT-6 reasoning requests and uses
 `max_completion_tokens` for GPT-6 token limits. The APIYI client is provider-specific:
 GPT, Claude, Qwen, and other models exposed through APIYI's compatible
@@ -162,7 +174,7 @@ Run it after semantic-graph outputs are available:
 python3 scripts/run/run_rheumatology_agent.py
 ```
 
-The CLI writes rheumatology input, structured result, stage trace, and HTML report beside the
+The CLI writes rheumatology input, formal result, internal state, and stage trace beside the
 selected semantic-graph run. Configuration and guideline guardrails are in
 `configs/agents/rheumatology/agent.yaml`.
 
@@ -181,3 +193,7 @@ python3 scripts/run/run_pathology_agent.py
 ```
 
 Configuration and guideline guardrails are in `configs/agents/pathology/agent.yaml`.
+
+The four specialty CLIs save formal JSON, internal-state JSON, and traces. Clinical review
+uses the workbench's current-result pages; old specialty HTML reports are no longer generated.
+Historical artifacts remain downloadable and are labelled separately from current formal results.

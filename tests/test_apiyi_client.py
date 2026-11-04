@@ -24,7 +24,6 @@ class FakeHTTPResponse:
 
 
 @pytest.mark.parametrize("config_path", [
-    "configs/agents/multi_agent_system/llm.yaml",
     "configs/agents/pulmonology/agent.yaml",
     "configs/agents/thoracic_radiology/agent.yaml",
     "configs/agents/rheumatology/agent.yaml",
@@ -38,7 +37,7 @@ def test_multi_agent_config_builds_apiyi_client(monkeypatch, config_path):
     client = build_llm_client(config)
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-6.1-sol"
+    assert client.model == "gpt-6.1-terra"
     assert client.base_url == "https://api.apiyi.com/v1"
     assert client.request_options == {"reasoning_effort": "high"}
 
@@ -50,8 +49,8 @@ def test_semantic_graph_config_builds_apiyi_client(monkeypatch):
     client = build_llm_client(config)
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-6.1-sol"
-    assert client.request_options == {"reasoning_effort": "medium"}
+    assert client.model == "gpt-6.1-terra"
+    assert client.request_options == {"reasoning_effort": "high"}
     assert client.supports_json_schema is True
 
 

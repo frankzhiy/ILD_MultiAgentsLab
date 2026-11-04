@@ -183,6 +183,9 @@ def test_same_issue_new_target_continues_but_cosmetic_change_stops():
     current.team_synthesis.issues[0].assignments[0].question = '解释 慢性变化？'
     assert decide_discussion_continuation(**args)['stop_kind'] == 'no_progress'
     current.team_synthesis.issues = []
+    from src.agents.common.diagnostic_resolution import DiagnosticResolution
+    current.team_synthesis.diagnostic_resolution = DiagnosticResolution(status='provisional_diagnosis',
+        achieved_level='disease', primary_diagnosis='肺炎', goal_review='病原未定，保留暂定诊断。')
     current.team_synthesis.dissent = ['资料已经充分讨论，仍保留明确异议']
     assert decide_discussion_continuation(**args)['stop_kind'] == 'completed'
 
@@ -238,7 +241,7 @@ def test_source_snapshot_keeps_version_conditions_relations_and_guidelines():
     assert source['evidence_relations']['supporting'] == ['ev-1']
     assert source['evidence_relations']['qualifying'] == ['ev-1']
     assert source['guideline_evidence'][0]['chunk_id'] == 'g-1'
-    outputs['pulmonology']['specialty_assessments']['assessments'][0]['evidence'] = {}
+    outputs['pulmonology']['specialty_assessments']['assessments'][0]['evidence'] = {'evidence_relations': []}
     later = build_chair_prompt_bundle('100-IPF', outputs, source_seed=bundle)
     assert later.evidence_registry['ev-1'].quote == '发热记录'
 

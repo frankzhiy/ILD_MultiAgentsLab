@@ -49,3 +49,11 @@
 - P3: a real stop button can be added after the orchestrator exposes a discussion-specific cancellation endpoint and partial-state semantics.
 
 final result: passed
+
+## 独立 MDT 报告版式
+
+- 对照目标为用户选定的三张稿，分别是报告首屏、诊断依据展开态和讨论记录的议题选中态。
+- 已用 77-IPF 和 78-IPF 验证栏目顺序、诊断状态、依据和指南展开、待核实资料往返跳转、轮次和议题切换以及打印时的展开状态。
+- 内置浏览器限制本地文件协议，未取得实现截图。字体与字号、间距、配色、视觉对照和响应式版面仍待浏览器确认。报告只使用排版元素，无需配图。
+
+final result: blocked

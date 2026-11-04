@@ -7,7 +7,6 @@ from src.agents.rheumatology.agent import RheumatologyAgent
 from src.agents.rheumatology.validation import validate_initial_stage
 from src.agents.rheumatology.models import ActivityAndRiskAssessment, AutoimmuneManifestation, ClinicalAssessmentItem, EvidencePointer, IldAttributionAssessment, InitialAutoimmuneAssessment, InitialCaseReconstruction, InitialConsultFormulation, RheumaticDiseaseFormulation, RheumatologyDomain, SerologicFinding
 from src.llm.base import LLMResponse
-from src.reporting.rheumatology_report import render_rheumatology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 
 
@@ -103,7 +102,7 @@ def payload(model):
     return model.model_dump(mode="json")
 
 
-def test_initial_assessment_aggregates_three_stages_and_renders_report(tmp_path):
+def test_initial_assessment_aggregates_three_stages(tmp_path):
     case = case_input()
     reconstruction, autoimmune, formulation = stages(case)
     agent = RheumatologyAgent(
@@ -121,14 +120,6 @@ def test_initial_assessment_aggregates_three_stages_and_renders_report(tmp_path)
     assert [stage["stage"] for stage in trace["stages"]] == [
         "initial_case_reconstruction", "initial_autoimmune_assessment", "initial_consult_formulation"
     ]
-    report = render_rheumatology_report(result, case, tmp_path / "report.html")
-    html = report.read_text(encoding="utf-8")
-    resolved = result.case_orientation.supporting_evidence[0]
-    assert "风湿免疫科 首轮评估" in html
-    assert "片段 ·" in html and resolved.segment_id in html
-    assert "证据 ·" in html and resolved.evidence_ids[0] in html
-    assert "节点 ·" in html and resolved.node_ids[0] in html
-    assert resolved.quote in html
 
 
 def test_initial_stage_schema_excludes_discussion_statuses_and_other_domains():

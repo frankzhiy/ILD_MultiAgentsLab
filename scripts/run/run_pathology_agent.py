@@ -18,7 +18,6 @@ from src.agents.pathology.agent import PathologyAgent
 from src.llm.factory import build_llm_client
 from src.llm.prompting import llm_value
 from src.llm.structured import StructuredGenerationError
-from src.reporting.pathology_report import render_pathology_report
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.utils.config import load_yaml
 
@@ -169,14 +168,11 @@ def main() -> int:
 
     output = run_dir / f"{stem}_{suffix}.json"
     trace_output = run_dir / f"{stem}_{suffix}_trace.json"
-    report_output = run_dir / f"{stem}_{suffix}.html"
     write_json(output, consultation.formal_output.model_dump(mode="json"))
     write_json(run_dir / f"{case.case_id}_pathology_internal_state.json", result.model_dump(mode="json"))
     write_json(trace_output, trace)
-    render_pathology_report(result, case, report_output)
     progress.log(f"JSON：{output.resolve()}")
     progress.log(f"Trace：{trace_output.resolve()}")
-    progress.log(f"HTML：{report_output.resolve()}")
     return 0
 
 

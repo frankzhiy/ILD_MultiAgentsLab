@@ -53,3 +53,42 @@ it('selects search results and shares individually configured agents across a ba
   })))
   expect(api.createRun).not.toHaveBeenCalled()
 })
+
+it('uses the refinement template by default and submits a selected task with pasted text', async () => {
+  api.cases.mockResolvedValue([])
+  api.runs.mockResolvedValue([])
+  api.models.mockResolvedValue({ agents: [{ agent_id: 'pulmonology', model: 'test-model' }] })
+  api.createRun.mockResolvedValue({ id: 'new-run' })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<MemoryRouter><QueryClientProvider client={client}><App><NewRunPage /></App></QueryClientProvider></MemoryRouter>)
+  await screen.findByLabelText('pulmonology model')
+  expect(screen.getByRole('radio', { name: '进一步明确诊断' })).toBeChecked()
+  fireEvent.click(screen.getByRole('radio', { name: '判断是否属于ILD' }))
+  fireEvent.click(screen.getByLabelText('粘贴原文'))
+  fireEvent.change(screen.getByLabelText('病例 ID'), { target: { value: 'case-a' } })
+  fireEvent.change(screen.getByLabelText('病例原文'), { target: { value: '病例检查记录' } })
+  fireEvent.click(screen.getByRole('button', { name: '开始运行' }))
+  await waitFor(() => expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({
+    consultation: { template: 'assess_ild', question: '' }, raw_text: '病例检查记录',
+  })))
+})
+
+it('submits an individual case template without changing the batch default', async () => {
+  api.cases.mockResolvedValue([{ id: 'case-a', preview: 'A' }, { id: 'case-b', preview: 'B' }])
+  api.models.mockResolvedValue({ agents: [{ agent_id: 'pulmonology', model: 'test-model' }] })
+  api.createBatch.mockResolvedValue({ kind: 'run', id: 'batch-2' })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<MemoryRouter><QueryClientProvider client={client}><App><NewRunPage initialMode="batch" /></App></QueryClientProvider></MemoryRouter>)
+  await screen.findByText('case-a')
+  await screen.findByLabelText('pulmonology model')
+  fireEvent.click(screen.getByRole('button', { name: '全选病例' }))
+  const selector = screen.getByRole('combobox', { name: 'case-b 会诊模板' })
+  fireEvent.keyDown(selector, { key: 'ArrowDown', keyCode: 40, which: 40 })
+  fireEvent.keyDown(selector, { key: 'ArrowDown', keyCode: 40, which: 40 })
+  fireEvent.keyDown(selector, { key: 'Enter', keyCode: 13, which: 13 })
+  fireEvent.click(screen.getByRole('button', { name: '开始批量运行（2 例）' }))
+  await waitFor(() => expect(api.createBatch).toHaveBeenCalledWith(expect.objectContaining({
+    consultation: { template: 'refine_diagnosis', question: '' },
+    case_consultations: { 'case-b': { template: 'assess_ild' } },
+  })))
+})

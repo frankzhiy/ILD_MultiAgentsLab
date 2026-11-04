@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.agents.common.consultation import ConsultationContext
+
 from src.schemas.semantic_graphing.clinical_proposition import (
     GraphUnitClinicalPropositions,
 )
@@ -71,6 +73,7 @@ class SpecialtyCaseInput(BaseModel):
 
     case_id: str = Field(min_length=1)
     target_specialty: SpecialistTarget
+    consultation: ConsultationContext = Field(default_factory=ConsultationContext)
     source_run_dir: str = Field(min_length=1)
     segments: list[SpecialtySegmentInput] = Field(default_factory=list)
     summary: SpecialtyCaseSummary

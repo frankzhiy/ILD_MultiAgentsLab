@@ -326,10 +326,14 @@ class StructuredLLMGenerator:
                                 '{"edits":[{"op":"replace","path":"/items/0/status",'
                                 '"value":"boundary"}]}。'
                                 "所有 path 和数组下标以上面的当前 JSON 为准，不要重复应用已有修改。"
+                                "若错误指出缺失数组记录（missing），用 append 补齐全部缺项；"
+                                "不能将已有记录的 ID 改为缺失 ID，这会丢失原记录。"
                                 "path 是从 0 开始的 JSON Pointer；replace 可替换已存在的标量字段"
                                 "或标量数组（例如 atomic_claim_ids），也可把可空对象改为 null；"
                                 "不能替换为新的对象或对象数组。若把判断改为 maintain，"
                                 "必须同时将 proposed_content 改为 null；"
+                                "add 可向已有对象补充一个不存在的标量字段或标量数组字段，"
+                                "不能覆盖已有字段、创建中间对象或加入对象及对象数组；"
                                 "append 只能向已存在的数组追加一个新元素；"
                                 'remove_indices 可从数组删除指定位置，格式为 '
                                 '{"op":"remove_indices","path":"/items","value":[2,3]}。'
@@ -430,12 +434,12 @@ def _apply_repair_edits(base: dict[str, Any], patch: Any) -> dict[str, Any]:
     if not isinstance(edits, list) or not edits:
         raise ValueError("Repair response must contain at least one edit")
     result = deepcopy(base)
-    operations = {"replace": [], "remove_indices": [], "append": []}
+    operations = {"add": [], "replace": [], "remove_indices": [], "append": []}
     for edit in edits:
         if not isinstance(edit, dict) or set(edit) != {"op", "path", "value"}:
             raise ValueError("Each repair edit must contain op, path, and value")
         if edit["op"] not in operations:
-            raise ValueError("Repair edit op must be replace, remove_indices, or append")
+            raise ValueError("Repair edit op must be add, replace, remove_indices, or append")
         if not isinstance(edit["path"], str) or not edit["path"].startswith("/"):
             raise ValueError("Repair edit path must be a JSON Pointer")
         operations[edit["op"]].append(edit)
@@ -443,11 +447,13 @@ def _apply_repair_edits(base: dict[str, Any], patch: Any) -> dict[str, Any]:
     if len(remove_paths) != len(set(remove_paths)):
         raise ValueError("Use one remove_indices edit per array")
     for edit in (
-        operations["replace"] + operations["remove_indices"] + operations["append"]
+        operations["add"] + operations["replace"] + operations["remove_indices"] + operations["append"]
     ):
         path = edit["path"]
         current: Any = result
-        for part in path[1:].split("/"):
+        added = False
+        parts = path[1:].split("/")
+        for position, part in enumerate(parts):
             key = part.replace("~1", "/").replace("~0", "~")
             if isinstance(current, list):
                 if not key.isdigit() or int(key) >= len(current):
@@ -457,11 +463,25 @@ def _apply_repair_edits(base: dict[str, Any], patch: Any) -> dict[str, Any]:
                                      "To add a missing item, use append on its parent array; "
                                      "do not replace a nonexistent index.")
                 parent, index = current, int(key)
+            elif (edit["op"] == "add" and isinstance(current, dict)
+                  and position == len(parts) - 1 and key not in current):
+                value = edit["value"]
+                if isinstance(value, dict) or (isinstance(value, list) and any(
+                    isinstance(item, (dict, list)) for item in value
+                )):
+                    raise ValueError(f"Repair add requires a scalar or scalar array: {path}")
+                current[key] = value
+                added = True
+                break
             elif isinstance(current, dict) and key in current:
                 parent, index = current, key
             else:
                 raise ValueError(f"Repair edit path does not exist: {path}")
             current = parent[index]
+        if edit["op"] == "add":
+            if added:
+                continue
+            raise ValueError(f"Repair add cannot overwrite an existing field: {path}")
         if edit["op"] == "remove_indices":
             indices = edit["value"]
             if (

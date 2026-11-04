@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Brand } from '../components/Brand'
+import { consultationTemplates } from '../components/Consultation'
 
 const { Header, Content } = Layout
 const { Title, Text } = Typography
@@ -20,6 +21,7 @@ export function NewRunPage({ initialMode = 'single' }) {
   const { message } = App.useApp()
   const [agentConfig, setAgentConfig] = useState({})
   const [selectedCases, setSelectedCases] = useState([])
+  const [caseConsultations, setCaseConsultations] = useState({})
   const [caseSearch, setCaseSearch] = useState('')
   const [bulkModel, setBulkModel] = useState('')
   const casesQuery = useQuery({ queryKey: ['cases'], queryFn: api.cases })
@@ -46,7 +48,7 @@ export function NewRunPage({ initialMode = 'single' }) {
     if (mode === 'batch' && !selectedCases.length) return message.error('请至少选择一个病例')
     if (agents.some((agent) => !agentConfig[agent.agent_id]?.model?.trim())) return message.error('请填写每个 Agent 的模型')
     const settings = Object.fromEntries(Object.entries(agentConfig).map(([id, config]) => [id, { ...config, model: config.model.trim() }]))
-    mutation.mutate({ ...values, ...(mode === 'batch' ? { case_ids: selectedCases } : {}), agents: settings })
+    mutation.mutate({ ...values, ...(mode === 'batch' ? { case_ids: selectedCases, case_consultations: Object.fromEntries(selectedCases.filter(id => caseConsultations[id]).map(id => [id, { template: caseConsultations[id] }])) } : {}), agents: settings })
   }
   const columns = [
     { title: 'Agent', dataIndex: 'agent_id', render: (value) => <Text strong>{AGENT_LABELS[value] || value}</Text> },
@@ -60,12 +62,14 @@ export function NewRunPage({ initialMode = 'single' }) {
       <Header className="global-header"><Brand /><Button icon={<ArrowLeftOutlined />}><Link to="/runs">返回运行列表</Link></Button></Header>
       <Content className="page-content narrow-content">
         <div className="page-heading"><div><Text className="eyebrow">NEW EXPERIMENT</Text><Title level={2}>{mode === 'batch' ? '新建批量实验' : '配置一次 MDT 运行'}</Title><Text type="secondary">{mode === 'batch' ? '每个 Agent 可使用不同模型，所有选中病例共用本次配置。' : '病例原文保持只读；每个 Agent 的模型设置与最终产物一起记录。'}</Text></div></div>
-        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="完整流程依次执行 Semantic Graphing、四个并行专科、MDT 会前整合整合、团队讨论和最终报告；批量运行中单个病例失败不会中断其他病例。" />
+        <Alert className="section-gap" type="info" showIcon title="运行会调用真实 Agent" description="完整流程依次执行 Semantic Graphing、四个并行专科、MDT 会前整合、团队讨论和最终报告；批量运行中单个病例失败不会中断其他病例。" />
         {casesQuery.isError && <Alert type="error" showIcon title="无法读取病例库" description={casesQuery.error.message} />}
         {modelQuery.isError && <Alert type="error" showIcon title="无法读取模型配置" description={modelQuery.error.message} />}
-        <Form form={form} layout="vertical" disabled={mutation.isPending} initialValues={{ mode: initialMode, source: 'library', max_concurrency: 6, max_case_concurrency: 2, max_request_concurrency: 6 }} onFinish={submit}>
+        <Form form={form} layout="vertical" disabled={mutation.isPending} initialValues={{ mode: initialMode, source: 'library', consultation: { template: 'refine_diagnosis', question: '' }, max_concurrency: 6, max_case_concurrency: 2, max_request_concurrency: 6 }} onFinish={submit}>
           <Form.Item name="mode" label="运行方式"><Radio.Group options={[{ value: 'single', label: '单个病例' }, { value: 'batch', label: '批量病例库运行' }]} /></Form.Item>
           <Card title={<Space><FileTextOutlined />病例输入</Space>} className="section-card">
+            <Form.Item name={['consultation', 'template']} label="本次会诊要解决什么" extra="默认用于医生已基本认定ILD、希望进一步明确具体诊断的病例。模板只说明会诊背景，不增加患者诊断证据。"><Radio.Group options={consultationTemplates} /></Form.Item>
+            <Form.Item name={['consultation', 'question']} label="补充会诊问题（可选）"><Input placeholder="没有特别要求可以留空" maxLength={1000} /></Form.Item>
             <Form.Item noStyle shouldUpdate={(before, after) => before.mode !== after.mode || before.source !== after.source}>
               {({ getFieldValue }) => getFieldValue('mode') === 'batch'
                 ? <>
@@ -74,7 +78,7 @@ export function NewRunPage({ initialMode = 'single' }) {
                     <Button onClick={() => setSelectedCases((current) => [...new Set([...current, ...filteredCases.map((item) => item.id)])])}>全选{caseSearch ? '搜索结果' : '病例'}</Button>
                     <Button onClick={() => setSelectedCases([])}>清空选择</Button><Text>已选 {selectedCases.length} / {cases.length} 例</Text>
                   </Space>
-                  <Table size="small" rowKey="id" loading={casesQuery.isLoading} dataSource={filteredCases} pagination={{ pageSize: 8 }} rowSelection={{ selectedRowKeys: selectedCases, onChange: setSelectedCases, preserveSelectedRowKeys: true, getCheckboxProps: () => ({ disabled: mutation.isPending }) }} columns={[{ title: '病例', dataIndex: 'id', width: 160 }, { title: '原文预览', dataIndex: 'preview', ellipsis: true }]} />
+                  <Table size="small" rowKey="id" loading={casesQuery.isLoading} dataSource={filteredCases} pagination={{ pageSize: 8 }} rowSelection={{ selectedRowKeys: selectedCases, onChange: setSelectedCases, preserveSelectedRowKeys: true, getCheckboxProps: () => ({ disabled: mutation.isPending }) }} columns={[{ title: '病例', dataIndex: 'id', width: 160 }, { title: '原文预览', dataIndex: 'preview', ellipsis: true }, { title: '单例会诊模板', width: 200, render: (_, item) => <Select aria-label={`${item.id} 会诊模板`} style={{ width: '100%' }} value={caseConsultations[item.id] || undefined} placeholder="使用上方模板" allowClear options={consultationTemplates} onChange={value => setCaseConsultations(current => ({ ...current, [item.id]: value }))} /> }]} />
                 </>
                 : <><Form.Item name="source" label="输入方式"><Radio.Group options={[{ value: 'library', label: '病例库' }, { value: 'paste', label: '粘贴原文' }]} /></Form.Item>{getFieldValue('source') === 'library'
                   ? <Form.Item name="case_id" label="data/raw_cases" rules={[{ required: true }]}><Select showSearch placeholder="选择病例" options={cases.map((item) => ({ value: item.id, label: `${item.filename} · ${item.bytes} bytes` }))} /></Form.Item>

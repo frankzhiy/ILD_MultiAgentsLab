@@ -99,6 +99,8 @@ class SegmentGraphUnitExtractor:
                 "clinical_frame": segment.clinical_frame,
                 "temporal_anchor": segment.temporal_anchor or "null",
                 "rationale": segment.rationale,
+                "section_title": segment.metadata.get("section_title", "无固定栏目"),
+                "context_label": segment.metadata.get("context_label", "无分组标题"),
                 "primary_frame_catalog": self.primary_frame_catalog,
                 "segment_text": segment.text,
             },
@@ -125,6 +127,11 @@ def normalize_extracted_graph_units(
         GraphUnit(
             graph_unit_id=f"{segment.segment_id}_gu_{index:03d}",
             segment_id=segment.segment_id,
+            metadata={
+                key: segment.metadata[key]
+                for key in ("section_title", "context_label")
+                if key in segment.metadata
+            },
             **unit.model_dump(),
         )
         for index, unit in enumerate(result.graph_units, start=1)

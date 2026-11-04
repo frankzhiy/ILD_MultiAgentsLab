@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.agents.common.clinical_concepts import Answerability, Confidence
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -124,9 +126,9 @@ class DiscussionAnswerClaim(BaseModel):
 class SpecialtyTaskAnswerDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    answerability: Literal["answered", "partially_answered", "not_assessable"]
+    answerability: Answerability
     answer: str = Field(min_length=1)
-    confidence: Literal["high", "moderate", "low", "unknown"]
+    confidence: Confidence = Field(description="对本次回答的把握度，不表示肯定疾病；高把握度的否定或边界回答仍可成立。")
     medical_basis: str = Field(min_length=1)
     answer_claims: list[DiscussionAnswerClaimDraft] = Field(min_length=1)
     evidence_uses: list[DiscussionEvidenceUseDraft] = Field(default_factory=list)
@@ -144,9 +146,9 @@ class SpecialtyTaskAnswer(BaseModel):
     task_id: str
     issue_type: IssueType
     issue_id: str
-    answerability: Literal["answered", "partially_answered", "not_assessable"]
+    answerability: Answerability
     answer: str
-    confidence: Literal["high", "moderate", "low", "unknown"]
+    confidence: Confidence = Field(description="对本次回答的把握度，不表示肯定疾病；高把握度的否定或边界回答仍可成立。")
     medical_basis: str
     answer_claims: list[DiscussionAnswerClaim] = Field(default_factory=list)
     evidence_uses: list[DiscussionEvidenceUse] = Field(default_factory=list)
@@ -167,13 +169,6 @@ class SpecialtyAnswerReviewDraft(BaseModel):
     follow_up_question: InterspecialtyQuestion | None = None
     evidence_gap: EvidenceGap | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_outcome(cls, value):
-        if isinstance(value, dict) and value.get("outcome") == "identify_conflict":
-            value = dict(value)
-            value["outcome"] = "flag_incompatibility"
-        return value
 
 
 class SpecialtyAnswerReview(SpecialtyAnswerReviewDraft):
@@ -209,7 +204,7 @@ class DiscussionRound(BaseModel):
 class MDTDiscussionState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["mdt_discussion.v4"] = "mdt_discussion.v4"
+    schema_version: Literal["mdt_discussion.v6"] = "mdt_discussion.v6"
     case_id: str
     baseline_sha256: str
     status: Literal["running", "completed", "failed", "stopped"]

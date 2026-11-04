@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api } from '../../api'
@@ -15,18 +15,19 @@ function renderWorkspace(value) {
 it('shows new synthesis, question provenance, boundaries and the complete needs ledger', async () => {
   renderWorkspace({ status: 'completed', runnable: true, result: chairResult })
   expect(await screen.findByRole('heading', { name: 'MDT 会前整合' })).toBeInTheDocument()
-  expect(screen.getByText('当前病因仍未明确')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('tab', { name: '原始问题与讨论议程' }))
+  expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+  for (const name of ['诊断结论与候选', '诊断依据与取舍', '判断边界', '证据需求及满足状态', '本次讨论议程']) {
+    expect(screen.getByRole('region', { name })).toBeVisible()
+  }
+  const agenda = screen.getByRole('region', { name: '本次讨论议程' })
+  expect(within(agenda).getByRole('heading', { name: '1. 现有检查能否解释急性变化？' })).toBeVisible()
+  expect(within(agenda).getAllByText('呼吸科回答：')[0]).toBeVisible()
+  fireEvent.click(screen.getByText('原始问题与讨论处理记录'))
   expect(screen.getByText('影像支持哪种模式？')).toBeInTheDocument()
   expect(screen.getByText('已有专科意见覆盖')).toBeInTheDocument()
   expect(screen.getByText(/呼吸科 → 影像科/)).toBeInTheDocument()
   expect(screen.getByText(/发起方：主持人/)).toBeInTheDocument()
-  expect(screen.getByText('呼吸科回答：')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('tab', { name: '本轮判断边界' }))
-  expect(screen.getByText('无法确认 UIP')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('tab', { name: '专科分歧与待核实矛盾' }))
-  expect(screen.getByText('本轮未发现专科分歧；共同资料不足不构成冲突')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('tab', { name: '证据需求及满足状态' }))
+  expect(screen.getByText('无法确认 UIP')).toBeVisible()
   expect(screen.getByText('尚缺资料')).toBeInTheDocument()
   expect(screen.getByText('保留判断边界')).toBeInTheDocument()
 })

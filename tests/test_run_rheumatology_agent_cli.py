@@ -37,9 +37,11 @@ def test_cli_writes_rheumatology_input_and_outputs(monkeypatch, tmp_path):
     assert calls == [(tmp_path, MdtSpecialty.RHEUMATOLOGY)]
     assert runner.read_json(tmp_path / "synthetic-case_rheumatology_initial.json") == consultation(result, {}).formal_output.model_dump(mode="json")
     assert runner.read_json(tmp_path / "synthetic-case_rheumatology_internal_state.json") == result.model_dump(mode="json")
-    for suffix in ("input.json", "initial.json", "initial_trace.json", "initial.html"):
+    for suffix in ("input.json", "initial.json", "initial_trace.json"):
         assert (tmp_path / f"synthetic-case_rheumatology_{suffix}").exists()
 
+
+    assert not list(tmp_path.glob("*.html"))
 
 def test_cli_discovers_semantic_run_directory():
     assert RUN_DIR.resolve() in [path.resolve() for path in runner.discover_semantic_run_dirs()]

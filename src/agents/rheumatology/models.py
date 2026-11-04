@@ -244,7 +244,7 @@ class RheumatologyInitialAssessment(RheumatologyClinicalState):
 
     @model_validator(mode="before")
     @classmethod
-    def coerce_legacy_domain_reviews(cls, value):
+    def coerce_domain_reviews(cls, value):
         if not isinstance(value, dict) or not value.get("domain_reviews"):
             return value
         migrated = dict(value)

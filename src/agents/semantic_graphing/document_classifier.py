@@ -16,12 +16,30 @@ from src.schemas.semantic_graphing.document import (
 from src.utils.config import load_text, render_template
 
 
+CASE_SECTION_TITLES = (
+    "一、基本信息与主诉",
+    "二、病史与暴露史",
+    "三、体格检查与辅助检查",
+    "四、诊疗经过",
+    "五、当前评估与待明确问题",
+)
+_STRUCTURE_LINE_RE = re.compile(
+    r"^[ \t]*(?:(?P<section>"
+    + "|".join(re.escape(title) for title in CASE_SECTION_TITLES)
+    + r")|【(?P<context>[^\n】]+)】)[ \t]*\r?$",
+    re.MULTILINE,
+)
+
+
 @dataclass(frozen=True)
 class SourceUnit:
     unit_id: int
     text: str
     start_char: int
     end_char: int
+    section_title: str | None = None
+    context_label: str | None = None
+    structure_id: int = 0
 
 
 class UnitRangeClassifiedSegment(BaseModel):
@@ -101,37 +119,67 @@ class DocumentClassifier:
         return result, trace
 
 
+def _structure_lines(input_text: str) -> list[re.Match[str]]:
+    matches = list(_STRUCTURE_LINE_RE.finditer(input_text))
+    sections = [match for match in matches if match.group("section")]
+    if not sections:
+        return []
+    if tuple(match.group("section") for match in sections) != CASE_SECTION_TITLES:
+        raise ValueError("Structured case must contain the five section headings once, in order")
+    if input_text[:sections[0].start()].strip():
+        raise ValueError("Structured case contains text before the first section heading")
+    return matches
+
+
 def build_source_units(input_text: str) -> list[SourceUnit]:
-    """Partition the exact source at stable sentence/newline boundaries."""
-    spans: list[tuple[int, int]] = []
-    for match in re.finditer(r".*?(?:[。！？；;?!\n]+|$)", input_text, flags=re.DOTALL):
-        text = match.group(0)
-        if not text:
-            continue
-        if text.strip():
-            spans.append((match.start(), match.end()))
-        elif spans:
-            spans[-1] = (spans[-1][0], match.end())
+    """Partition clinical body text while keeping offsets in the complete input."""
+    units: list[SourceUnit] = []
+    cursor = 0
+    section_title = None
+    context_label = None
+    for structure_id, heading in enumerate([*_structure_lines(input_text), None]):
+        end = heading.start() if heading else len(input_text)
+        spans: list[tuple[int, int]] = []
+        for match in re.finditer(
+            r".*?(?:[。！？；;?!\n]+|$)", input_text[cursor:end], flags=re.DOTALL
+        ):
+            if match.group(0).strip():
+                spans.append((cursor + match.start(), cursor + match.end()))
+            elif match.group(0) and spans:
+                spans[-1] = (spans[-1][0], cursor + match.end())
+        for start, stop in spans:
+            units.append(SourceUnit(
+                unit_id=len(units) + 1,
+                text=input_text[start:stop],
+                start_char=start,
+                end_char=stop,
+                section_title=section_title,
+                context_label=context_label,
+                structure_id=structure_id,
+            ))
+        if heading:
+            if heading.group("section"):
+                section_title = heading.group("section")
+                context_label = None
+            else:
+                context_label = heading.group("context")
+            cursor = heading.end()
 
-    if not spans:
+    if not units:
         raise ValueError("Cannot classify empty or whitespace-only source text")
-
-    return [
-        SourceUnit(
-            unit_id=index,
-            text=input_text[start:end],
-            start_char=start,
-            end_char=end,
-        )
-        for index, (start, end) in enumerate(spans, start=1)
-    ]
+    return units
 
 
 def render_source_units(source_units: list[SourceUnit]) -> str:
-    return "\n".join(
-        f"[{unit.unit_id}] {json.dumps(unit.text, ensure_ascii=False)}"
-        for unit in source_units
-    )
+    lines = []
+    previous_structure = None
+    for unit in source_units:
+        if unit.section_title and unit.structure_id != previous_structure:
+            context = {"栏目": unit.section_title, "分组": unit.context_label}
+            lines.append(f"结构块 {unit.structure_id}：{json.dumps(context, ensure_ascii=False)}")
+        lines.append(f"[{unit.unit_id}] {json.dumps(unit.text, ensure_ascii=False)}")
+        previous_structure = unit.structure_id
+    return "\n".join(lines)
 
 
 def rebuild_document_classification(
@@ -154,8 +202,12 @@ def rebuild_document_classification(
                 f"{len(source_units)}; got {segment.end_unit}"
             )
 
-        start = source_units[previous_end_unit].start_char
-        end = source_units[segment.end_unit - 1].end_char
+        first_unit = source_units[previous_end_unit]
+        last_unit = source_units[segment.end_unit - 1]
+        if first_unit.structure_id != last_unit.structure_id:
+            raise ValueError(f"segment {index} crosses a structural heading")
+        start = first_unit.start_char
+        end = last_unit.end_char
         while start < end and input_text[start].isspace():
             start += 1
         while end > start and input_text[end - 1].isspace():
@@ -169,6 +221,14 @@ def rebuild_document_classification(
                     "text": input_text[start:end],
                     "start_char": start,
                     "end_char": end,
+                    "metadata": {
+                        key: value
+                        for key, value in {
+                            "section_title": first_unit.section_title,
+                            "context_label": first_unit.context_label,
+                        }.items()
+                        if value is not None
+                    },
                 }
             )
         )
@@ -182,7 +242,10 @@ def rebuild_document_classification(
 
     require_non_whitespace_coverage(
         input_text,
-        [(item.start_char, item.end_char) for item in normalized_segments],
+        sorted(
+            [(item.start_char, item.end_char) for item in normalized_segments]
+            + [(match.start(), match.end()) for match in _structure_lines(input_text)]
+        ),
         label="Discourse segments",
     )
 

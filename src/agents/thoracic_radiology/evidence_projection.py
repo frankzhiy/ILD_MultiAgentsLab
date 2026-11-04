@@ -320,6 +320,7 @@ def _radiology_evidence_view(working_input: RadiologyWorkingInput) -> list[dict]
             "description_level_hint": unit.description_level_hint,
             "statements": [
                 {
+                    "evidence_ids": statement.evidence_ids,
                     "proposition_id": statement.proposition_id,
                     "kind": statement.kind,
                     "disposition": statement.disposition,
