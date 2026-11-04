@@ -582,6 +582,38 @@ def test_validation_rejects_unknown_and_disconnected_evidence_references():
         validate_clinical_propositions(result_from(response, text), make_unit(text), make_frame())
 
 
+def test_duplicate_propositions_distinguish_sites_in_the_same_quote():
+    text = "左肺及右肺可见结节。"
+    unit = make_unit(text)
+    result = GraphUnitClinicalPropositions(
+        graph_unit_id=unit.graph_unit_id,
+        primary_frame=make_frame().primary_frame,
+        evidence_blocks=build_evidence_blocks(unit),
+        propositions=[
+            ClinicalProposition(
+                proposition_id=f"prop_{index:03d}",
+                proposition_type=PropositionType.FINDING,
+                concept_text="结节",
+                evidence=span(text, text),
+                rationale="test",
+                modifiers=[
+                    ClinicalModifier(
+                        modifier_id=f"mod_{index:03d}",
+                        modifier_type=ModifierType.ANATOMICAL_SITE,
+                        value_text=site,
+                        evidence=span(text, site),
+                    )
+                ],
+            )
+            for index, site in enumerate(("左肺", "右肺", "左肺"), start=1)
+        ],
+    )
+    validation = ClinicalPropositionValidator().validate_unit(unit, make_frame(), result)
+    assert [
+        issue.proposition_id for issue in validation.issues if issue.code == "duplicate_proposition"
+    ] == ["prop_003"]
+
+
 def test_quality_gate_reports_evidence_block_coverage():
     text = "活动后气短明显。否认发热。"
     response = {

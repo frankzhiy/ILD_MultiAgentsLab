@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
+from src.utils.persistence import write_json
 
 
 SPECIALTIES = (
@@ -28,6 +29,7 @@ class RunCatalog:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.runs_dir = self.root / "outputs/runs"
+        self.deleted_records_path = self.root / "outputs/workbench_deleted.json"
         self.cases_dir = self.root / "data/reorganized_cases"
         if not self.cases_dir.is_dir():
             self.cases_dir = self.root / "data/raw_cases"
@@ -54,12 +56,25 @@ class RunCatalog:
     def list_runs(self) -> list[dict[str, Any]]:
         if not self.runs_dir.exists():
             return []
-        runs = [self.run_summary(path) for path in self.runs_dir.iterdir() if path.is_dir()]
+        deleted = self.deleted_records()["runs"]
+        runs = [self.run_summary(path) for path in self.runs_dir.iterdir()
+                if path.name not in deleted and path.is_dir()]
         return sorted(runs, key=lambda item: item["updated_at"], reverse=True)
+
+    def deleted_records(self) -> dict[str, set[str]]:
+        records = self._json(self.deleted_records_path, {})
+        return {kind: set(records.get(kind, [])) for kind in ("runs", "batches")}
+
+    def delete_records(self, run_ids: set[str], *, batch_id: str | None = None) -> None:
+        records = self.deleted_records()
+        records["runs"].update(run_ids)
+        if batch_id is not None:
+            records["batches"].add(batch_id)
+        write_json(self.deleted_records_path, {kind: sorted(ids) for kind, ids in records.items()})
 
     def run_dir(self, run_id: str) -> Path:
         path = self._inside(self.runs_dir, run_id)
-        if not path.is_dir():
+        if path.parent != self.runs_dir.resolve() or not path.is_dir() or path.name in self.deleted_records()["runs"]:
             raise FileNotFoundError(run_id)
         return path
 
@@ -157,6 +172,7 @@ class RunCatalog:
             "has_error_artifact": has_error,
             "orchestrated": bool(manifest),
             "manifest": manifest or None,
+            "parent_run_deleted": manifest.get("parent_run_id") in self.deleted_records()["runs"],
             "artifact_count": len(files),
             "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(),
             "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),

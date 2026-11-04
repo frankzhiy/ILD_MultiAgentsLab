@@ -4,6 +4,7 @@ import dayjs from 'dayjs'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Brand } from '../components/Brand'
+import { DeleteRecordButton } from '../components/DeleteRecordButton'
 
 const { Header, Content } = Layout
 const { Title, Text } = Typography
@@ -37,17 +38,23 @@ export function BatchPage() {
     { title: '当前阶段', width: 220, render: (_, item) => progressLabel(item) },
     { title: '耗时', dataIndex: 'elapsed_seconds', width: 120, render: (seconds) => seconds == null ? '—' : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` },
     { title: '失败原因', dataIndex: 'error', ellipsis: true, render: (item) => item || '—' },
-    { title: '操作', width: 120, render: (_, item) => <Link to={`/runs/${encodeURIComponent(item.run_id)}/${item.status === 'completed' ? 'report' : item.status === 'failed' ? 'errors' : 'overview'}`}>{item.status === 'completed' ? '查看结果' : item.status === 'failed' ? '查看错误' : '查看详情'}</Link> },
+    { title: '操作', width: 180, render: (_, item) => <Space>
+      <Link to={`/runs/${encodeURIComponent(item.run_id)}/${item.status === 'completed' ? 'report' : item.status === 'failed' ? 'errors' : 'overview'}`}>{item.status === 'completed' ? '查看结果' : item.status === 'failed' ? '查看错误' : '查看详情'}</Link>
+      <DeleteRecordButton id={item.run_id} disabled={['queued', 'running'].includes(item.status)} />
+    </Space> },
   ]
   const failed = value.summary.failed + value.summary.interrupted + (value.summary.stopped || 0)
   return <Layout className="root-layout">
     <Header className="global-header"><Brand /><Space><Link to="/batches/new">新建批量实验</Link><Link to="/runs">返回实验记录</Link></Space></Header>
     <Content className="page-content">
-      <div className="page-heading"><div><Text className="eyebrow">BATCH RUN</Text><Title level={2}>{value.kind === 'discussion' ? '批量 MDT 团队讨论' : '批量实验进度'}</Title><Space wrap><Tag color={active ? 'processing' : value.summary.completed === value.summary.total ? 'success' : 'warning'}>{active ? '批次运行中' : value.summary.completed === value.summary.total ? '全部成功' : '批次已结束，部分未完成'}</Tag><Text type="secondary">{value.id} · {dayjs(value.created_at).format('YYYY-MM-DD HH:mm')}</Text></Space></div><Button href={`/api/batches/${encodeURIComponent(batchId)}/export`} download>导出病例汇总 CSV</Button></div>
+      <div className="page-heading"><div><Text className="eyebrow">BATCH RUN</Text><Title level={2}>{value.kind === 'discussion' ? '批量 MDT 团队讨论' : '批量实验进度'}</Title><Space wrap><Tag color={active ? 'processing' : value.summary.completed === value.summary.total ? 'success' : 'warning'}>{active ? '批次运行中' : !value.summary.total ? '无剩余运行' : value.summary.completed === value.summary.total ? '全部成功' : '批次已结束，部分未完成'}</Tag><Text type="secondary">{value.id} · {dayjs(value.created_at).format('YYYY-MM-DD HH:mm')}</Text></Space></div><Space wrap>
+        <Button href={`/api/batches/${encodeURIComponent(batchId)}/export`} download>导出病例汇总 CSV</Button>
+        <DeleteRecordButton id={batchId} batchKind={value.kind} disabled={active} onDeleted={() => navigate('/runs', { replace: true })} />
+      </Space></div>
       <Row gutter={[12, 12]} className="metric-row">{[['total', '总病例'], ['queued', '等待中'], ['running', '运行中'], ['completed', '成功'], ['failed', '失败']].map(([key, title]) => <Col xs={12} sm={8} lg={4} key={key}><Card><Statistic title={title} value={value.summary[key]} /></Card></Col>)}</Row>
       <Text type="secondary">页面每 2 秒更新；离开或刷新页面后后台继续执行。跳过 {value.summary.skipped}，中断 {value.summary.interrupted}，停止 {value.summary.stopped || 0}。</Text>
       {query.isError && <Alert className="section-gap" type="warning" showIcon title="进度更新失败，当前显示上次读取的记录" description={query.error.message} action={<Button onClick={() => query.refetch()}>重新读取</Button>} />}
-      {value.retry_of && <div className="section-gap"><Link to={`/batches/${encodeURIComponent(value.retry_of)}`}>查看原批次</Link></div>}
+      {value.retry_of && <div className="section-gap">{value.retry_of_deleted ? <Text type="secondary">原批次已删除</Text> : <Link to={`/batches/${encodeURIComponent(value.retry_of)}`}>查看原批次</Link>}</div>}
       {failed > 0 && <Alert className="section-gap" type="warning" showIcon title="批次含未完成病例" description={active ? '其他病例继续执行；批次结束后可仅重跑未完成病例。' : '重跑生成新记录，保留原病例快照和模型配置。'} action={<Button size="small" disabled={active} loading={retry.isPending} onClick={() => retry.mutate()}>重跑未完成病例</Button>} />}
       {retry.isError && <Alert className="section-gap" type="error" showIcon title="无法创建重跑批次" description={retry.error.message} />}
       <Card className="table-card section-gap" title="病例进度"><Table rowKey="run_id" columns={columns} dataSource={value.items} pagination={{ pageSize: 12 }} scroll={{ x: 1100 }} /></Card>

@@ -164,7 +164,7 @@ def models() -> dict:
 
 
 @app.get("/api/runs")
-def list_runs() -> list[dict]:
+async def list_runs() -> list[dict]:
     return catalog.list_runs()
 
 
@@ -181,7 +181,7 @@ async def create_run(request: CreateRunRequest) -> dict:
 
 
 @app.get("/api/batches")
-def list_batches() -> list[dict]:
+async def list_batches() -> list[dict]:
     return orchestrator.list_batches()
 
 
@@ -213,6 +213,17 @@ async def retry_batch(batch_id: str) -> dict:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@app.delete("/api/batches/{batch_id}", status_code=204)
+async def delete_batch(batch_id: str) -> Response:
+    try:
+        orchestrator.delete_batch(batch_id)
+    except FileNotFoundError as error:
+        raise not_found(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return Response(status_code=204)
+
+
 @app.get("/api/batches/{batch_id}/export")
 def export_batch(batch_id: str) -> Response:
     batch = get_batch(batch_id)
@@ -240,6 +251,17 @@ def get_run(run_id: str) -> dict:
         return catalog.run_summary(catalog.run_dir(run_id))
     except (FileNotFoundError, ValueError) as error:
         raise not_found(FileNotFoundError(str(error))) from error
+
+
+@app.delete("/api/runs/{run_id}", status_code=204)
+async def delete_run(run_id: str) -> Response:
+    try:
+        orchestrator.delete_run(run_id)
+    except FileNotFoundError as error:
+        raise not_found(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return Response(status_code=204)
 
 
 @app.get("/api/runs/{run_id}/semantic")

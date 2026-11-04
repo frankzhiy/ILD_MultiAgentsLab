@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { App as AntApp } from 'antd'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api } from '../api'
 import { BatchPage } from './BatchPage'
 
-vi.mock('../api', () => ({ api: { batch: vi.fn(), retryBatch: vi.fn() } }))
+vi.mock('../api', () => ({ api: { batch: vi.fn(), retryBatch: vi.fn(), deleteRun: vi.fn(), deleteBatch: vi.fn() } }))
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
 const batch = {
@@ -23,9 +24,10 @@ const batch = {
 
 function openBatch() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/batches/batch-1']}><Routes>
+  render(<AntApp><QueryClientProvider client={client}><MemoryRouter initialEntries={['/batches/batch-1']}><Routes>
     <Route path="/batches/:batchId" element={<BatchPage />} />
-  </Routes></MemoryRouter></QueryClientProvider>)
+    <Route path="/runs" element={<div>运行记录列表</div>} />
+  </Routes></MemoryRouter></QueryClientProvider></AntApp>)
   return client
 }
 
@@ -48,3 +50,27 @@ it('restores progress, results, configuration and export after opening a batch',
   await waitFor(() => expect(api.retryBatch).toHaveBeenCalledWith('batch-1'))
   client.clear()
 })
+
+it('asks for confirmation before deleting a run or its batch', async () => {
+  api.batch.mockResolvedValue({ ...batch, status: 'completed_with_errors' })
+  api.deleteRun.mockImplementation(async () => {
+    api.batch.mockResolvedValue({ ...batch, status: 'completed_with_errors',
+      summary: { ...batch.summary, total: 3, failed: 0 }, items: batch.items.slice(0, 3) })
+  })
+  api.deleteBatch.mockResolvedValue(undefined)
+  const client = openBatch()
+  await screen.findByText('case-d')
+  fireEvent.click(screen.getAllByRole('button', { name: '删除运行' }).at(-1))
+  fireEvent.click(await screen.findByRole('button', { name: /取\s*消/ }))
+  expect(api.deleteRun).not.toHaveBeenCalled()
+  fireEvent.click(screen.getAllByRole('button', { name: '删除运行' }).at(-1))
+  fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
+  await waitFor(() => expect(screen.queryByText('case-d')).not.toBeInTheDocument())
+  expect(api.deleteRun).toHaveBeenCalledWith('run-d')
+  fireEvent.click(screen.getByRole('button', { name: '删除批次' }))
+  expect(await screen.findByText(/此批次及其创建的全部运行/)).toBeInTheDocument()
+  fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
+  expect(await screen.findByText('运行记录列表')).toBeInTheDocument()
+  expect(api.deleteBatch).toHaveBeenCalledWith('batch-1')
+  client.clear()
+}, 10000)

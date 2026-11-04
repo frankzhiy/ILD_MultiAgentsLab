@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { Brand } from '../components/Brand'
+import { DeleteRecordButton } from '../components/DeleteRecordButton'
 import { StatusTag } from '../components/StatusTag'
 
 const { Header, Content } = Layout
@@ -23,7 +24,10 @@ export function RunListPage() {
     { title: '专科完成', dataIndex: 'completed_specialties', width: 110, render: (value) => `${value.length}/4` },
     { title: '产物', dataIndex: 'artifact_count', width: 90 },
     { title: '更新时间', dataIndex: 'updated_at', width: 170, render: (value) => dayjs(value).format('YYYY-MM-DD HH:mm') },
-    { title: '', width: 48, render: (_, row) => <Button type="text" icon={<ArrowRightOutlined />} onClick={() => navigate(`/runs/${encodeURIComponent(row.id)}/overview`)} /> },
+    { title: '操作', width: 160, render: (_, row) => <Space>
+      <Button type="text" aria-label="查看运行" icon={<ArrowRightOutlined />} onClick={() => navigate(`/runs/${encodeURIComponent(row.id)}/overview`)} />
+      <DeleteRecordButton id={row.id} />
+    </Space> },
   ]
   return (
     <Layout className="root-layout">
@@ -48,7 +52,10 @@ export function RunListPage() {
             { title: '状态', dataIndex: 'status', render: (status, batch) => <StatusTag status={status === 'completed' && batch.summary.completed < batch.summary.total ? 'completed_with_errors' : status} /> },
             { title: '成功 / 总数', render: (_, batch) => `${batch.summary.completed} / ${batch.summary.total}` },
             { title: '更新时间', dataIndex: 'updated_at', render: (time) => dayjs(time).format('YYYY-MM-DD HH:mm') },
-            { title: '操作', render: (_, batch) => <Button type="link" onClick={() => navigate(`/batches/${encodeURIComponent(batch.id)}`)}>查看批次</Button> },
+            { title: '操作', render: (_, batch) => <Space>
+              <Button type="link" onClick={() => navigate(`/batches/${encodeURIComponent(batch.id)}`)}>查看批次</Button>
+              <DeleteRecordButton id={batch.id} batchKind={batch.kind} disabled={['queued', 'running'].includes(batch.status)} />
+            </Space> },
           ]} />
         </Card>
         <Card className="table-card" title="病例运行记录" extra={<Space><Text type="secondary">本地科研数据</Text></Space>}>

@@ -311,14 +311,18 @@ class RunOrchestrator:
         return self.batch(batch_id)
 
     def list_batches(self) -> list[dict[str, Any]]:
+        deleted = self.catalog.deleted_records()["batches"]
         return sorted(
-            (self.batch(path.stem, include_progress=False) for path in self.batches_dir.glob("*.json")),
+            (self.batch(path.stem, include_progress=False) for path in self.batches_dir.glob("*.json")
+             if path.stem not in deleted),
             key=lambda item: item["updated_at"],
             reverse=True,
         )
 
     def batch(self, batch_id: str, *, include_progress: bool = True) -> dict[str, Any]:
         value = self._read_batch(batch_id)
+        deleted = self.catalog.deleted_records()
+        value["items"] = [item for item in value["items"] if item["run_id"] not in deleted["runs"]]
         counts = {status: 0 for status in ("queued", "running", "completed", "failed", "skipped", "interrupted", "stopped")}
         for item in value["items"]:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
@@ -329,10 +333,40 @@ class RunOrchestrator:
                     datetime.fromisoformat(item.get("finished_at") or self._now())
                     - datetime.fromisoformat(started)
                 ).total_seconds())) if started else None)
-        return {**value, "summary": {"total": len(value["items"]), **counts}}
+        return {**value, "retry_of_deleted": value.get("retry_of") in deleted["batches"],
+                "summary": {"total": len(value["items"]), **counts}}
+
+    def delete_run(self, run_id: str) -> None:
+        path = self.catalog.run_dir(run_id)
+        if path.parent != self.catalog.runs_dir or path.name != run_id:
+            raise FileNotFoundError(run_id)
+        self._check_deletable_runs({run_id})
+        self.catalog.delete_records({run_id})
+
+    def delete_batch(self, batch_id: str) -> None:
+        batch = self._read_batch(batch_id)
+        if batch_id in self.batch_tasks or batch["status"] in {"queued", "running"}:
+            raise ValueError("请等待批次结束后再删除。")
+        run_ids = {item["run_id"] for item in batch["items"]} if batch["kind"] == "run" else set()
+        self._check_deletable_runs(run_ids)
+        self.catalog.delete_records(run_ids, batch_id=batch_id)
+
+    def _check_deletable_runs(self, run_ids: set[str]) -> None:
+        if not run_ids:
+            return
+        for run_id in run_ids:
+            if self._busy(run_id):
+                raise ValueError(f"运行 {run_id} 正在执行或停止，请等待结束后再删除。")
+        for path in self.batches_dir.glob("*.json"):
+            batch = self._read_json(path)
+            if batch["status"] in {"queued", "running"} and any(
+                item["run_id"] in run_ids and item["status"] in {"queued", "running"}
+                for item in batch["items"]
+            ):
+                raise ValueError("待删除的运行仍在批次中排队或执行，请等待结束后再删除。")
 
     def retry_batch(self, batch_id: str) -> dict[str, Any]:
-        batch = self._read_batch(batch_id)
+        batch = self.batch(batch_id, include_progress=False)
         if batch["status"] in {"queued", "running"}:
             raise ValueError("请等待本批次结束后重跑未完成病例。")
         retry_items = [item for item in batch["items"] if item["status"] in {"failed", "interrupted", "stopped"}]
@@ -585,7 +619,10 @@ class RunOrchestrator:
         self._update_batch(batch_id, status=status, finished_at=self._now())
 
     def _recover_batches(self) -> None:
+        deleted = self.catalog.deleted_records()
         for path in self.batches_dir.glob("*.json"):
+            if path.stem in deleted["batches"]:
+                continue
             batch = self._read_json(path)
             if batch.get("status") not in {"queued", "running"}:
                 continue
@@ -636,7 +673,7 @@ class RunOrchestrator:
 
     def _read_batch(self, batch_id: str) -> dict[str, Any]:
         path = self._batch_path(batch_id)
-        if not path.is_file():
+        if not path.is_file() or batch_id in self.catalog.deleted_records()["batches"]:
             raise FileNotFoundError(batch_id)
         return self._read_json(path)
 

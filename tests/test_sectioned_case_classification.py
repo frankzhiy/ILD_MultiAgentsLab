@@ -122,8 +122,9 @@ def test_classifier_passes_structure_separately_to_model():
 
 
 def test_all_reorganized_cases_preserve_every_body_character():
-    paths = list(Path("data/reorganized_cases").glob("*.txt"))
-    assert paths
+    paths = list(RunCatalog(Path.cwd()).cases_dir.glob("*.txt"))
+    if not paths:
+        pytest.skip("Local case library is unavailable")
     for path in paths:
         text = path.read_text()
         units = build_source_units(text)

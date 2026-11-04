@@ -90,16 +90,16 @@ export APIYI_API_KEY="..."
 Set `provider`, model, base URL, API key environment variable, and timeout in
 `configs/agents/semantic_graphing/agent.yaml`.
 
-Semantic graphing uses `gpt-6.1-terra` through APIYI's OpenAI-compatible endpoint, with
+Semantic graphing uses `gpt-6.1-sol` through APIYI's OpenAI-compatible endpoint, with
 `high` reasoning effort for every stage.
 
 ```yaml
 provider: apiyi
-model: gpt-6.1-terra
+model: gpt-6.1-sol
 base_url: https://api.apiyi.com/v1
 api_key_env: APIYI_API_KEY
 request_options:
-  reasoning_effort: high
+  reasoning_effort: medium
 supports_json_schema: true
 ```
 
@@ -153,7 +153,7 @@ run, preventing mixed-version outputs.
 Each specialty and the MDT chair use `configs/agents/<agent>/agent.yaml`.
 Set `APIYI_API_KEY` before running the agents.
 
-The four specialty agents and MDT chair default to `gpt-6.1-terra` with `high` reasoning effort
+The four specialty agents and MDT chair default to `gpt-6.1-sol` with `high` reasoning effort
 through APIYI's OpenAI-compatible endpoint. Discussion reuses their respective configurations. These defaults request strict JSON Schema output.
 The APIYI client omits custom temperature for GPT-6 reasoning requests and uses
 `max_completion_tokens` for GPT-6 token limits. The APIYI client is provider-specific:

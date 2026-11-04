@@ -6,17 +6,27 @@ const json = async (response) => {
   return response.json()
 }
 
+const deleteRecord = async (path) => {
+  const response = await fetch(path, { method: 'DELETE' })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new Error(body?.detail || `请求失败（${response.status}）`)
+  }
+}
+
 export const api = {
   cases: () => fetch('/api/cases').then(json),
   case: (caseId) => fetch(`/api/cases/${encodeURIComponent(caseId)}`).then(json),
   models: () => fetch('/api/models').then(json),
   runs: () => fetch('/api/runs').then(json),
+  deleteRun: (runId) => deleteRecord(`/api/runs/${encodeURIComponent(runId)}`),
   createRun: (payload) => fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).then(json),
   batches: () => fetch('/api/batches').then(json),
+  deleteBatch: (batchId) => deleteRecord(`/api/batches/${encodeURIComponent(batchId)}`),
   createBatch: (payload) => fetch('/api/batches', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

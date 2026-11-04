@@ -226,24 +226,6 @@ class ClinicalPropositionValidator:
                 proposition_id=proposition_id,
             )
             referenced_evidence_ids.update(proposition.evidence.evidence_ids)
-            signature = (
-                proposition.proposition_type,
-                proposition.concept_text,
-                proposition.status,
-                tuple(proposition.evidence.evidence_ids),
-                proposition.evidence.quote,
-            )
-            if signature in proposition_signatures:
-                issues.append(
-                    _issue(
-                        "duplicate_proposition",
-                        ValidationSeverity.ERROR,
-                        "An identical clinical proposition is repeated.",
-                        proposition_id=proposition_id,
-                    )
-                )
-            proposition_signatures.add(signature)
-
             if proposition.attribution is not None:
                 attribution = proposition.attribution
                 _validate_evidence_reference(
@@ -320,6 +302,26 @@ class ClinicalPropositionValidator:
                             modifier_id=modifier.modifier_id,
                         )
                     )
+
+            signature = (
+                proposition.proposition_type,
+                proposition.concept_text,
+                proposition.status,
+                proposition.certainty,
+                proposition.evidence.model_dump_json(),
+                proposition.attribution.model_dump_json() if proposition.attribution else None,
+                frozenset(owner_modifier_signatures),
+            )
+            if signature in proposition_signatures:
+                issues.append(
+                    _issue(
+                        "duplicate_proposition",
+                        ValidationSeverity.ERROR,
+                        "An identical clinical proposition is repeated.",
+                        proposition_id=proposition_id,
+                    )
+                )
+            proposition_signatures.add(signature)
 
         for (_, _, value_text), owners in shared_modifier_evidence.items():
             if len(set(owners)) > 1:

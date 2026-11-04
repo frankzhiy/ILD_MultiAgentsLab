@@ -191,7 +191,7 @@ def test_pulmonology_yaml_builds_apiyi_client(monkeypatch):
     client = build_llm_client(load_yaml(CONFIG))
 
     assert isinstance(client, APIYIClient)
-    assert client.model == "gpt-6.1-terra"
+    assert client.model == "gpt-6.1-sol"
     assert client.base_url == "https://api.apiyi.com/v1"
     assert client.supports_json_schema is True
 

@@ -1,11 +1,11 @@
 protocol_version: expert.v2
 provider: apiyi
-model: gpt-6.1-terra
+model: gpt-6.1-sol
 base_url: https://api.apiyi.com/v1
 # base_url: http://api.apiyi.com:16888/v1
 api_key_env: APIYI_API_KEY
 request_options:
-  reasoning_effort: high
+  reasoning_effort: medium
 supports_json_schema: true
 timeout_seconds: 900
 temperature: 0.0

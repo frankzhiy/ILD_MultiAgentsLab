@@ -79,7 +79,7 @@ export function OverviewWorkspace({ runId, run }) {
       {connection === 'disconnected' && <Alert type="warning" showIcon title="实时事件流已断开" description="历史产物仍可查看；浏览器会自动尝试重连。若持续失败，请到“错误与诊断”检查后端服务。" className="section-gap" />}
       <ConsultationBackground value={run?.manifest?.consultation} />
       {(report.data?.final_report?.team_synthesis || discussion.data?.latest_chair_result?.team_synthesis || chair.data?.result?.team_synthesis) && <DiagnosticResolution value={(report.data?.final_report?.team_synthesis || discussion.data?.latest_chair_result?.team_synthesis || chair.data?.result?.team_synthesis).diagnostic_resolution} />}
-      {run?.manifest?.case_version_id && <Card title="病例资料版本" className="section-card"><Text>本版：{run.manifest.case_version_id.slice(0, 12)}</Text>{run.manifest.parent_run_id && <Space><Text> · 前版：{run.manifest.parent_case_version_id?.slice(0, 12)}</Text><Link to={`/runs/${encodeURIComponent(run.manifest.parent_run_id)}/overview`}>查看前序会诊</Link></Space>}</Card>}
+      {run?.manifest?.case_version_id && <Card title="病例资料版本" className="section-card"><Text>本版：{run.manifest.case_version_id.slice(0, 12)}</Text>{run.manifest.parent_run_id && <Space><Text> · 前版：{run.manifest.parent_case_version_id?.slice(0, 12)}</Text>{run.parent_run_deleted ? <Text type="secondary">前序会诊已删除</Text> : <Link to={`/runs/${encodeURIComponent(run.manifest.parent_run_id)}/overview`}>查看前序会诊</Link>}</Space>}</Card>}
       <Row gutter={14} className="metric-row">
         <Col span={4}><Card><Statistic title="Discourse segments" value={semantic.data?.summary.segment_count || 0} /></Card></Col>
         <Col span={4}><Card><Statistic title="Graph units" value={semantic.data?.summary.unit_count || 0} /></Card></Col>
