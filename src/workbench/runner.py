@@ -4,14 +4,18 @@ import asyncio
 import hashlib
 import json
 import re
+from shutil import rmtree
 from datetime import datetime, timezone
 from pathlib import Path
+from shutil import copy2, copytree
 from typing import Any
 from threading import Event
 
 import yaml
 
+from src.agents.common.specialty_input import SEMANTIC_OUTPUT_MODELS
 from src.utils.config import load_yaml
+from src.utils.persistence import read_checkpoint, verify_protocol_snapshot
 from src.llm.throttle import request_throttle
 from src.workbench.catalog import RunCatalog, SPECIALTIES
 from src.workbench.events import EventStore
@@ -54,6 +58,8 @@ class RunOrchestrator:
         retry_manifest = self._read_json(retry_dir / ".workbench_run.json") if retry_dir else {}
         if retry_dir and retry_manifest["case_id"] != case_id:
             raise ValueError("重跑必须使用同一病例的快照。")
+        if retry_dir:
+            verify_protocol_snapshot(self.root, retry_dir, allow_stage_rerun=True)
         parent_run_id = request.get("parent_run_id")
         parent_version = None
         if parent_run_id:
@@ -75,13 +81,12 @@ class RunOrchestrator:
             input_path = (retry_dir or self.catalog.cases_dir) / f"{case_id}{'_input' if retry_dir else ''}.txt"
             if not input_path.is_file():
                 raise FileNotFoundError(f"病例不存在：{case_id}")
+            input_bytes = input_path.read_bytes()
         elif source == "paste":
             raw_text = str(request.get("raw_text") or "").strip()
             if not raw_text:
                 raise ValueError("粘贴病例原文不能为空。")
-            input_path = self.root / "outputs/workbench_inputs" / case_id / f"{case_id}.txt"
-            input_path.parent.mkdir(parents=True, exist_ok=True)
-            input_path.write_text(raw_text, encoding="utf-8")
+            input_bytes = raw_text.encode("utf-8")
         else:
             raise ValueError("source 必须是 library 或 paste。")
 
@@ -89,13 +94,14 @@ class RunOrchestrator:
         base_id = f"{stamp}_{case_id}"
         run_id = base_id
         counter = 2
-        while (self.catalog.runs_dir / run_id).exists():
+        deleted = self.catalog.recorded_deletions()["runs"]
+        while run_id in deleted or (self.catalog.runs_dir / run_id).exists():
             run_id = f"{base_id}_{counter}"
             counter += 1
         run_dir = self.catalog.runs_dir / run_id
         run_dir.mkdir(parents=True)
         snapshot = run_dir / f"{case_id}_input.txt"
-        snapshot.write_bytes(input_path.read_bytes())
+        snapshot.write_bytes(input_bytes)
         input_path = snapshot
         case_version = hashlib.sha256(snapshot.read_bytes()).hexdigest()
 
@@ -136,7 +142,7 @@ class RunOrchestrator:
         semantic_config = load_yaml(Path(config_paths["semantic_graphing"]))
         signature = build_run_signature(semantic_config)
         self._write_json(run_dir / f"{case_id}_run_signature.json", signature)
-        self._write_json(run_dir / "protocol_manifest.json", {
+        protocol = {
             "protocol": "expert.v2",
             "patient_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
             "consultation": consultation,
@@ -146,7 +152,8 @@ class RunOrchestrator:
             "knowledge_index": self._knowledge_index_signature(),
             "guidelines": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
                            for p in sorted((self.root / "data/guidelines").glob("*.pdf"))},
-        })
+        }
+        self._write_json(run_dir / "protocol_manifest.json", protocol)
         manifest = {
             "schema_version": "workbench.run.v1",
             "run_id": run_id,
@@ -164,8 +171,96 @@ class RunOrchestrator:
             "agent_overrides": overrides,
             "agent_settings": agent_settings,
         }
+        if retry_dir:
+            manifest["retry_of_run_id"] = retry_run_id
+            if not self._busy(retry_run_id) and retry_manifest.get("status") not in {"queued", "running", "stopping"}:
+                manifest["reused_stages"] = self._restore_checkpoints(
+                    retry_dir, run_dir, case_id, protocol,
+                )
         self._write_json(run_dir / ".workbench_run.json", manifest)
         return run_id, input_path
+
+    def _restore_checkpoints(self, source: Path, target: Path, case_id: str, protocol: dict) -> list[str]:
+        from src.agents.common.initial_output import SpecialtyInitialOutput
+        from src.agents.common.team_synthesis import MDTChairResult
+        from src.agents.mdt_discussion.models import MDTDiscussionState
+
+        def copy(*patterns):
+            for pattern in patterns:
+                for path in source.glob(pattern):
+                    if path.is_file() and "failure_trace" not in path.name:
+                        copy2(path, target / path.name)
+
+        previous = self.catalog._json(source / "protocol_manifest.json", {})
+        if any(previous.get(key) != protocol[key] for key in ("protocol", "patient_sha256", "consultation")):
+            return []
+        old_agents = previous.get("agents", {})
+        new_agents = protocol["agents"]
+        if old_agents.get("semantic_graphing") != new_agents["semantic_graphing"]:
+            return []
+
+        copy(f"{case_id}_trace.json")
+        for suffix, model in SEMANTIC_OUTPUT_MODELS.items():
+            name = f"{case_id}_{suffix}.json"
+            if read_checkpoint(source / name, model) is None:
+                # Only the cache for the first incomplete stage shares the copied inputs.
+                cache = source / "task_cache" / suffix
+                if cache.is_dir():
+                    copytree(cache, target / "task_cache" / suffix)
+                return []
+            copy(name)
+        copy(f"{case_id}_timing.json")
+        reused = ["semantic_graphing"]
+
+        evidence_keys = ("guidelines", "knowledge_index")
+        shared_prompt = "src/prompts/common/mdt_judgment_protocol.md"
+        if (any(previous.get(key) != protocol[key] for key in evidence_keys)
+                or previous.get("prompts", {}).get(shared_prompt) != protocol["prompts"].get(shared_prompt)):
+            return reused
+        source_manifest = self.catalog._json(source / ".workbench_run.json", {})
+        completed = dict.fromkeys(source_manifest.get("reused_stages", []), True)
+        for event in self.events.list(source.name):
+            if event["stage"] == "initial_consult" and event["type"] in {"stage_started", "stage_completed", "agent_error"}:
+                completed[event["agent_id"]] = event["type"] == "stage_completed"
+        for specialty in SPECIALTIES:
+            if not completed.get(specialty) or old_agents.get(specialty) != new_agents[specialty]:
+                continue
+            stem = f"{case_id}_{specialty}"
+            output = read_checkpoint(source / f"{stem}_initial.json", SpecialtyInitialOutput)
+            if output is not None and self.catalog._is_formal_output(output.model_dump(mode="json")):
+                copy(f"{stem}_*.json")
+                reused.append(specialty)
+        if not set(SPECIALTIES).issubset(reused):
+            return reused
+
+        def rules_match(stage, agents):
+            rules = self.catalog._json(source / f"{stage}_stage_rules.json", {})
+            prompt_dirs = ("src/prompts/mdt_chair/", "src/prompts/common/")
+            if stage == "mdt_discussion":
+                prompt_dirs += ("src/prompts/mdt_discussion/",)
+            def relevant_prompts(snapshot):
+                return {name: digest for name, digest in snapshot.get("prompts", {}).items()
+                        if name.startswith(prompt_dirs)}
+            return (rules.get("configs") == {agent: new_agents[agent]["config"] for agent in agents}
+                    and all(rules.get(key) == protocol[key] for key in evidence_keys)
+                    and relevant_prompts(rules) == relevant_prompts(protocol)
+                    and rules.get("chair_signature", old_agents.get("mdt_chair")) == new_agents["mdt_chair"])
+
+        chair = read_checkpoint(source / f"{case_id}_mdt_chair_integration.json", MDTChairResult)
+        if (chair is None or not rules_match("mdt_chair", ("mdt_chair",))
+                or self.catalog.chair(source.name)["status"] != "completed"):
+            return reused
+        copy(f"{case_id}_mdt_chair*.json", "mdt_chair_stage_rules.json")
+        reused.append("mdt_chair")
+
+        discussion = read_checkpoint(source / f"{case_id}_mdt_discussion_state.json", MDTDiscussionState)
+        if (discussion is not None and discussion.active_round is None
+                and rules_match("mdt_discussion", (*SPECIALTIES, "mdt_chair"))
+                and self.catalog.discussion(source.name)["status"] == "completed"):
+            copy(f"{case_id}_mdt_discussion*.json", f"{case_id}_*_round_*.json",
+                 f"{case_id}_mdt_decision_state.json", "mdt_discussion_stage_rules.json")
+            reused.append("mdt_discussion")
+        return reused
 
     def start(self, run_id: str, input_path: Path) -> asyncio.Task[None]:
         return self._launch(run_id, input_path=input_path)
@@ -311,10 +406,8 @@ class RunOrchestrator:
         return self.batch(batch_id)
 
     def list_batches(self) -> list[dict[str, Any]]:
-        deleted = self.catalog.deleted_records()["batches"]
         return sorted(
-            (self.batch(path.stem, include_progress=False) for path in self.batches_dir.glob("*.json")
-             if path.stem not in deleted),
+            (self.batch(path.stem, include_progress=False) for path in self.batches_dir.glob("*.json")),
             key=lambda item: item["updated_at"],
             reverse=True,
         )
@@ -337,19 +430,36 @@ class RunOrchestrator:
                 "summary": {"total": len(value["items"]), **counts}}
 
     def delete_run(self, run_id: str) -> None:
-        path = self.catalog.run_dir(run_id)
-        if path.parent != self.catalog.runs_dir or path.name != run_id:
-            raise FileNotFoundError(run_id)
-        self._check_deletable_runs({run_id})
-        self.catalog.delete_records({run_id})
+        self.catalog.run_dir(run_id)
+        self._delete_records({run_id})
 
     def delete_batch(self, batch_id: str) -> None:
+        if self._batch_path(batch_id).is_symlink():
+            raise FileNotFoundError(batch_id)
         batch = self._read_batch(batch_id)
         if batch_id in self.batch_tasks or batch["status"] in {"queued", "running"}:
             raise ValueError("请等待批次结束后再删除。")
         run_ids = {item["run_id"] for item in batch["items"]} if batch["kind"] == "run" else set()
+        self._delete_records(run_ids, batch_id=batch_id)
+
+    def _delete_records(self, run_ids: set[str], *, batch_id: str | None = None) -> None:
         self._check_deletable_runs(run_ids)
-        self.catalog.delete_records(run_ids, batch_id=batch_id)
+        paths = {}
+        for run_id in sorted(run_ids):
+            path = self.catalog.runs_dir / run_id
+            if Path(run_id).name != run_id or run_id in {".", ".."} or path.is_symlink():
+                raise ValueError("运行路径无效，无法安全删除。")
+            if path.exists():
+                paths[run_id] = self.catalog.run_dir(run_id)
+
+        # Persist IDs before deleting so a partial failure remains visible and can be retried.
+        self.catalog.record_deletions(run_ids, batch_id=batch_id)
+        for run_id in sorted(run_ids):
+            with self.events.deleting(run_id):
+                if run_id in paths:
+                    rmtree(paths[run_id])
+        if batch_id is not None:
+            self._batch_path(batch_id).unlink()
 
     def _check_deletable_runs(self, run_ids: set[str]) -> None:
         if not run_ids:
@@ -394,29 +504,40 @@ class RunOrchestrator:
             self._update_manifest(manifest_path, status="running", status_source="run",
                                   started_at=self._now(), status_updated_at=self._now(), error=None)
             self.events.append(run_id, "run_started", {"case_id": case_id, "start_stage": start_stage}, stage="run")
+            reused = set()
             if start_stage == "semantic_graphing":
-                await self._stage(
-                    run_id, run_dir, "semantic_graphing", "semantic_graphing",
-                    self.workflow.run_semantic, run_id, run_dir, input_path, case_id,
-                    Path(configs["semantic_graphing"]),
-                )
+                if previous := manifest.get("retry_of_run_id"):
+                    verify_protocol_snapshot(self.root, run_dir)
+                    reused = set(manifest.get("reused_stages", []))
+                    for agent in manifest.get("reused_stages", []):
+                        self.events.append(
+                            run_id, "stage_completed", {"reused_from": previous},
+                            agent_id=agent,
+                            stage="initial_consult" if agent in SPECIALTIES else agent,
+                        )
+                if "semantic_graphing" not in reused:
+                    await self._stage(
+                        run_id, run_dir, "semantic_graphing", "semantic_graphing",
+                        self.workflow.run_semantic, run_id, run_dir, input_path, case_id,
+                        Path(configs["semantic_graphing"]),
+                    )
                 specialty_results = await asyncio.gather(*(
                     self._stage(run_id, run_dir, specialty, "initial_consult",
                                 self.workflow.run_specialty, run_id, run_dir, case_id,
                                 specialty, Path(configs[specialty]))
-                    for specialty in SPECIALTIES
+                    for specialty in SPECIALTIES if specialty not in reused
                 ), return_exceptions=True)
                 self.workflow._check_stop(run_id)
                 failures = [str(item) for item in specialty_results if isinstance(item, Exception)]
                 if failures:
                     raise RuntimeError("；".join(failures))
 
-            if start_stage in {"semantic_graphing", "mdt_chair"}:
+            if start_stage in {"semantic_graphing", "mdt_chair"} and "mdt_chair" not in reused:
                 await self._stage(
                     run_id, run_dir, "mdt_chair", "cross_specialty_integration",
                     self.workflow.run_chair, run_id, run_dir, case_id, Path(configs["mdt_chair"]),
                 )
-            if start_stage != "mdt_report":
+            if start_stage != "mdt_report" and "mdt_discussion" not in reused:
                 await self._stage(
                     run_id, run_dir, "mdt_discussion", "team_discussion",
                     self.workflow.run_discussion, run_id, run_dir, case_id,
@@ -547,6 +668,7 @@ class RunOrchestrator:
         self._write_json(run_dir / f"{stage}_stage_rules.json", {
             "stage": stage, "created_at": self._now(),
             "configs": {agent: load_yaml(manifest["configs"][agent]) for agent in agents},
+            "chair_signature": build_run_signature(load_yaml(manifest["configs"]["mdt_chair"])),
             "prompts": {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
                         for p in sorted((self.root / "src/prompts").rglob("*.md"))},
             "knowledge_index": self._knowledge_index_signature(),
@@ -619,10 +741,7 @@ class RunOrchestrator:
         self._update_batch(batch_id, status=status, finished_at=self._now())
 
     def _recover_batches(self) -> None:
-        deleted = self.catalog.deleted_records()
         for path in self.batches_dir.glob("*.json"):
-            if path.stem in deleted["batches"]:
-                continue
             batch = self._read_json(path)
             if batch.get("status") not in {"queued", "running"}:
                 continue
@@ -646,7 +765,8 @@ class RunOrchestrator:
         base = f"{stamp}_{kind}_batch"
         batch_id = base
         counter = 2
-        while self._batch_path(batch_id).exists():
+        deleted = self.catalog.recorded_deletions()["batches"]
+        while batch_id in deleted or self._batch_path(batch_id).exists():
             batch_id = f"{base}_{counter}"
             counter += 1
         return batch_id
@@ -673,7 +793,7 @@ class RunOrchestrator:
 
     def _read_batch(self, batch_id: str) -> dict[str, Any]:
         path = self._batch_path(batch_id)
-        if not path.is_file() or batch_id in self.catalog.deleted_records()["batches"]:
+        if not path.is_file():
             raise FileNotFoundError(batch_id)
         return self._read_json(path)
 

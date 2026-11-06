@@ -120,7 +120,7 @@ export function TeamSynthesis({ team, final = false, stopReason, discussionRound
       <details><summary>展开原始证据与专科来源</summary><Sources team={team} refs={p.source_refs} evidence={p.evidence_refs} /></details>
     </article>)}</section>)}
       {team.diagnostic_facets?.length > 0 && <details className="synthesis-problem"><summary>按诊断层级核对</summary>
-        {team.diagnostic_facets.map(f => <article className="synthesis-note" key={`${f.problem_id}-${f.dimension}-${JSON.stringify(f.timeframe)}`}><Text strong>{team.problems.find(p => p.problem_id === f.problem_id)?.title} · {dimensions[f.dimension]}</Text><FacetJudgment item={f} /><Timeframe value={f.timeframe} /><Paragraph>{f.statement}</Paragraph><Paragraph type="secondary">{f.rationale}</Paragraph>{f.limitations.length > 0 && <Paragraph>{f.limitations.join('；')}</Paragraph>}<Sources team={team} refs={f.source_refs} /></article>)}
+        {team.diagnostic_facets.map(f => <article className="synthesis-note" key={`${f.problem_id}-${f.dimension}-${JSON.stringify(f.timeframe)}-${f.subject ?? ''}`}><Text strong>{team.problems.find(p => p.problem_id === f.problem_id)?.title} · {dimensions[f.dimension]}</Text><FacetJudgment item={f} /><Timeframe value={f.timeframe} /><Paragraph>{f.statement}</Paragraph><Paragraph type="secondary">{f.rationale}</Paragraph>{f.limitations.length > 0 && <Paragraph>{f.limitations.join('；')}</Paragraph>}<Sources team={team} refs={f.source_refs} /></article>)}
       </details>}
     </div>
   </div>

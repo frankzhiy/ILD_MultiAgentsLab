@@ -54,16 +54,15 @@ details { border-bottom: 1px solid #e4e8ed; }
 summary { cursor: pointer; padding: 7px 0; }
 summary::marker { color: var(--navy); }
 .detail { padding: 2px 0 12px 1rem; }
-.candidate > summary, .material > summary {
+.candidate > summary {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 4px 16px;
 }
-.candidate > summary::-webkit-details-marker, .material > summary::-webkit-details-marker { display: none; }
+.candidate > summary::-webkit-details-marker { display: none; }
 .row-name { font-weight: 650; flex: 1 1 14rem; }
-.row-status { color: var(--muted); font-size: .88rem; }
 .link-action { font-size: .88rem; white-space: nowrap; }
 details[open] > summary .link-action[data-open] { font-size: 0; }
 details[open] > summary .link-action[data-open]::after { content: attr(data-open); font-size: .88rem; }
@@ -73,7 +72,7 @@ details[open] > summary .link-action[data-open]::after { content: attr(data-open
 .labeled { display: grid; grid-template-columns: minmax(7rem, 23%) minmax(0, 1fr); gap: 5px 16px;
            padding: 10px 0; border-top: 1px solid #e4e8ed; }
 .labeled details:last-child, .original, .inline-detail { border: 0; }
-.evidence, .related-materials { padding: 0; margin: 0; list-style: none; }
+.evidence { padding: 0; margin: 0; list-style: none; }
 .evidence li + li { margin-top: 9px; }
 .evidence-source { display: inline; font-weight: 650; margin-right: .7em; }
 .evidence-source + p { display: inline; }
@@ -84,12 +83,38 @@ blockquote { margin: 5px 0; padding-left: 12px; border-left: 2px solid var(--rul
 .guide summary { padding-top: 0; }
 .cite-no { font-variant-numeric: tabular-nums; }
 .citation + .citation { border-top: 1px solid #e4e8ed; margin-top: 10px; padding-top: 10px; }
-.document-row { padding: 5px 0 9px; }
-.document-row + .document-row { border-top: 1px solid #e4e8ed; }
-:target, .material:focus-within { scroll-margin-top: 16px; }
+:target { scroll-margin-top: 16px; }
 [id^="need-"]:target, [id^="question-"]:target, [id^="ref-"]:target { background: #edf3fa; }
 #references ol { margin: 8px 0 0 2.15rem; padding-left: 1.3rem; }
 #references li span { display: block; font-size: .87rem; color: var(--muted); }
+
+#report details > summary { padding: .45rem .65rem; border-radius: 6px; scroll-margin-top: 12px; }
+#report details > summary:hover { background: #f2f6fa; }
+#report details > summary:focus { outline: 2px solid #547da5; outline-offset: -2px; }
+#report details[open] > summary {
+  background: #e5eef8;
+  color: var(--navy);
+  box-shadow: inset 3px 0 #547da5;
+  font-weight: 650;
+}
+#report details[open] > .detail {
+  margin: .3rem 0 .75rem .7rem;
+  padding: .65rem .8rem;
+  border-left: 2px solid #a8bdd3;
+  background: #f5f8fc;
+}
+#report details[open] details[open] > summary { background: #e9f0f7; }
+#report details[open] details[open] > .detail { background: #fff; }
+.question > summary { flex-wrap: nowrap; }
+.question > summary::after {
+  content: ""; flex: 0 0 auto; width: .45rem; height: .45rem;
+  margin-right: .2rem; border: solid var(--navy); border-width: 0 1px 1px 0;
+  transform: rotate(45deg);
+}
+.question[open] > summary::after { transform: rotate(225deg); }
+.question > .detail > p + details { margin-top: .5rem; }
+.question-evidence > ul { margin: .25rem 0 .55rem; padding-left: 1.35rem; }
+.question-evidence + .question-evidence { margin-top: .65rem; padding-top: .5rem; border-top: 1px solid var(--rule); }
 
 .phase-nav { display: flex; overflow-x: auto; border-block: 1px solid var(--rule); margin-bottom: 24px; padding: 19px 0 12px; }
 .phase-nav button { flex: 1 0 7rem; position: relative; padding: 13px 8px 4px; border-top: 1px solid var(--rule); }
@@ -116,6 +141,7 @@ blockquote { margin: 5px 0; padding-left: 12px; border-left: 2px solid var(--rul
 @media (max-width: 650px) {
   .sheet { margin: 0; border: 0; padding-top: 22px; }
   .section-content { margin-left: 0; }
+  #report details[open] > .detail { margin-left: .3rem; padding-inline: .5rem; }
   .labeled, .discussion-layout { grid-template-columns: minmax(0, 1fr); }
   .issue-nav { border-right: 0; padding-right: 0; }
 }
@@ -127,4 +153,5 @@ blockquote { margin: 5px 0; padding-left: 12px; border-left: 2px solid var(--rul
   section { padding: 10px 0; }
   summary, h2, h3, h4 { break-after: avoid; }
   .citation, .evidence li { break-inside: avoid; }
+  #report details[open] > summary, #report details[open] > .detail { background: transparent; box-shadow: none; }
 }

@@ -39,7 +39,7 @@ def test_multi_agent_config_builds_apiyi_client(monkeypatch, config_path):
     assert isinstance(client, APIYIClient)
     assert client.model == "gpt-6.1-sol"
     assert client.base_url == "https://api.apiyi.com/v1"
-    assert client.request_options == {"reasoning_effort": "high"}
+    assert client.request_options == {"reasoning_effort": "medium"}
 
 
 def test_semantic_graph_config_builds_apiyi_client(monkeypatch):

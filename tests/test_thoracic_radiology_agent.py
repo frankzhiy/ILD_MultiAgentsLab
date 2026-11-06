@@ -533,6 +533,24 @@ def test_ipf_hrct_task_cannot_activate_without_explicit_ipf_context():
         )
 
 
+@pytest.mark.parametrize("name", ["特发性肺纤维化", "特发性肺间质纤维化", "特发性肺间质性纤维化", "ipf", "Idiopathic pulmonary fibrosis"])
+def test_ipf_hrct_task_accepts_documented_ipf_terms(name):
+    case = case_0714()
+    reconstruction = reconstruction_0714().model_copy(deep=True)
+    reconstruction.task_plan.append(
+        TaskPlanItem(
+            task=RadiologyTask.CONDITIONAL_IPF_HRCT,
+            priority="conditional",
+            activation="active",
+            rationale="病例明确将IPF列为鉴别候选。",
+        )
+    )
+    working = build_radiology_working_input(case)
+    working.orientation_units[0].text = f"当前病因考虑 {name}。"
+
+    assert validate_case_reconstruction(reconstruction, case, working) == reconstruction
+
+
 def test_unknown_proposition_id_is_rejected():
     case = case_0714()
     evidence = pointer("seg_003_gu_003", "prop_999")

@@ -102,12 +102,10 @@ class ClinicalPropositionExtractor:
                 chunk_results.append(result)
                 chunk_traces.append(trace)
                 continue
-            chunk_text = "".join(block.text for block in chunk_blocks)
-            chunk_unit = unit.model_copy(update={"text": chunk_text})
-            result, trace = self._extract_chunk(chunk_unit, primary_frame, chunk_blocks)
+            result, trace = self._extract_chunk(unit, primary_frame, chunk_blocks)
             chunk_trace = {
                 "chunk_index": chunk_index,
-                "text_length": len(chunk_text),
+                "text_length": sum(len(block.text) for block in chunk_blocks),
                 "evidence_ids": [block.evidence_id for block in chunk_blocks],
                 "trace": trace,
             }
@@ -155,6 +153,7 @@ class ClinicalPropositionExtractor:
                 _attach_evidence_blocks(result, evidence_blocks, unit, primary_frame),
                 unit,
                 primary_frame,
+                expected_evidence_blocks=evidence_blocks,
             ),
         )
         trace["prompt_components"] = {
@@ -356,10 +355,11 @@ def _read_chunk_cache(
     if cache_dir is None:
         return None
     path = Path(cache_dir) / f"{graph_unit_id}_chunk_{chunk_index:03d}.json"
-    if not path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return GraphUnitClinicalPropositions.model_validate(data["result"]), data["trace"]
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return GraphUnitClinicalPropositions.model_validate(data["result"]), data["trace"]
 
 
 def _write_chunk_cache(
@@ -373,10 +373,9 @@ def _write_chunk_cache(
         return
     path = Path(cache_dir)
     path.mkdir(parents=True, exist_ok=True)
-    (path / f"{graph_unit_id}_chunk_{chunk_index:03d}.json").write_text(
-        json.dumps({"result": result.model_dump(), "trace": trace}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    from src.utils.persistence import write_json
+    write_json(path / f"{graph_unit_id}_chunk_{chunk_index:03d}.json",
+               {"result": result.model_dump(), "trace": trace})
 
 
 def _validate_evidence_reference(
@@ -423,6 +422,8 @@ def validate_clinical_propositions(
     result: GraphUnitClinicalPropositions,
     unit: GraphUnit,
     primary_frame: GraphUnitPrimaryFrame,
+    *,
+    expected_evidence_blocks: list[EvidenceBlock] | None = None,
 ) -> GraphUnitClinicalPropositions:
     """Validate identity, evidence references, and ownership within one unit."""
 
@@ -436,8 +437,9 @@ def validate_clinical_propositions(
             f"Clinical-proposition primary_frame {result.primary_frame} does not match "
             f"{primary_frame.primary_frame}"
         )
-    expected_blocks = build_evidence_blocks(unit)
-    if result.evidence_blocks != expected_blocks:
+    if expected_evidence_blocks is None:
+        expected_evidence_blocks = build_evidence_blocks(unit)
+    if result.evidence_blocks != expected_evidence_blocks:
         raise ValueError(
             "Clinical-proposition evidence_blocks do not match deterministic graph-unit blocks"
         )
@@ -488,12 +490,20 @@ def validate_clinical_propositions(
         ClinicalPropositionValidator,
     )
 
-    quality = ClinicalPropositionValidator().validate_unit(unit, primary_frame, result)
-    errors = [issue for issue in quality.issues if str(issue.severity) == "error"]
+    quality = ClinicalPropositionValidator().validate_unit(
+        unit, primary_frame, result, expected_evidence_blocks=expected_evidence_blocks
+    )
+    errors = [issue for issue in quality.issues
+              if str(issue.severity) == "error" and issue.code != "duplicate_proposition"]
     if errors:
         details = "; ".join(f"{issue.code}: {issue.message}" for issue in errors)
         raise ValueError(f"Clinical proposition quality gate failed: {details}")
 
+    duplicate_ids = {issue.proposition_id for issue in quality.issues if issue.code == "duplicate_proposition"}
+    if duplicate_ids:
+        return result.model_copy(update={
+            "propositions": [p for p in result.propositions if p.proposition_id not in duplicate_ids],
+        })
     return result
 
 

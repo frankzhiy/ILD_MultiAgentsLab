@@ -224,7 +224,9 @@ class PathologyAgent:
                     "specimen_reconstruction": _json(reconstruction),
                     "clinical_rules": rules_json,
                 },
-                lambda result: validate_initial_stage(result, case_input),
+                lambda result: validate_initial_stage(
+                    result, case_input, reconstruction=reconstruction
+                ),
                 pointer_constraints,
             )
         formulation, formulation_trace = self._generate(

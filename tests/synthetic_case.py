@@ -2,7 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from src.agents.common.specialty_input import _ALLOWED_USES, _FILE_MODELS
+from src.agents.common.specialty_input import _ALLOWED_USES, SEMANTIC_OUTPUT_MODELS
 from src.schemas.specialty_agent_input import EvidenceRole, SpecialtyCaseInput
 
 
@@ -64,7 +64,7 @@ def case_input(specialty='pulmonology', *, vascular=False):
 def write_run(root: Path, *, vascular=False):
     case=case_input(vascular=vascular)
     root.mkdir(parents=True, exist_ok=True)
-    for suffix, model in _FILE_MODELS.items():
+    for suffix, model in SEMANTIC_OUTPUT_MODELS.items():
         if suffix == 'discourse_segments':
             data={'segments':[s.segment.model_dump(mode='json') for s in case.segments]}
         else:

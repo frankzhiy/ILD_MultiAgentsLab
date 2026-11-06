@@ -47,7 +47,8 @@ class DiagnosticExploration(Model):
 
 
     def validate_successor(self, previous):
-        current = {c.candidate_id: c for c in self.candidates}
+        successor = self.model_copy(deep=True)
+        current = {c.candidate_id: c for c in successor.candidates}
         errors = []
         for old in previous.candidates:
             new = current.get(old.candidate_id)
@@ -56,16 +57,13 @@ class DiagnosticExploration(Model):
                 continue
             if concept_key(old.diagnosis) != concept_key(new.diagnosis) or old.level != new.level:
                 errors.append(f"Do not reuse candidate ID {old.candidate_id} for a different clinical concept")
-            if not {concept_key(n) for n in old.aliases} <= {concept_key(n) for n in new.aliases}:
-                index = self.candidates.index(new)
-                errors.append(
-                    f"Keep registered aliases for candidate {old.candidate_id}; "
-                    f"/candidates/{index}/aliases must include {old.aliases!r}; "
-                    "use add if the aliases field is absent, otherwise replace its scalar array"
-                )
+                continue
+            # Registered aliases belong to the unchanged identity across rounds.
+            aliases = {concept_key(name): name for name in [*new.aliases, *old.aliases]}
+            new.aliases = list(aliases.values())
         if errors:
             raise ValueError("; ".join(errors))
-        return self
+        return successor.candidate_basis()
 
 
 class CandidateDisposition(Model):

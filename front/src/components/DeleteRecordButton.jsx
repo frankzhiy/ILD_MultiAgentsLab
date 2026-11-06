@@ -7,10 +7,10 @@ export function DeleteRecordButton({ id, batchKind, disabled, onDeleted }) {
   const { message } = App.useApp()
   const label = batchKind ? '删除批次' : '删除运行'
   const scope = batchKind === 'run'
-    ? '将从工作台移除此批次及其创建的全部运行。'
+    ? '将永久删除此批次及其创建的全部运行和本地产物。'
     : batchKind === 'discussion'
-      ? '将从工作台移除此讨论批次，保留关联运行。'
-      : '将从工作台移除此运行及其在各批次中的条目。'
+      ? '将永久删除此讨论批次文件，保留关联运行。'
+      : '将永久删除此运行的本地目录和产物，并从关联批次中移除。'
   const deletion = useMutation({
     mutationFn: () => batchKind ? api.deleteBatch(id) : api.deleteRun(id),
     onSuccess: () => {
@@ -25,7 +25,7 @@ export function DeleteRecordButton({ id, batchKind, disabled, onDeleted }) {
 
   return <Popconfirm
     title={`确认${label}？`}
-    description={<>{id}<br />{scope}本地文件会保留。</>}
+    description={<>{id}<br />{scope}</>}
     okText="确认删除"
     cancelText="取消"
     okButtonProps={{ danger: true }}

@@ -22,6 +22,14 @@ def concept_key(name: str) -> str:
     return "".join(name.split()).casefold().replace("（", "(").replace("）", ")")
 
 
+def normalize_differential_ranks(items) -> None:
+    if len({item.rank for item in items}) != len(items):
+        raise ValueError("Differential diagnosis ranks must be unique")
+    items.sort(key=lambda item: item.rank)
+    for rank, item in enumerate(items, start=1):
+        item.rank = rank
+
+
 LEGACY_JUDGMENT_NOTE = (
     "历史记录：status可能针对整句断言，direction的对象可能含否定；旧版against未区分支持不足与实质反证。"
     "结合原始陈述和病例依据重新评价，不能直接推导疾病阳性、反证或已排除。"

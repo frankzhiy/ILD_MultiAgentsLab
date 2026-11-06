@@ -190,7 +190,7 @@ def test_same_issue_new_target_continues_but_cosmetic_change_stops():
     assert decide_discussion_continuation(**args)['stop_kind'] == 'completed'
 
 
-def test_facets_are_unique_per_problem_and_time_and_include_severity():
+def test_facets_are_unique_per_problem_time_and_subject_and_include_severity():
     from copy import deepcopy
     import pytest
     from src.agents.common.team_synthesis import TeamSynthesis
@@ -202,6 +202,15 @@ def test_facets_are_unique_per_problem_and_time_and_include_severity():
         {**facet, 'timeframe': dict(kind='historical', description='既往') }]
     assert len(TeamSynthesis.model_validate(data).diagnostic_facets) == 3
     data['diagnostic_facets'].append(deepcopy(facet))
+    with pytest.raises(ValueError, match='unique dimensions'):
+        TeamSynthesis.model_validate(data)
+
+    data['diagnostic_facets'] = [
+        {**facet, 'subject': '感染及气道贡献'},
+        {**facet, 'subject': 'ILD 急性加重'},
+    ]
+    assert len(TeamSynthesis.model_validate(data).diagnostic_facets) == 2
+    data['diagnostic_facets'].append({**facet, 'subject': 'ild急性加重'})
     with pytest.raises(ValueError, match='unique dimensions'):
         TeamSynthesis.model_validate(data)
 

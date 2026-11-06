@@ -26,7 +26,7 @@ from src.schemas.specialty_agent_input import (
 )
 
 
-_FILE_MODELS = {
+SEMANTIC_OUTPUT_MODELS = {
     "discourse_segments": DocumentClassification,
     "graph_units": DocumentGraphUnits,
     "primary_frames": DocumentPrimaryFrames,
@@ -222,7 +222,7 @@ def _discover_case_id(run_dir: Path) -> str:
 
 def _load_documents(run_dir: Path, case_id: str) -> dict[str, Any]:
     documents = {}
-    for suffix, model in _FILE_MODELS.items():
+    for suffix, model in SEMANTIC_OUTPUT_MODELS.items():
         path = run_dir / f"{case_id}_{suffix}.json"
         if not path.exists():
             raise FileNotFoundError(f"Required semantic output not found: {path}")

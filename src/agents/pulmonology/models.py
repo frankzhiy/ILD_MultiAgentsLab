@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from src.agents.common.clinical_concepts import normalize_differential_ranks
 from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 
@@ -291,12 +292,7 @@ class DiagnosticFormulation(BaseModel):
 
     @model_validator(mode="after")
     def validate_differential_ranks(self):
-        ranks = [item.rank for item in self.differential_diagnoses]
-        if len(ranks) != len(set(ranks)):
-            raise ValueError("Differential diagnosis ranks must be unique")
-        self.differential_diagnoses.sort(key=lambda item: item.rank)
-        for rank, item in enumerate(self.differential_diagnoses, start=1):
-            item.rank = rank
+        normalize_differential_ranks(self.differential_diagnoses)
         if self.classification_status != "insufficient_data" and not self.leading_diagnosis:
             raise ValueError("A non-insufficient diagnostic formulation needs a leading diagnosis")
         return self

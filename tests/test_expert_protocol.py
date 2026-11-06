@@ -485,6 +485,23 @@ def test_original_questions_and_needs_survive_later_round_filtering():
     assert "allowed requesters=['pulmonology']" in error
     payload['issues'][0]['raised_by'] = ['pulmonology']
     assert run_expert(bundle, [payload]).team_synthesis.issues[0].raised_by == ['pulmonology']
+    direct = deepcopy(payload)
+    direct['issues'][0].update(issue_id=question, source_refs=[target])
+    assert question in run_expert(bundle, [direct]).team_synthesis.issues[0].source_refs
+    direct['issue_dispositions'][0].update(outcome='continue', linked_issue_ids=[])
+    direct_result = run_expert(bundle, [direct])
+    assert direct_result.team_synthesis.issue_dispositions[0].linked_issue_ids == [question]
+    direct['issue_dispositions'][0]['outcome'] = 'covered'
+    direct['issues'][0]['raised_by'] = ['rheumatology']
+    with pytest.raises(StructuredGenerationError, match='requesters must match'):
+        run_expert(bundle, [direct])
+    payload['issue_dispositions'][0].update(outcome='merged', linked_issue_ids=['open'])
+    payload['issues'][0]['source_refs'] = [target]
+    assert question in run_expert(bundle, [payload]).team_synthesis.issues[0].source_refs
+    payload['issues'][0]['target_specialties'] = ['pathology']
+    payload['issues'][0]['assignments'][0]['specialty'] = 'pathology'
+    with pytest.raises(StructuredGenerationError, match='must preserve its original question source'):
+        run_expert(bundle, [payload])
 
 
 def test_new_schema_rejects_self_answer_and_legacy_chair_fields():
@@ -572,7 +589,14 @@ def test_chair_reports_all_dispositions_without_open_routes_together():
         decision_impact='明确归因边界', closure_criterion='给出解释')]
     for disposition in payload['issue_dispositions']:
         disposition['linked_issue_ids'] = ['open']
-    assert run_expert(bundle, [payload]).team_synthesis.issues[0].issue_id == 'open'
+    previous = run_expert(bundle, [payload])
+    assert previous.team_synthesis.issues[0].issue_id == 'open'
+    payload['issue_dispositions'].append(dict(issue_id='open', outcome='continue',
+        rationale='继续处理同一议题', linked_issue_ids=[]))
+    agent = MDTChairAgent(Responses([payload]),
+        prompt_path='src/prompts/mdt_chair/expert_synthesis.md', max_attempts=1)
+    result, _ = agent.integrate(bundle, discussion_previous=previous)
+    assert result.team_synthesis.issue_dispositions[-1].linked_issue_ids == ['open']
 
 
 def test_chair_reports_all_missing_requests_with_other_coverage_errors():

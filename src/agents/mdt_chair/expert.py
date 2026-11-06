@@ -86,7 +86,7 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         if unknown:
             raise ValueError(f"Unknown candidate evidence refs: {sorted(unknown)}")
         if previous_team and previous_team.diagnostic_exploration:
-            value.validate_successor(previous_team.diagnostic_exploration)
+            return value.validate_successor(previous_team.diagnostic_exploration)
         return value
 
     exploration, exploration_trace = agent.generator.generate(
@@ -174,9 +174,24 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
         for problem in team.problems:
             if problem.limitations and not any(b.problem_id == problem.problem_id for b in team.judgment_boundaries):
                 coverage_errors.append(f"State the decision-relevant judgment boundary for problem {problem.problem_id}")
-        open_ids = {i.issue_id for i in team.issues}
+        open_issues = {i.issue_id: i for i in team.issues}
+        open_ids = set(open_issues)
+        direct_questions = set()
+        for ref in open_ids & question_refs:
+            issue = open_issues[ref]
+            if (issue.origin == "specialty"
+                    and bundle.source_registry[ref].specialty in issue.raised_by
+                    and bundle.source_metadata[ref]["target_specialty"] in issue.target_specialties):
+                direct_questions.add(ref)
+                if ref not in issue.source_refs:
+                    issue.source_refs.append(ref)
+        previous_open_ids = {i.issue_id for i in previous_team.issues} if previous_team else set()
+        continuing_ids = (previous_open_ids & open_ids) | direct_questions
         dispositions = {d.issue_id: d for d in team.issue_dispositions}
         for index, disposition in enumerate(team.issue_dispositions):
+            if (disposition.outcome == "continue" and not disposition.linked_issue_ids
+                    and disposition.issue_id in continuing_ids):
+                disposition.linked_issue_ids = [disposition.issue_id]
             if disposition.outcome in {"continue", "merged"}:
                 if not set(disposition.linked_issue_ids).intersection(open_ids):
                     coverage_errors.append(
@@ -190,10 +205,16 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
                     issue.issue_id in disposition.linked_issue_ids
                     and disposition.issue_id in issue.source_refs for issue in team.issues
                 ):
-                    coverage_errors.append(
-                        "Linked discussion issue must preserve its original question source: "
-                        f"{disposition.issue_id}; add it to the linked open issue's source_refs"
-                    )
+                    target = bundle.source_metadata[disposition.issue_id]["target_specialty"]
+                    linked_issues = [open_issues[issue_id] for issue_id in disposition.linked_issue_ids
+                                     if issue_id in open_issues and target in open_issues[issue_id].target_specialties]
+                    if len(linked_issues) == 1:
+                        linked_issues[0].source_refs.append(disposition.issue_id)
+                    else:
+                        coverage_errors.append(
+                            "Linked discussion issue must preserve its original question source: "
+                            f"{disposition.issue_id}; add it to the linked open issue's source_refs"
+                        )
         missing_questions = question_refs - set(dispositions)
         if missing_questions:
             coverage_errors.append(
@@ -323,7 +344,18 @@ def integrate_expert(agent, bundle, previous=None, responses=None, reviews=None)
     team, trace = agent.generator.generate(
         schema_model=ChairSynthesisDraft, schema_name="mdt_expert_synthesis",
         system_prompt=judgment_system_prompt("你是ILD多学科会诊的资深呼吸科主持人，负责审查专业意见并形成团队临床综合。只返回JSON。"),
-        user_prompt=prompt + "\n审阅编号（正式判断与条件性贡献每项恰好一次，不连续、不重编号；原始问题与资料需求不进入 judgment_reviews）：\n" + prompt_json(sorted(review_refs)),
+        user_prompt=(
+            prompt
+            + "\n提交前按字段逐项核对以下原始编号，每个编号在指定字段中恰好出现一次，不能重编号。"
+            "evidence_needs[*].source_refs 必须含原始资料需求自身的编号；"
+            "可另外引用支持该需求的专科判断编号。合并资料需求时保留各原始需求的编号。"
+            "preferred 表示各问题内部的首选，并存问题可以同时使用 scope=other_problem 和 outcome=preferred。\n"
+            + prompt_json({
+                "judgment_reviews[*].source_ref": sorted(review_refs),
+                "issue_dispositions[*].issue_id": sorted(question_refs),
+                "evidence_needs[*].source_refs": sorted(need_refs_to_cover),
+            })
+        ),
         extra_validation=validate, repair_on_validation_error=True,
         string_field_constraints=constraints,
         pointer_field_constraints=guideline_evidence_schema_constraints(allowed_guidelines),

@@ -68,7 +68,7 @@ it('asks for confirmation before deleting a run or its batch', async () => {
   await waitFor(() => expect(screen.queryByText('case-d')).not.toBeInTheDocument())
   expect(api.deleteRun).toHaveBeenCalledWith('run-d')
   fireEvent.click(screen.getByRole('button', { name: '删除批次' }))
-  expect(await screen.findByText(/此批次及其创建的全部运行/)).toBeInTheDocument()
+  expect(await screen.findByText(/永久删除此批次及其创建的全部运行和本地产物/)).toBeInTheDocument()
   fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
   expect(await screen.findByText('运行记录列表')).toBeInTheDocument()
   expect(api.deleteBatch).toHaveBeenCalledWith('batch-1')

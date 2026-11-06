@@ -539,6 +539,39 @@ def test_dense_chunks_keep_evidence_blocks_whole_and_ids_stable():
     assert "".join(block.text for chunk in chunks for block in chunk) == text
 
 
+def test_chunked_extraction_validates_original_evidence_ids_and_merges_them():
+    sentences = ["检查记录，咳嗽，咳痰，气短，胸闷。", "后续出现，乏力，发热，头痛，肌痛。"]
+    unit = make_unit("".join(sentences))
+    frame = make_frame()
+    llm = SequencedLLM([
+        {"propositions": [{
+            "proposition_type": "symptom",
+            "concept_text": symptom,
+            "status": "present",
+            "certainty": "high",
+            "evidence": ref(sentence, index),
+        }]}
+        for index, (sentence, symptom) in enumerate(zip(sentences, ["咳嗽", "乏力"]), 1)
+    ])
+    extractor = ClinicalPropositionExtractor(
+        llm,
+        "src/prompts/semantic_graphing/clinical_proposition_extraction.md",
+        temperature=0,
+        max_tokens=1000,
+        max_attempts=1,
+        max_chunk_chars=len(sentences[0]),
+        enable_chunking=True,
+    )
+
+    result, trace = extractor.extract_unit(unit, frame)
+
+    assert result.evidence_blocks == build_evidence_blocks(unit)
+    assert [p.evidence.evidence_ids for p in result.propositions] == [
+        [block.evidence_id] for block in result.evidence_blocks
+    ]
+    assert len(trace["chunks"]) == 2
+
+
 def test_validation_rejects_unknown_and_disconnected_evidence_references():
     text = "活动后气短明显。否认发热。"
     response = {
@@ -612,6 +645,8 @@ def test_duplicate_propositions_distinguish_sites_in_the_same_quote():
     assert [
         issue.proposition_id for issue in validation.issues if issue.code == "duplicate_proposition"
     ] == ["prop_003"]
+    cleaned = validate_clinical_propositions(result, unit, make_frame())
+    assert [p.modifiers[0].value_text for p in cleaned.propositions] == ["左肺", "右肺"]
 
 
 def test_quality_gate_reports_evidence_block_coverage():

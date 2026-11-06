@@ -467,7 +467,7 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations(inl
         base_version_id=current.version_id,
         proposed_content=content,
         rationale="补充本轮讨论形成的解释。",
-        trigger_issue_ids=["Q001"],
+        trigger_issue_ids=["Q001", "R01-Q001-pulmonology"],
         considered_source_refs=["R01-Q001-pulmonology-A"],
     )
 
@@ -515,6 +515,7 @@ def test_judgment_update_preserves_validated_patient_and_guideline_locations(inl
         active_judgments=[current],
     )
     resolved = update.proposals[0].proposed_content
+    assert update.proposals[0].trigger_issue_ids == ["Q001"]
 
     if inline:
         assert resolved.claims[0].evidence_relations[0].node_ids == ["gu-1::prop-1"]

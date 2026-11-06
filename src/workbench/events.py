@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterator
 
 
 class EventStore:
@@ -73,6 +74,12 @@ class EventStore:
             "payload": payload or {},
             "created_at": created_at,
         }
+
+    @contextmanager
+    def deleting(self, run_id: str) -> Iterator[None]:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+            yield
 
     def list(self, run_id: str, after: int = 0) -> list[dict[str, Any]]:
         with self._connect() as connection:

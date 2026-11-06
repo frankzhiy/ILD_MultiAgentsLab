@@ -164,7 +164,11 @@ class JudgmentBoundary(StrictModel):
     boundary_id: str
     problem_id: str
     established: str = Field(min_length=1)
-    undetermined: str = Field(min_length=1)
+    undetermined: str = Field(
+        min_length=1,
+        description="收起时显示的标题：能独立读懂、以问号结束的具体临床问句，不使用内部编号。",
+        json_schema_extra={"pattern": r"[？?]\s*$"},
+    )
     reason: str = Field(min_length=1)
     decision_impact: str = Field(min_length=1)
     source_refs: list[str] = Field(min_length=1)
@@ -319,10 +323,18 @@ class TeamSynthesis(StrictModel):
                 scope = "primary_diagnosis" if problem.relationship == "primary" else "other_problem"
                 expected = "preferred" if candidate.position == "preferred" else "retained"
                 if decision.scope != scope or decision.outcome not in {expected, "needs_discussion"}:
-                    raise ValueError("Current candidate position contradicts its disposition or clinical scope")
+                    raise ValueError(
+                        f"Current candidate {candidate.candidate_id} in problem {problem.problem_id} has "
+                        f"position={candidate.position!r}, but its disposition has scope={decision.scope!r} "
+                        f"and outcome={decision.outcome!r}. This placement requires scope={scope!r} and "
+                        f"outcome={expected!r} or 'needs_discussion'. Reconcile the position and disposition."
+                    )
         active_ids = {c.candidate_id for c in current}
-        if any(d.outcome in {"preferred", "retained", "needs_discussion"} and d.candidate_id not in active_ids for d in decisions.values()):
-            raise ValueError("Every retained candidate must appear in its clinical problem")
+        unplaced = sorted(d.candidate_id for d in decisions.values()
+                          if d.outcome in {"preferred", "retained", "needs_discussion"} and d.candidate_id not in active_ids)
+        if unplaced:
+            raise ValueError(f"Every retained candidate must appear in its clinical problem: {unplaced}. "
+                             "Use problems[*].candidates with the registered ID; a diagnostic facet alone does not place a candidate.")
         preferred = next((c for c in primary.candidates if c.position == "preferred"), None)
         if self.diagnostic_resolution.primary_candidate_id != (preferred.candidate_id if preferred else None):
             raise ValueError("Primary candidate ID must match the primary problem's preferred candidate")
@@ -384,9 +396,12 @@ class TeamSynthesis(StrictModel):
             raise ValueError("Linked issue IDs must refer to open issues or their recorded dispositions; "
                              f"invalid links={invalid_links}; allowed issue IDs={sorted(issue_ids)}. "
                              "Evidence need IDs are not issue IDs; remove those links or cite an actual issue.")
-        dimensions = [(f.problem_id, f.dimension, f.timeframe.model_dump_json()) for f in self.diagnostic_facets]
+        dimensions = [
+            (f.problem_id, f.dimension, f.timeframe.model_dump_json(), concept_key(f.subject or ""))
+            for f in self.diagnostic_facets
+        ]
         if len(dimensions) != len(set(dimensions)):
-            raise ValueError("Diagnostic facets must have unique dimensions within each problem and timeframe")
+            raise ValueError("Diagnostic facets must have unique dimensions for each subject within a problem and timeframe")
         duplicate_errors = []
         for field, key in (("issues", "issue_id"), ("judgment_reviews", "source_ref"), ("issue_dispositions", "issue_id"), ("judgment_boundaries", "boundary_id"), ("disagreements", "disagreement_id"), ("evidence_needs", "need_id")):
             items = getattr(self, field)

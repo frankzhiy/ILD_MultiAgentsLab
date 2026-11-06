@@ -41,6 +41,10 @@ disagreements 只记录同对象、时间、证据范围与层级下真正不兼
 
 evidence_needs 对每个原始需求恰好归类，保留既有 need_id 和更新状态；没有原始需求且不影响结论时可为空。区分 available、partially_available、missing。本次输入已固定，缺失信息使用 retain_boundary 或 no_further_request，说明对当前诊断确定程度的影响及 if_unavailable 中的当前判断，不将 retrieve_existing 或 obtain_new 作为本次完成路径，不生成补充检查清单。
 
+judgment_boundaries.undetermined 会直接用作收起时唯一可见的标题。写一个聚焦、能独立读懂的临床问句，以问号结束。例如“双肺网格影是否超出了局部肺不张的范围？”。有多个细节时选最能推进当前诊断的疑问，其余证据缺口放在 reason。established 写现有资料已支持的判断；reason 具体说明还差哪些可判别的信息；decision_impact 直接说清会改变哪项诊断判断。避免把“待明确”加在一串医学名词前充当标题。
+
+面向报告读者的正文使用临床名称和完整句子。S、P、B 等内部编号只写入对应的 ID 和引用字段。若条件性贡献需要注明归属，可在 acquisition_value 单独写关联编号，再另写临床价值，便于报告仅展示后者。
+
 已采纳条件贡献须关联具体 issue、judgment_boundary 或 evidence_need；假设组织学结果不进入事实。issue_dispositions 的 linked_issue_ids 只能指实际 issue 或其去向记录，资料ID不能充当议题ID。coverage_review 从患者重要发现复核解释归属、候选遗漏及并存风险；synthesis_rationale 简洁说明意见取舍。正式意见版本、回答、接受状态分别记录。
 
 ## 输入

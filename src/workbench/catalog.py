@@ -56,17 +56,24 @@ class RunCatalog:
     def list_runs(self) -> list[dict[str, Any]]:
         if not self.runs_dir.exists():
             return []
-        deleted = self.deleted_records()["runs"]
-        runs = [self.run_summary(path) for path in self.runs_dir.iterdir()
-                if path.name not in deleted and path.is_dir()]
+        runs = [self.run_summary(path) for path in self.runs_dir.iterdir() if path.is_dir()]
         return sorted(runs, key=lambda item: item["updated_at"], reverse=True)
 
-    def deleted_records(self) -> dict[str, set[str]]:
+    def recorded_deletions(self) -> dict[str, set[str]]:
         records = self._json(self.deleted_records_path, {})
         return {kind: set(records.get(kind, [])) for kind in ("runs", "batches")}
 
-    def delete_records(self, run_ids: set[str], *, batch_id: str | None = None) -> None:
-        records = self.deleted_records()
+    def deleted_records(self) -> dict[str, set[str]]:
+        records = self.recorded_deletions()
+        # Earlier versions only recorded IDs. Let users confirm again for files still present.
+        return {
+            "runs": {run_id for run_id in records["runs"] if not (self.runs_dir / run_id).is_dir()},
+            "batches": {batch_id for batch_id in records["batches"]
+                        if not (self.root / "outputs/batches" / f"{batch_id}.json").is_file()},
+        }
+
+    def record_deletions(self, run_ids: set[str], *, batch_id: str | None = None) -> None:
+        records = self.recorded_deletions()
         records["runs"].update(run_ids)
         if batch_id is not None:
             records["batches"].add(batch_id)
@@ -74,7 +81,7 @@ class RunCatalog:
 
     def run_dir(self, run_id: str) -> Path:
         path = self._inside(self.runs_dir, run_id)
-        if path.parent != self.runs_dir.resolve() or not path.is_dir() or path.name in self.deleted_records()["runs"]:
+        if path.parent != self.runs_dir.resolve() or not path.is_dir():
             raise FileNotFoundError(run_id)
         return path
 

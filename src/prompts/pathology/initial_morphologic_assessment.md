@@ -24,6 +24,8 @@
 
 `absent` 须有原文明确阴性或明确审阅后未见，未描述用 not_assessable。有限标本、代表性不足或转述来源影响信度；小标本 OP 可是邻近未取样感染、血管炎、肿瘤、脓肿或梗死的非特异反应，说明取样限制。病因关联需临床整合，不将模式升级为最终疾病，不作活检风险裁决或治疗建议。
 
+对 supported 或 probable 模式，仅当标本重建中有 adequate 且为 representative 或 possibly_representative 的标本时，才可用 high 或 very_high。仍应按证据保留可支持的模式和取样限制。
+
 ## 输出要求
 
 supporting/conflicting evidence 仅来自 diagnostic_evidence_units，context_only 只作 related_evidence 或问题背景。每个 EvidencePointer 填写同一 Graph Unit 的 `evidence_ids`，其余定位由程序回填；`specialist_opinion_ids` 均为空。

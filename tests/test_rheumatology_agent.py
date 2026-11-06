@@ -28,6 +28,27 @@ def case_input():
     return build_specialty_case_input(RUN_DIR, MdtSpecialty.RHEUMATOLOGY)
 
 
+def test_rheumatic_differential_ranks_preserve_order_with_gaps():
+    payload = {
+        "assessment": "需要比较的风湿病候选",
+        "classification_status": "insufficient_data",
+        "confidence": "low",
+        "reasoning_summary": "患者证据有限",
+        "differential_diagnoses": [
+            {"rank": rank, "diagnosis": diagnosis, "assessment": "待鉴别",
+             "confidence": "low", "reasoning_summary": "患者证据有限"}
+            for rank, diagnosis in [(4, "候选甲"), (2, "候选乙")]
+        ],
+    }
+    result = RheumaticDiseaseFormulation.model_validate(payload)
+    assert [(item.rank, item.diagnosis) for item in result.differential_diagnoses] == [
+        (1, "候选乙"), (2, "候选甲"),
+    ]
+    payload["differential_diagnoses"][0]["rank"] = 2
+    with pytest.raises(ValueError, match="ranks must be unique"):
+        RheumaticDiseaseFormulation.model_validate(payload)
+
+
 def pointer(case):
     unit = next(unit for segment in case.segments for unit in segment.units if unit.may_support_diagnostic_claim)
     return EvidencePointer(evidence_ids=[unit.clinical_propositions.evidence_blocks[0].evidence_id])

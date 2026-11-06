@@ -4,6 +4,8 @@
 
 比较有患者依据的具体自身免疫疾病与非风湿解释，分别评价疾病存在及其肺部归因，明确首选相对备选的判别依据。笼统正常筛查限定其覆盖，不扩大为疾病全面排除。无具体风湿候选时明确支持程度；不要为重复确认ILD而忽略本专业真正需要回答的病因问题。
 
+分别返回 `assessment_type: rheumatic_disease`（风湿病本身是否成立）和 `assessment_type: ild_attribution`（风湿病与ILD的归因关系）。证据有限时仍分别说明两项判断的可评估程度。
+
 每个 assessment 按临床问题归纳，statement 给出当前倾向；medical_basis 说明正向判别依据、候选比较、解释范围和竞争/诱发/并存关系；limitations 说明具体未定内容与改判条件。confidence、direction、assessability、clinical_role 分别填写，低信度不等于不能给出具体候选。
 
 本阶段同时生成原子claims与实际使用的evidence_relations，不另设证据标注阶段。每条关联选择输入可见的evidence_ids、direction与function；程序回填原文、定位和claim_id。不能猜编号，不枚举全组合。资料缺失或纯条件判断可不引用，但明确理由。没有引用不等于证据已被判无关。

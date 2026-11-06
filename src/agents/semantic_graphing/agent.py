@@ -585,10 +585,11 @@ def _read_task_cache(
     if cache_dir is None:
         return None
     path = Path(cache_dir) / f"{task_id}.json"
-    if not path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return model.model_validate(data["result"]), data.get("trace", {"cached": True})
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return model.model_validate(data["result"]), data.get("trace", {"cached": True})
 
 
 def _write_task_cache(
@@ -601,11 +602,5 @@ def _write_task_cache(
         return
     path = Path(cache_dir)
     path.mkdir(parents=True, exist_ok=True)
-    (path / f"{task_id}.json").write_text(
-        json.dumps(
-            {"result": result.model_dump(), "trace": trace},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    from src.utils.persistence import write_json
+    write_json(path / f"{task_id}.json", {"result": result.model_dump(), "trace": trace})

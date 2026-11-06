@@ -365,7 +365,8 @@ class SpecialtyDiscussionAgent:
             if self.generator.response_format_mode == "json_schema"
             else prompt_schema_json(SpecialtyJudgmentUpdateDraft)
         )
-        task_ids = {task.issue_id for task in tasks}
+        issue_ids = {task.issue_id for task in tasks}
+        issue_by_task_id = {task.task_id: task.issue_id for task in tasks}
         source_refs = {
             str(item.get("source_ref"))
             for task in tasks
@@ -446,7 +447,10 @@ class SpecialtyDiscussionAgent:
                         errors.append(f"proposals[{proposal_index}] must identify its triggering issue")
                     if not proposal.considered_source_refs:
                         errors.append(f"proposals[{proposal_index}] must identify the material it considered")
-                unknown_issues = set(proposal.trigger_issue_ids) - task_ids
+                proposal.trigger_issue_ids = list(dict.fromkeys(
+                    issue_by_task_id.get(ref, ref) for ref in proposal.trigger_issue_ids
+                ))
+                unknown_issues = set(proposal.trigger_issue_ids) - issue_ids
                 if unknown_issues:
                     errors.append(f"proposals[{proposal_index}] unknown trigger issue IDs: {sorted(unknown_issues)}")
                 unknown_sources = set(proposal.considered_source_refs) - source_refs
@@ -534,6 +538,9 @@ class SpecialtyDiscussionAgent:
             extra_validation=validate,
             pointer_field_constraints={
                 "evidence_relations": [{"evidence_ids": allowed_evidence_ids}],
+            },
+            string_field_constraints={
+                "JudgmentChangeProposal": {"trigger_issue_ids": issue_ids},
             },
             repair_on_validation_error=True,
             max_attempts_override=(

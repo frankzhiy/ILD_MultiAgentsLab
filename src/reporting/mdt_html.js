@@ -8,8 +8,9 @@ function syncView() {
   discussion.hidden = !inDiscussion;
   if (!inDiscussion) {
     const target = document.getElementById(location.hash.slice(1));
-    const detail = target?.querySelector(':scope > details');
-    if (detail && target.id.startsWith('need-')) detail.open = true;
+    for (let detail = target?.closest('details'); detail; detail = detail.parentElement.closest('details')) {
+      detail.open = true;
+    }
     if (target) target.scrollIntoView?.();
   }
 }

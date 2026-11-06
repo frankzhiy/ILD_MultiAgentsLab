@@ -399,10 +399,13 @@ def _validate_pe_wording(text: str, pointers: Iterable[EvidencePointer]) -> None
 
 
 def _explicit_ipf_context(working: RadiologyWorkingInput) -> bool:
+    ipf_term = re.compile(
+        r"特发性肺(?:间质性?)?纤维化|(?<![a-z0-9])(?:ipf|idiopathic\s+pulmonary\s+fibrosis)(?![a-z0-9])",
+        re.IGNORECASE,
+    )
     return any(
-        marker in unit.text
+        ipf_term.search(unit.text)
         for unit in working.orientation_units
-        for marker in ("疑似IPF", "特发性肺纤维化", "IPF")
     )
 
 

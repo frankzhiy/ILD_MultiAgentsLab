@@ -1,15 +1,22 @@
 """Standalone clinician view of a saved MDT report."""
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
-from src.agents.common.team_synthesis import MDTTeamReport
+from src.agents.common.team_synthesis import MDTTeamReport, TeamSynthesis
 from src.agents.mdt_discussion.final_report import report_diagnosis
 from src.agents.mdt_discussion.models import MDTDiscussionState
 from src.utils.persistence import write_text
 
 from .mdt_discussion_html import render_discussion
-from .mdt_html_parts import details as _details, paragraph as _paragraph, text as _text
+from .mdt_html_parts import (
+    clinical_paragraph as _clinical_paragraph,
+    clinical_text as _clinical_text,
+    details as _details,
+    paragraph as _paragraph,
+    text as _text,
+)
 
 _NEED_STATUS = {"available": "已有", "partially_available": "待核对", "missing": "缺资料"}
 _OTHER_PROBLEMS = {
@@ -33,8 +40,8 @@ _SOURCE = {
 }
 
 
-def _artifact(path: Path, report: MDTTeamReport, suffix: str) -> dict:
-    source = path.with_name(f"{report.case_id}_{suffix}.json")
+def _artifact(directory: Path, report: MDTTeamReport, suffix: str) -> dict:
+    source = directory / f"{report.case_id}_{suffix}.json"
     return json.loads(source.read_bytes()) if source.is_file() else {}
 
 
@@ -48,30 +55,118 @@ def _labeled(label: str, body: str) -> str:
     return f'<div class="labeled"><h4>{_text(label)}</h4><div>{body}</div></div>'
 
 
+def _question_row(anchor: str, title: str, body: str) -> str:
+    return (
+        f'<details id="{_text(anchor)}" class="candidate question">'
+        f'<summary><span class="row-name">{_clinical_text(title)}</span></summary>'
+        f'<div class="detail">{body}</div></details>'
+    )
+
+
+def _pending_questions(team: TeamSynthesis, question_titles: dict[str, str]) -> str:
+    boundaries_by_problem = defaultdict(list)
+    for boundary in team.judgment_boundaries:
+        boundaries_by_problem[boundary.problem_id].append(boundary)
+
+    evidence_by_boundary = defaultdict(list)
+    shared_evidence = defaultdict(list)
+    for index, need in enumerate(team.evidence_needs, start=1):
+        outcomes = "".join(
+            f'<li>如果<strong>{_clinical_text(branch.result.strip().rstrip("。！？"))}</strong>，'
+            f'<strong>{_clinical_text(branch.changed_decision.strip().rstrip("。！？"))}</strong>。</li>'
+            for branch in need.branches
+        )
+        evidence = (
+            f'<div id="need-{index}" class="question-evidence">'
+            + _clinical_paragraph(need.information, "待核实资料　")
+            + (f'<ul>{outcomes}</ul>' if outcomes else "")
+            + _details(
+                "查看已有资料和待核实细节",
+                _clinical_paragraph(need.available_information, "已有资料　")
+                + _clinical_paragraph(need.missing_information, "待核实内容　")
+                + _clinical_paragraph(_NEED_STATUS[need.status], "资料状态　")
+                + _clinical_paragraph(_NEED_ACTION[need.action], "处理意见　")
+                + _clinical_paragraph(need.if_unavailable, "资料仍不足时　"),
+                "inline-detail",
+            )
+            + "</div>"
+        )
+        candidates = boundaries_by_problem[need.problem_id]
+        explicit = [item for item in candidates if need.need_id in item.source_refs]
+        matched = explicit or candidates
+        if len(matched) == 1:
+            evidence_by_boundary[matched[0].boundary_id].append(evidence)
+        else:
+            shared_evidence[need.problem_id].append(evidence)
+
+    conditional_by_boundary = defaultdict(list)
+    boundary_ids = {item.boundary_id for item in team.judgment_boundaries}
+    problems = {item.problem_id: item.title for item in team.problems}
+    for item in team.conditional_contributions:
+        # Saved snapshots can explicitly cite a boundary in the acquisition note.
+        cited = set(re.findall(r"(?<![A-Za-z0-9])(?:B[0-9]+|boundary_[a-z0-9_]+)(?![A-Za-z0-9_])", item.acquisition_value))
+        matched = cited & boundary_ids
+        conditional_by_boundary[next(iter(matched)) if len(matched) == 1 else None].append(
+            _details(
+                _clinical_text(item.question),
+                _clinical_paragraph(item.possible_result, "若有以下结果　")
+                + _clinical_paragraph(item.decision_if_found, "对判断的影响　")
+                + _clinical_paragraph(item.cannot_establish, "判断范围　")
+                + _clinical_paragraph(item.acquisition_value, "资料价值　"),
+                "inline-detail",
+            )
+        )
+
+    rows = []
+    for index, item in enumerate(team.judgment_boundaries, start=1):
+        evidence = "".join(evidence_by_boundary[item.boundary_id] + conditional_by_boundary[item.boundary_id])
+        title = question_titles.get(item.boundary_id, item.undetermined).strip()
+        if not title.endswith(("？", "?")):
+            title = f"还需要明确什么才能进一步判断{problems[item.problem_id]}？"
+        scope = _clinical_paragraph(item.undetermined, "仍待明确的范围　") if title != item.undetermined.strip() else ""
+        rows.append(_question_row(
+            f"question-{index}", title,
+            _clinical_paragraph(item.decision_impact, "诊断影响　")
+            + scope
+            + _clinical_paragraph(item.reason, "目前的判别障碍　")
+            + (_details("查看判别线索和诊断影响", evidence, "inline-detail") if evidence else "")
+            + _details("查看目前保留的判断", _clinical_paragraph(item.established, "已有判断　"), "inline-detail"),
+        ))
+
+    for problem in team.problems:
+        if shared_evidence[problem.problem_id]:
+            rows.append(_question_row(
+                f"materials-{problem.problem_id}", f"判断{problem.title}还需要核对哪些资料？",
+                "".join(shared_evidence[problem.problem_id]),
+            ))
+    if conditional_by_boundary[None]:
+        rows.append(_details("其他条件性判别线索", "".join(conditional_by_boundary[None]), "inline-detail"))
+    if team.diagnostic_opinion and team.diagnostic_opinion.limitations:
+        limitations = dict.fromkeys(team.diagnostic_opinion.limitations)
+        rows.append(_details("其他待明确事项", "".join(map(_clinical_paragraph, limitations)), "inline-detail"))
+    return "".join(rows)
+
+
 def write_mdt_html(
     path: Path, report: MDTTeamReport, state: MDTDiscussionState | None = None,
+    *, artifact_dir: Path | None = None, question_titles: dict[str, str] | None = None,
 ) -> None:
     team = report.team_synthesis
+    artifact_dir = artifact_dir if artifact_dir is not None else path.parent
     primary = next(problem for problem in team.problems if problem.relationship == "primary")
     titles = {problem.problem_id: problem.title for problem in team.problems}
-    needs_by_problem = defaultdict(list)
-    for index, need in enumerate(team.evidence_needs, start=1):
-        needs_by_problem[need.problem_id].append((index, need))
-    boundaries_by_problem = {}
-    for index, boundary in enumerate(team.judgment_boundaries, start=1):
-        boundaries_by_problem.setdefault(boundary.problem_id, index)
     names = {
         candidate.candidate_id: candidate.diagnosis
         for candidate in (team.diagnostic_exploration.candidates if team.diagnostic_exploration else [])
     }
-    propositions = _artifact(path, report, "clinical_propositions")
+    propositions = _artifact(artifact_dir, report, "clinical_propositions")
     blocks = {
         block["evidence_id"]: block["text"]
         for segment in propositions.get("segments", [])
         for unit in segment["units"]
         for block in unit["evidence_blocks"]
     }
-    graph = _artifact(path, report, "graph_units")
+    graph = _artifact(artifact_dir, report, "graph_units")
     units = {unit["graph_unit_id"]: unit for segment in graph.get("segments", []) for unit in segment["graph_units"]}
 
     references = {}
@@ -96,7 +191,7 @@ def write_mdt_html(
                 body.append(
                     '<article class="citation">' + _paragraph(" · ".join(locator), "引文位置　")
                     + f'<blockquote>{_text(item.get("quote") or "报告未保存引文原文。")}</blockquote>'
-                    + _paragraph(item.get("application"), "本例应用　") + "</article>"
+                    + _clinical_paragraph(item.get("application"), "本例应用　") + "</article>"
                 )
             title = document.get("title") or doc_id
             entries.append(_details(
@@ -134,9 +229,9 @@ def write_mdt_html(
             shown_claims.update(distinct)
             rendered.append(
                 '<li><span class="evidence-source">' + _text(label) + "</span>"
-                + (_paragraph(distinct[0]) + _details(
+                + (_clinical_paragraph(distinct[0]) + _details(
                     "查看原文", f'<blockquote>{_text(quote)}</blockquote>'
-                    + "".join(_paragraph(value) for value in distinct[1:]), "original"
+                    + "".join(_clinical_paragraph(value) for value in distinct[1:]), "original"
                 ) if distinct else _paragraph(quote)) + "</li>"
             )
         return f'<ul class="evidence">{"".join(rendered)}</ul>' if rendered else ''
@@ -156,11 +251,11 @@ def write_mdt_html(
         opposing = evidence(candidate.opposing_evidence_refs, candidate.source_refs, ("weakens",))
         action = "查看依据" if preferred else "查看鉴别依据"
         return _details(
-            f'<span class="row-name">{_text(name)}</span>'
+            f'<span class="row-name">{_clinical_text(name)}</span>'
             f'<span class="link-action" data-open="收起依据">{action}</span>',
             _labeled("支持依据", supporting or _paragraph("本次未记录明确支持依据。"))
             + _labeled("反对或削弱依据", opposing or _paragraph("本次未记录明确反对依据。"))
-            + _labeled("尚待明确", _paragraph("；".join(candidate.limitations)))
+            + _labeled("尚待明确", _clinical_paragraph("；".join(candidate.limitations)))
             + guidelines(matched, "指南依据"),
             "candidate",
         )
@@ -172,7 +267,7 @@ def write_mdt_html(
         opinion = team.diagnostic_opinion
         main_basis = _details(
             '<span class="row-name">综合分析</span><span class="link-action" data-open="收起依据">查看依据</span>',
-            _paragraph(opinion.reasoning) + evidence(opinion.evidence_refs),
+            _clinical_paragraph(opinion.reasoning) + evidence(opinion.evidence_refs),
             "candidate",
         )
     candidates = ("<h3>主要依据</h3>" + main_basis if main_basis else "") + (
@@ -181,8 +276,8 @@ def write_mdt_html(
     )
     other_problems = "".join(
         _details(
-            _text(problem.title),
-            _paragraph(problem.statement)
+            _clinical_text(problem.title),
+            _clinical_paragraph(problem.statement)
             + "".join(candidate_row(item, problem.problem_id) for item in problem.candidates)
             + (evidence(problem.evidence_refs) if not problem.candidates and problem.evidence_refs else ""),
         )
@@ -196,60 +291,14 @@ def write_mdt_html(
     grouped_problems = defaultdict(list)
     for problem in team.problems:
         if problem.relationship != "primary":
-            grouped_problems[problem.relationship].append(f"<li>{_text(problem.statement)}</li>")
+            grouped_problems[problem.relationship].append(f"<li>{_clinical_text(problem.statement)}</li>")
     associated = "".join(
         f'<h3>{label}</h3><ul>{"".join(grouped_problems[key])}</ul>'
         for key, label in _OTHER_PROBLEMS.items() if grouped_problems[key]
     )
 
-    boundaries = []
-    for index, boundary in enumerate(team.judgment_boundaries, start=1):
-        material_links = "".join(
-            f'<li><a href="#need-{i}">{_text(need.information)}</a></li>'
-            for i, need in needs_by_problem[boundary.problem_id]
-        )
-        body = (
-            _paragraph(boundary.established, "现有结论　")
-            + _paragraph(boundary.reason, "原因　")
-            + _paragraph(boundary.decision_impact, "对诊断的影响　")
-        )
-        boundaries.append(
-            f'<article id="question-{index}" class="document-row">'
-            + f'<h3>{_text(titles[boundary.problem_id])}</h3>'
-            + _paragraph(boundary.undetermined)
-            + (_details("查看相关资料", f'<ul class="related-materials">{material_links}</ul>', "inline-detail")
-               if material_links else "")
-            + _details("查看分析", body, "inline-detail") + "</article>"
-        )
-    if team.diagnostic_opinion and team.diagnostic_opinion.limitations:
-        limitations = dict.fromkeys(team.diagnostic_opinion.limitations)
-        boundaries.append(_details("其他待明确事项", "".join(map(_paragraph, limitations)), "inline-detail"))
-
-    needs = []
-    for index, need in enumerate(team.evidence_needs, start=1):
-        boundary_index = boundaries_by_problem.get(need.problem_id)
-        related = (
-            f'<a href="#question-{boundary_index}">查看相关问题</a>' if boundary_index else ""
-        )
-        body = (
-            _paragraph(need.available_information, "已有资料　")
-            + _paragraph(need.missing_information, "待核实内容　")
-            + _paragraph(_NEED_ACTION[need.action], "处理意见　")
-            + "".join(_paragraph(f"{branch.result} → {branch.changed_decision}") for branch in need.branches)
-            + _paragraph(need.if_unavailable, "如资料无法取得　")
-            + related
-        )
-        needs.append(
-            f'<div id="need-{index}">' + _details(
-                f'<span class="row-name">{_text(need.information)}</span>'
-                f'<span class="row-status">{_NEED_STATUS[need.status]}</span>'
-                '<span class="link-action" data-open="收起">查看资料</span>',
-                body, "material",
-            ) + '</div>'
-        )
-
     discussion = render_discussion(
-        report, state, _artifact(path, report, "mdt_chair_integration"), guidelines, blocks,
+        report, state, _artifact(artifact_dir, report, "mdt_chair_integration"), guidelines, blocks,
     )
     bibliography = []
     for number, item in references.values():
@@ -283,7 +332,7 @@ def write_mdt_html(
     <section id="result">
       <h2><span class="number">01</span>诊断结果</h2>
       <div class="section-content">
-        <p class="diagnosis-result">{_text(conclusion)}</p>
+        <p class="diagnosis-result">{_clinical_text(conclusion)}</p>
         {associated}
       </div>
     </section>
@@ -296,12 +345,8 @@ def write_mdt_html(
       </div>
     </section>
     <section id="boundaries">
-      <h2><span class="number">03</span>尚待明确的问题</h2>
-      <div class="section-content">{"".join(boundaries) or _paragraph("本次未单列待明确的问题。")}</div>
-    </section>
-    <section id="needs">
-      <h2><span class="number">04</span>待核实资料</h2>
-      <div class="section-content">{"".join(needs) or _paragraph("本次未单列待核实资料。")}</div>
+      <h2><span class="number">03</span>待明确的问题及其诊断影响</h2>
+      <div class="section-content">{_pending_questions(team, question_titles or {}) or _paragraph("本次未单列待明确的问题。")}</div>
     </section>
     <section id="references">
       <h2>参考文献</h2>

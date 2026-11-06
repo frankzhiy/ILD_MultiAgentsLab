@@ -4,11 +4,29 @@ import pytest
 
 from src.agents.common.validation import (
     diagnostic_evidence_schema_constraints,
+    resolve_evidence_pointers,
     validate_authorized_items,
 )
 from src.agents.rheumatology.models import InitialAutoimmuneAssessment
 from src.agents.thoracic_radiology.models import InitialConsultFormulation
 from src.llm.structured import json_schema_response_format
+
+
+def test_evidence_pointer_resolves_repeated_ids_to_one_source_block():
+    from src.agents.pulmonology.models import EvidencePointer
+    from synthetic_case import case_input
+
+    case = case_input()
+    block = case.segments[0].units[0].clinical_propositions.evidence_blocks[0]
+    pointers = [EvidencePointer(evidence_ids=[block.evidence_id, block.evidence_id])]
+
+    resolve_evidence_pointers(pointers, case, EvidencePointer)
+
+    pointer, = pointers
+    assert pointer.evidence_ids == [block.evidence_id]
+    assert pointer.quote == block.text
+    with pytest.raises(ValueError, match="unknown evidence_ids"):
+        resolve_evidence_pointers(EvidencePointer(evidence_ids=["unknown", "unknown"]), case, EvidencePointer)
 
 
 def test_dynamic_schema_limits_diagnostic_evidence_but_not_related_evidence():

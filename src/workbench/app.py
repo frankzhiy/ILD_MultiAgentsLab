@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -213,7 +214,7 @@ async def retry_batch(batch_id: str) -> dict:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.delete("/api/batches/{batch_id}", status_code=204)
+@app.delete("/api/batches/{batch_id}/files", status_code=204)
 async def delete_batch(batch_id: str) -> Response:
     try:
         orchestrator.delete_batch(batch_id)
@@ -221,6 +222,8 @@ async def delete_batch(batch_id: str) -> Response:
         raise not_found(error) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except (OSError, sqlite3.Error) as error:
+        raise HTTPException(status_code=500, detail="批次删除未完成，请检查本地文件和数据库权限后重试。") from error
     return Response(status_code=204)
 
 
@@ -253,7 +256,7 @@ def get_run(run_id: str) -> dict:
         raise not_found(FileNotFoundError(str(error))) from error
 
 
-@app.delete("/api/runs/{run_id}", status_code=204)
+@app.delete("/api/runs/{run_id}/files", status_code=204)
 async def delete_run(run_id: str) -> Response:
     try:
         orchestrator.delete_run(run_id)
@@ -261,6 +264,8 @@ async def delete_run(run_id: str) -> Response:
         raise not_found(error) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except (OSError, sqlite3.Error) as error:
+        raise HTTPException(status_code=500, detail="运行删除未完成，请检查本地文件和数据库权限后重试。") from error
     return Response(status_code=204)
 
 

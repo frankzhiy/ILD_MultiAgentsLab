@@ -12,7 +12,10 @@ DISCUSSION_RUN_ID = "synthetic-discussion"
 def test_delete_records_updates_batch_membership_and_preserves_shared_runs(monkeypatch):
     catalog = orchestrator.catalog
     for run_id in ("run-a", "run-b", "shared"):
-        (catalog.runs_dir / run_id).mkdir(parents=True)
+        run_dir = catalog.runs_dir / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "artifact.txt").write_text("artifact")
+        orchestrator.events.append(run_id, "run_completed")
 
     def write_batch(batch_id, kind, status, run_ids):
         orchestrator._write_batch({
@@ -23,25 +26,43 @@ def test_delete_records_updates_batch_membership_and_preserves_shared_runs(monke
 
     write_batch("full-batch", "run", "completed_with_errors", ["run-a", "run-b"])
     write_batch("discussion-batch", "discussion", "running", ["run-b", "shared"])
+    catalog.record_deletions({"run-a"}, batch_id="discussion-batch")
     client = TestClient(app)
-    assert client.delete("/api/runs/run-b").status_code == 409
-    assert client.delete("/api/batches/full-batch").status_code == 409
-    assert client.delete("/api/batches/discussion-batch").status_code == 409
+    assert any(run["id"] == "run-a" for run in client.get("/api/runs").json())
+    assert client.get("/api/batches/discussion-batch").status_code == 200
+    assert client.delete("/api/runs/run-b/files").status_code == 409
+    assert client.delete("/api/batches/full-batch/files").status_code == 409
+    assert client.delete("/api/batches/discussion-batch/files").status_code == 409
     assert client.get("/api/runs/run-a").status_code == 200
     write_batch("discussion-batch", "discussion", "completed_with_errors", ["run-b", "shared"])
-    assert client.delete("/api/batches/discussion-batch").status_code == 204
+    assert client.delete("/api/batches/discussion-batch/files").status_code == 204
+    assert not orchestrator._batch_path("discussion-batch").exists()
     assert client.get("/api/runs/run-b").status_code == 200
-    assert client.delete("/api/runs/run-a").status_code == 204
+    assert client.delete("/api/runs/run-a/files").status_code == 204
+    assert not (catalog.runs_dir / "run-a").exists()
+    assert not orchestrator.events.list("run-a")
     assert client.get("/api/runs/run-a").status_code == 404
     assert client.get("/api/batches/full-batch").json()["summary"]["total"] == 1
     assert "run-a" not in client.get("/api/batches/full-batch/export").text
     monkeypatch.setattr(orchestrator, "create_batch", lambda request, **_: request)
     assert client.post("/api/batches/full-batch/retry").json()["case_ids"] == ["run-b"]
-    assert client.delete("/api/batches/full-batch").status_code == 204
-    assert client.delete("/api/batches/full-batch").status_code == 404
+    def deny_removal(_path):
+        raise PermissionError("test")
+
+    with monkeypatch.context() as failure:
+        failure.setattr("src.workbench.runner.rmtree", deny_removal)
+        assert client.delete("/api/batches/full-batch/files").status_code == 500
+    assert client.get("/api/batches/full-batch").json()["summary"]["total"] == 1
+    assert orchestrator.events.list("run-b")
+    assert client.delete("/api/batches/full-batch/files").status_code == 204
+    assert not orchestrator._batch_path("full-batch").exists()
+    assert not (catalog.runs_dir / "run-b").exists()
+    assert not orchestrator.events.list("run-b")
+    assert client.delete("/api/batches/full-batch/files").status_code == 404
     assert client.get("/api/batches").json() == []
     assert {run["id"] for run in client.get("/api/runs").json()} == {"shared", RUN_ID, DISCUSSION_RUN_ID}
-    assert (catalog.runs_dir / "run-a").is_dir()
+    assert (catalog.runs_dir / "shared" / "artifact.txt").is_file()
+    assert orchestrator.events.list("shared")
     assert catalog.deleted_records()["runs"] == {"run-a", "run-b"}
 
 

@@ -10,12 +10,13 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Callable
 
-from src.agents.common.specialty_input import build_specialty_case_input
+from src.agents.common.specialty_input import SEMANTIC_OUTPUT_MODELS, build_specialty_case_input
 from src.agents.semantic_graphing.agent import SemanticGraphingAgent
 from src.llm.factory import build_llm_client
 from src.llm.prompting import llm_value
 from src.schemas.semantic_graphing.graph_unit import MdtSpecialty
 from src.utils.config import load_yaml
+from src.utils.persistence import read_checkpoint
 from src.workbench.events import EventStore
 
 
@@ -41,7 +42,9 @@ class WorkbenchWorkflow:
     ) -> None:
         self._load_env()
         input_text = input_path.read_text(encoding="utf-8")
-        (run_dir / f"{case_id}_input.txt").write_text(input_text, encoding="utf-8")
+        snapshot = run_dir / f"{case_id}_input.txt"
+        if input_path != snapshot:
+            snapshot.write_bytes(input_path.read_bytes())
         config = load_yaml(config_path)
         llm = build_llm_client(config)
         agent = SemanticGraphingAgent.from_config(config_path, llm)
@@ -49,7 +52,9 @@ class WorkbenchWorkflow:
         for component in (agent.classifier, agent.graph_unit_extractor,
                           agent.primary_frame_selector, agent.clinical_proposition_extractor):
             component.generator.event_callback = progress
+        trace_path = run_dir / f"{case_id}_trace.json"
         trace: dict[str, Any] = {
+            **(json.loads(trace_path.read_text(encoding="utf-8")) if trace_path.exists() else {}),
             "case_id": case_id,
             "model": getattr(llm, "model", config.get("model")),
             "runtime_config": {
@@ -65,40 +70,33 @@ class WorkbenchWorkflow:
         }
         started = time.perf_counter()
 
-        result = agent.classify(input_text, case_id=case_id, progress=progress)
-        self._write(run_dir / f"{case_id}_discourse_segments.json", result.classification)
-        trace.update(result.trace)
-        self._write(run_dir / f"{case_id}_trace.json", trace)
+        classification_path = run_dir / f"{case_id}_discourse_segments.json"
+        classification = read_checkpoint(classification_path, SEMANTIC_OUTPUT_MODELS["discourse_segments"])
+        if classification is None:
+            result = agent.classify(input_text, case_id=case_id, progress=progress)
+            classification = result.classification
+            self._write(classification_path, classification)
+            trace.update(result.trace)
+            self._write(trace_path, trace)
 
-        graph_units, graph_trace = agent.extract_graph_units(
-            result.classification,
-            progress=progress,
-            cache_dir=run_dir / "task_cache/graph_units",
-        )
-        self._write(run_dir / f"{case_id}_graph_units.json", graph_units)
-        trace["graph_unit_extraction"] = graph_trace
-        self._write(run_dir / f"{case_id}_trace.json", trace)
+        def extract(suffix, trace_key, generate, *inputs):
+            self._check_stop(run_id)
+            path = run_dir / f"{case_id}_{suffix}.json"
+            checkpoint = read_checkpoint(path, SEMANTIC_OUTPUT_MODELS[suffix])
+            if checkpoint is not None:
+                return checkpoint
+            result, stage_trace = generate(*inputs, progress=progress, cache_dir=run_dir / "task_cache" / suffix)
+            self._write(path, result)
+            trace[trace_key] = stage_trace
+            self._write(trace_path, trace)
+            return result
 
-        primary_frames, frame_trace = agent.select_primary_frames(
-            graph_units,
-            progress=progress,
-            cache_dir=run_dir / "task_cache/primary_frames",
+        graph_units = extract("graph_units", "graph_unit_extraction", agent.extract_graph_units, classification)
+        primary_frames = extract("primary_frames", "primary_frame_selection", agent.select_primary_frames, graph_units)
+        clinical_propositions = extract(
+            "clinical_propositions", "clinical_proposition_extraction",
+            agent.extract_clinical_propositions, graph_units, primary_frames,
         )
-        self._write(run_dir / f"{case_id}_primary_frames.json", primary_frames)
-        trace["primary_frame_selection"] = frame_trace
-        self._write(run_dir / f"{case_id}_trace.json", trace)
-
-        clinical_propositions, proposition_trace = agent.extract_clinical_propositions(
-            graph_units,
-            primary_frames,
-            progress=progress,
-            cache_dir=run_dir / "task_cache/clinical_propositions",
-        )
-        self._write(
-            run_dir / f"{case_id}_clinical_propositions.json", clinical_propositions
-        )
-        trace["clinical_proposition_extraction"] = proposition_trace
-        self._write(run_dir / f"{case_id}_trace.json", trace)
 
         validation = agent.validate_clinical_propositions(
             graph_units, primary_frames, clinical_propositions, progress=progress
@@ -659,32 +657,12 @@ class WorkbenchWorkflow:
                     reviews,
                 )
 
-                for specialty in sorted(update_inputs):
-                    state.active_round["judgment_update_progress"][specialty] = {
-                        "status": "waiting",
-                        "started_at": "",
-                        "completed_at": "",
-                        "update": None,
-                        "error": "",
-                    }
-                self._write(state_path, state)
+                update_specialties = sorted(update_inputs)
+                round_decision_state = state.decision_state
 
-                judgment_updates = []
-                changed_issues_by_specialty: dict[str, set[str]] = {}
-                for specialty in sorted(update_inputs):
+                def generate_judgment_update(specialty):
                     self._check_stop(run_id)
                     material = update_inputs[specialty]
-                    progress = state.active_round["judgment_update_progress"][specialty]
-                    progress["status"] = "running"
-                    progress["started_at"] = timestamp()
-                    self._write(state_path, state)
-                    self.events.append(
-                        run_id,
-                        "discussion_judgment_update_started",
-                        {"round_number": round_number, "specialty": specialty},
-                        agent_id=specialty,
-                        stage="mdt_discussion",
-                    )
                     config_path = config_paths[specialty]
                     update_agent = SpecialtyDiscussionAgent.from_config(
                         config_path,
@@ -692,21 +670,44 @@ class WorkbenchWorkflow:
                         specialty=specialty,
                         event_callback=self._progress(run_id, specialty),
                     )
+                    return update_agent.propose_judgment_update(
+                        round_number=round_number,
+                        tasks=[item[0] for item in material],
+                        answers=[item[1] for item in material],
+                        active_judgments=active_judgments(round_decision_state, specialty),
+                        reviews=[review for review in reviews if review.reviewer_specialty == specialty],
+                    )
+
+                for specialty in update_specialties:
+                    state.active_round["judgment_update_progress"][specialty] = {
+                        "status": "running",
+                        "started_at": timestamp(),
+                        "completed_at": "",
+                        "update": None,
+                        "error": "",
+                    }
+                self._write(state_path, state)
+                for specialty in update_specialties:
+                    self.events.append(
+                        run_id,
+                        "discussion_judgment_update_started",
+                        {"round_number": round_number, "specialty": specialty},
+                        agent_id=specialty,
+                        stage="mdt_discussion",
+                    )
+
+                with ThreadPoolExecutor(max_workers=max(1, len(update_specialties))) as executor:
+                    update_jobs = {
+                        specialty: executor.submit(generate_judgment_update, specialty)
+                        for specialty in update_specialties
+                    }
+                self._check_stop(run_id)
+                judgment_updates = []
+                changed_issues_by_specialty: dict[str, set[str]] = {}
+                for specialty, job in update_jobs.items():
+                    progress = state.active_round["judgment_update_progress"][specialty]
                     try:
-                        update, update_trace = update_agent.propose_judgment_update(
-                            round_number=round_number,
-                            tasks=[item[0] for item in material],
-                            answers=[item[1] for item in material],
-                            active_judgments=active_judgments(
-                                state.decision_state,
-                                specialty,
-                            ),
-                            reviews=[
-                                review
-                                for review in reviews
-                                if review.reviewer_specialty == specialty
-                            ],
-                        )
+                        update, update_trace = job.result()
                         self._check_stop(run_id)
                         state.decision_state = apply_judgment_update(
                             state.decision_state,
@@ -719,6 +720,9 @@ class WorkbenchWorkflow:
                         progress["status"] = "failed"
                         progress["completed_at"] = timestamp()
                         progress["error"] = str(error)
+                        for pending in state.active_round["judgment_update_progress"].values():
+                            if pending["status"] == "running":
+                                pending.update(status="stopped", completed_at=timestamp())
                         self._write(state_path, state)
                         raise
                     judgment_updates.append(update)
@@ -889,15 +893,25 @@ class WorkbenchWorkflow:
             self.events.append(run_id, "synthesis_acceptance_started", {}, stage="mdt_discussion")
             final_outputs = project_active_specialty_outputs(state.decision_state)
             traces["acceptance"] = {}
-            for specialty, output in final_outputs.items():
+            team_snapshot = latest.team_synthesis.model_copy(deep=True)
+
+            def review_final_synthesis(specialty, output):
                 self._check_stop(run_id)
                 config = load_yaml(config_paths[specialty])
                 agent = SpecialtyDiscussionAgent.from_config(
                     config_paths[specialty], build_llm_client(config), specialty=specialty,
                     event_callback=self._progress(run_id, specialty),
                 )
-                record, acceptance_trace = agent.review_synthesis(team=latest.team_synthesis, specialty_output=output)
+                return agent.review_synthesis(team=team_snapshot, specialty_output=output)
+
+            with ThreadPoolExecutor(max_workers=max(1, len(final_outputs))) as executor:
+                acceptance_jobs = {
+                    specialty: executor.submit(review_final_synthesis, specialty, output)
+                    for specialty, output in final_outputs.items()
+                }
+            for specialty, job in acceptance_jobs.items():
                 self._check_stop(run_id)
+                record, acceptance_trace = job.result()
                 latest.team_synthesis.acceptance_records.append(record)
                 latest.team_synthesis.acceptance = synthesis_acceptance_status(latest.team_synthesis)
                 traces["acceptance"][specialty] = acceptance_trace

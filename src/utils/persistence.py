@@ -20,6 +20,14 @@ def write_text(path: Path, value: str) -> None:
         stream.write(value)
 
 
+def read_checkpoint(path: Path, model):
+    """An absent, truncated or incompatible checkpoint can be recomputed."""
+    try:
+        return model.model_validate_json(path.read_bytes())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 @contextmanager
 def _atomic_stream(path: Path):
     temporary = None
@@ -56,6 +64,8 @@ def verify_protocol_snapshot(root: Path, run_dir: Path, *, allow_stage_rerun: bo
     changed = [relative for section in ("prompts", "guidelines", "knowledge_index")
                for relative, digest in data.get(section, {}).items()
                if not (root / relative).exists() or sha256((root / relative).read_bytes()).hexdigest() != digest]
+    for signature in data.get("agents", {}).values():
+        changed.extend(_changed_configured_prompts(signature))
     if changed:
         raise ValueError("运行所用提示或指南已改变，请创建新运行，不能混用旧意见：" + ", ".join(changed))
 
@@ -73,5 +83,15 @@ def verify_stage_snapshot(root: Path, run_dir: Path, stage: str) -> None:
     changed.extend(relative for section in ("prompts", "guidelines", "knowledge_index")
                    for relative, digest in rules.get(section, {}).items()
                    if not (root / relative).exists() or sha256((root / relative).read_bytes()).hexdigest() != digest)
+    changed.extend(_changed_configured_prompts(rules.get("chair_signature", {})))
     if changed:
         raise ValueError("本阶段运行期间规则发生改变，请重新运行本阶段：" + ", ".join(changed))
+
+
+def _changed_configured_prompts(signature: dict) -> list[str]:
+    changed = []
+    for key, digest in signature.get("prompt_sha256", {}).items():
+        path = Path(signature["config"][key])
+        if not path.is_file() or sha256(path.read_bytes()).hexdigest() != digest:
+            changed.append(str(path))
+    return changed

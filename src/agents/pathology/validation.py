@@ -39,10 +39,12 @@ def validate_initial_stage(
     result: BaseModel,
     case_input: SpecialtyCaseInput,
     clinical_rules: dict | None = None,
+    *,
+    reconstruction: InitialSpecimenReconstruction | None = None,
 ):
     _resolve(result, case_input)
     _validate_stage_items(result, case_input, {})
-    _validate_material_consistency(result)
+    _validate_material_consistency(result, reconstruction=reconstruction)
     del clinical_rules
     return result
 
@@ -117,9 +119,12 @@ def _validate_items(items, case_input, opinions) -> None:
 
 
 
-def _validate_material_consistency(value) -> None:
-    source = getattr(value, "source_assessment", None)
-    specimens = getattr(value, "specimens", [])
+def _validate_material_consistency(
+    value, *, reconstruction: InitialSpecimenReconstruction | None = None
+) -> None:
+    material = reconstruction if reconstruction is not None else value
+    source = getattr(material, "source_assessment", None)
+    specimens = getattr(material, "specimens", [])
     patterns = getattr(value, "pattern_assessments", [])
     features = getattr(value, "morphologic_features", [])
     associations = getattr(value, "etiologic_associations", [])
@@ -141,8 +146,8 @@ def _validate_material_consistency(value) -> None:
         raise ValueError(
             "No assessable pathology material requires no_pathology_material formulation"
         )
-    owns_specimens = "specimens" in type(value).model_fields
-    if owns_specimens and patterns and not specimens:
+    has_specimen_context = "specimens" in type(material).model_fields
+    if has_specimen_context and patterns and not specimens:
         raise ValueError("Histopathologic pattern assessment requires at least one specimen record")
 
     for pattern in patterns:
@@ -154,7 +159,7 @@ def _validate_material_consistency(value) -> None:
         and specimen.representativeness in {"representative", "possibly_representative"}
         for specimen in specimens
     )
-    if owns_specimens and specimens and not representative:
+    if has_specimen_context and specimens and not representative:
         overconfident = [
             item.pattern
             for item in patterns
@@ -163,7 +168,8 @@ def _validate_material_consistency(value) -> None:
         ]
         if overconfident:
             raise ValueError(
-                "High-confidence pathology pattern requires an adequate, representative specimen"
+                "High-confidence pathology pattern requires an adequate, representative specimen. "
+                f"Reassess the confidence of pattern_assessments for: {overconfident}."
             )
 
 

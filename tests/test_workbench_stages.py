@@ -2,7 +2,7 @@
 import asyncio
 from copy import deepcopy
 from html import escape
-from threading import Event
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -129,11 +129,12 @@ def test_stop_rerun_through_report_and_independent_report_retry(monkeypatch, tmp
         diagnosis = report_diagnosis(team)
         assert f'<p class="diagnosis-result">{escape(diagnosis)}</p>' in html
         assert all(label in html for label in (
-            '诊断结果', '诊断依据与鉴别诊断', '尚待明确的问题', '待核实资料',
+            '诊断结果', '诊断依据与鉴别诊断', '待明确的问题及其诊断影响',
             '第 1 轮', '现有资料无法回答', '本轮处理', '尚待明确',
         ))
-        sections = ('id="result"', 'id="diagnosis"', 'id="boundaries"', 'id="needs"')
+        sections = ('id="result"', 'id="diagnosis"', 'id="boundaries"', 'id="references"')
         assert [html.index(section) for section in sections] == sorted(html.index(section) for section in sections)
+        assert 'id="needs"' not in html
         assert any(item['name'] == html_path.name and item['current'] for item in catalog.artifacts('run-1'))
         assert catalog.run_summary(run_dir)['status'] == 'completed'
         assert list((run_dir / 'stage_history').glob(f'*/{case}_mdt_discussion_state.json'))
@@ -378,7 +379,8 @@ def test_stage_failure_trace_keeps_attempts_from_wrapped_semantic_errors(tmp_pat
     assert saved['attempts'] == attempts
 
 
-def test_covered_original_question_reaches_answerer_requester_and_chair(monkeypatch, tmp_path):
+@pytest.mark.parametrize("fail_update", [False, True])
+def test_covered_original_question_reaches_answerer_requester_and_chair(monkeypatch, tmp_path, fail_update):
     from src.agents.common.team_synthesis import MDTChairResult, SynthesisAcceptance
     from src.agents.mdt_discussion.models import SpecialtyAnswerReview
     from src.workbench.workflow import WorkbenchWorkflow
@@ -408,6 +410,8 @@ def test_covered_original_question_reaches_answerer_requester_and_chair(monkeypa
         config_paths[specialty].write_text('{}')
     monkeypatch.setattr('src.workbench.workflow.build_llm_client', lambda _: None)
     calls = []
+    updates_started = Barrier(2, timeout=5)
+    acceptances_started = Barrier(len(SPECIALTIES), timeout=5)
 
     def specialty_factory(_cls, *_args, specialty, **_kwargs):
         def respond(*, task, **_):
@@ -421,11 +425,21 @@ def test_covered_original_question_reaches_answerer_requester_and_chair(monkeypa
             return SpecialtyAnswerReview(review_id=answer.answer_id + '-RV-' + specialty,
                 issue_id=task.issue_id, answer_id=answer.answer_id, reviewer_specialty=specialty,
                 outcome='accept_boundary', rationale='原问题已得到有边界的解释'), {}
-        def update(**_):
-            return SpecialtyJudgmentUpdate(specialty=specialty, transaction_id='update-' + specialty), {}
+        def update(*, active_judgments, **_):
+            updates_started.wait()
+            if fail_update and specialty == 'pulmonology':
+                raise ValueError('simulated judgment update failure')
+            judgment, = active_judgments
+            return SpecialtyJudgmentUpdate(specialty=specialty, transaction_id='update-' + specialty,
+                proposals=[dict(change_type='maintain', target_judgment_id=judgment.judgment_id,
+                    base_version_id=judgment.version_id, rationale='维持判断')]), {}
         def accept(*, team, **_):
+            acceptances_started.wait()
+            assert not team.acceptance_records
             return SynthesisAcceptance(specialty=specialty, revision=team.revision,
-                snapshot_hash=team.snapshot_hash, decision='accept', rationale='接受当前解释'), {}
+                snapshot_hash=team.snapshot_hash,
+                decision='dissent' if specialty == 'pathology' else 'accept',
+                rationale='保留病理证据边界' if specialty == 'pathology' else '接受当前解释'), {}
         return SimpleNamespace(respond_to_task=respond, review_answer=review,
             propose_judgment_update=update, review_synthesis=accept)
 
@@ -445,12 +459,32 @@ def test_covered_original_question_reaches_answerer_requester_and_chair(monkeypa
     monkeypatch.setattr(SpecialtyDiscussionAgent, 'from_config', classmethod(specialty_factory))
     monkeypatch.setattr(MDTChairAgent, 'from_config', classmethod(chair_factory))
     workflow = WorkbenchWorkflow(tmp_path, EventStore(tmp_path / 'events.sqlite3'))
-    workflow.run_discussion('run-1', run_dir, case, config_paths)
     import json
+    if fail_update:
+        with pytest.raises(ValueError, match='simulated judgment update failure'):
+            workflow.run_discussion('run-1', run_dir, case, config_paths)
+        saved = json.loads((run_dir / f'{case}_mdt_discussion_state.json').read_text())
+        assert saved['status'] == 'failed'
+        progress = saved['active_round']['judgment_update_progress']
+        assert progress['pulmonology']['status'] == 'failed'
+        assert progress['thoracic_radiology']['status'] == 'stopped'
+        assert not saved['decision_state']['applied_transaction_ids']
+        assert ('chair',) not in calls
+        return
+
+    workflow.run_discussion('run-1', run_dir, case, config_paths)
     saved = json.loads((run_dir / f'{case}_mdt_discussion_state.json').read_text())
     assert saved['status'] == 'completed'
     assert len(saved['rounds']) == 1
     assert calls[:3] == [('answer', 'pulmonology', 'SQ1'),
                          ('review', 'thoracic_radiology', 'SQ1'), ('chair',)]
     assert len(saved['rounds'][0]['answer_reviews']) == 1
+    assert saved['decision_state']['applied_transaction_ids'] == [
+        'update-pulmonology', 'update-thoracic_radiology',
+    ]
+    final_team = saved['latest_chair_result']['team_synthesis']
+    assert final_team['diagnostic_opinion'] == baseline.team_synthesis.diagnostic_opinion.model_dump(mode='json')
+    assert {record['specialty'] for record in final_team['acceptance_records']} == set(SPECIALTIES)
+    assert {record['snapshot_hash'] for record in final_team['acceptance_records']} == {final_team['snapshot_hash']}
+    assert final_team['acceptance'] == 'explicit_dissent'
     assert (run_dir / f'{case}_mdt_chair_integration.json').read_bytes() == baseline_bytes

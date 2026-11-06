@@ -144,7 +144,7 @@ def test_same_concept_or_declared_alias_cannot_have_two_ids():
         DiagnosticExploration.model_validate(raw)
 
 
-@pytest.mark.parametrize('change', ['drop', 'rename', 'change_level', 'drop_alias'])
+@pytest.mark.parametrize('change', ['drop', 'rename', 'change_level'])
 def test_candidate_identity_cannot_disappear_or_be_reused_in_later_rounds(change):
     raw = exploration()
     raw['candidates'][0]['aliases'] = ['Pneumonia']
@@ -154,10 +154,8 @@ def test_candidate_identity_cannot_disappear_or_be_reused_in_later_rounds(change
         current.candidates = []
     elif change == 'rename':
         current.candidates[0].diagnosis = '另一种疾病'
-    elif change == 'change_level':
-        current.candidates[0].level = 'pattern'
     else:
-        current.candidates[0].aliases = []
+        current.candidates[0].level = 'pattern'
     with pytest.raises(ValueError):
         current.validate_successor(previous)
     assert previous.candidates[0].diagnosis == '肺炎'

@@ -481,6 +481,23 @@ def test_limited_specimen_rejects_high_confidence_supported_pattern():
         validate_initial_assessment(state, case)
 
 
+def test_limited_specimen_can_repair_pattern_during_morphology_generation():
+    reconstruction, morphology, formulation = initial_stages()
+    reconstruction.specimens[0].adequacy = "limited"
+    reconstruction.specimens[0].representativeness = "not_assessable"
+    correction = {"edits": [{
+        "op": "replace",
+        "path": "/pattern_assessments/0/confidence",
+        "value": "moderate",
+    }]}
+    result, trace = agent([
+        payload(reconstruction), payload(morphology), correction, payload(formulation)
+    ]).initial_assessment(case_input())
+
+    assert result.pattern_assessments[0].confidence == "moderate"
+    assert [attempt["validated"] for attempt in trace["stages"][1]["attempts"]] == [False, True]
+
+
 def test_reference_only_evidence_cannot_support_initial_pathology_claim():
     case = case_input(pathology_owned=False)
     stage = initial_stages()[0]

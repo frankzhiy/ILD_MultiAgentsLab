@@ -6,7 +6,7 @@ import re
 from src.agents.common.team_synthesis import MDTTeamReport
 from src.agents.mdt_discussion.models import MDTDiscussionState
 
-from .mdt_html_parts import details, paragraph, text
+from .mdt_html_parts import clinical_paragraph as paragraph, clinical_prose, details, text
 
 SPECIALTY = {
     "pulmonology": "呼吸科", "thoracic_radiology": "胸部影像科",
@@ -30,7 +30,7 @@ _ACCEPT = {"accept": "接受", "accept_with_boundaries": "同意，部分事项�
 
 
 def _preview(value: str, limit: int) -> str:
-    value = value.strip()
+    value = clinical_prose(value).strip()
     first = re.split(r"(?<=[。！？；])|\n", value, maxsplit=1)[0]
     return first if len(first) <= limit else first[:limit].rstrip("，、；：") + "…"
 

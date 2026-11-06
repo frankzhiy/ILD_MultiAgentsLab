@@ -154,6 +154,8 @@ class ClinicalPropositionValidator:
         unit: GraphUnit,
         primary_frame: GraphUnitPrimaryFrame,
         propositions: GraphUnitClinicalPropositions,
+        *,
+        expected_evidence_blocks: list[EvidenceBlock] | None = None,
     ) -> GraphUnitPropositionValidation:
         issues: list[PropositionValidationIssue] = []
         if primary_frame.graph_unit_id != unit.graph_unit_id:
@@ -187,7 +189,9 @@ class ClinicalPropositionValidator:
         shared_modifier_evidence: dict[tuple[tuple[str, ...], str, str], list[str]] = defaultdict(list)
         referenced_evidence_ids: set[str] = set()
 
-        if propositions.evidence_blocks != build_evidence_blocks(unit):
+        if expected_evidence_blocks is None:
+            expected_evidence_blocks = build_evidence_blocks(unit)
+        if propositions.evidence_blocks != expected_evidence_blocks:
             issues.append(
                 _issue(
                     "evidence_blocks_mismatch",

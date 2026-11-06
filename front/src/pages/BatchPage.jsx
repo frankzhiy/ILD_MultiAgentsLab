@@ -55,7 +55,7 @@ export function BatchPage() {
       <Text type="secondary">页面每 2 秒更新；离开或刷新页面后后台继续执行。跳过 {value.summary.skipped}，中断 {value.summary.interrupted}，停止 {value.summary.stopped || 0}。</Text>
       {query.isError && <Alert className="section-gap" type="warning" showIcon title="进度更新失败，当前显示上次读取的记录" description={query.error.message} action={<Button onClick={() => query.refetch()}>重新读取</Button>} />}
       {value.retry_of && <div className="section-gap">{value.retry_of_deleted ? <Text type="secondary">原批次已删除</Text> : <Link to={`/batches/${encodeURIComponent(value.retry_of)}`}>查看原批次</Link>}</div>}
-      {failed > 0 && <Alert className="section-gap" type="warning" showIcon title="批次含未完成病例" description={active ? '其他病例继续执行；批次结束后可仅重跑未完成病例。' : '重跑生成新记录，保留原病例快照和模型配置。'} action={<Button size="small" disabled={active} loading={retry.isPending} onClick={() => retry.mutate()}>重跑未完成病例</Button>} />}
+      {failed > 0 && <Alert className="section-gap" type="warning" showIcon title="批次含未完成病例" description={active ? '其他病例继续执行；批次结束后可仅重跑未完成病例。' : value.kind === 'run' ? '重跑生成新记录，从可复用的检查点继续。' : '重跑使用当前主持人整合结果。'} action={<Button size="small" disabled={active} loading={retry.isPending} onClick={() => retry.mutate()}>重跑未完成病例</Button>} />}
       {retry.isError && <Alert className="section-gap" type="error" showIcon title="无法创建重跑批次" description={retry.error.message} />}
       <Card className="table-card section-gap" title="病例进度"><Table rowKey="run_id" columns={columns} dataSource={value.items} pagination={{ pageSize: 12 }} scroll={{ x: 1100 }} /></Card>
       <Collapse className="section-gap" items={[{ key: 'settings', label: '本批次配置（只读）', children: <>

@@ -58,6 +58,7 @@ def test_independent_candidate_is_patient_grounded_and_reviewed_before_sealing()
     assert '以ILD为核心' in llm.prompts[0]
     assert '主诊断聚焦ILD' in llm.prompts[1]
     assert '主持人独立比较具体疾病并作选择' in llm.prompts[1]
+    assert 'evidence_needs[*].source_refs 必须含原始资料需求自身的编号' in llm.prompts[1]
     assert all('选择当前最可能的具体疾病或综合征' in text for text in llm.systems)
     assert result.team_synthesis.diagnostic_exploration.candidates[0].candidate_id == 'C1'
     assert result.team_synthesis.diagnostic_resolution.candidate_dispositions[0].outcome == 'preferred'
@@ -250,7 +251,7 @@ def test_specific_primary_can_continue_discussion_of_a_separate_candidate():
     assert team.issues[0].issue_id == 'I1'
 
 
-def test_successor_reports_all_lost_aliases_at_current_candidate_indexes():
+def test_successor_restores_registered_aliases_without_reassigning_them():
     from src.agents.common.diagnostic_resolution import DiagnosticExploration
     payload = exploration()
     first = payload['candidates'][0]
@@ -262,8 +263,10 @@ def test_successor_reports_all_lost_aliases_at_current_candidate_indexes():
     current.candidates.reverse()
     for candidate in current.candidates:
         candidate.aliases = []
-    with pytest.raises(ValueError) as failure:
+    restored = current.validate_successor(previous)
+    assert [candidate.aliases for candidate in restored.candidates] == [['别名B'], ['别名A']]
+    assert [candidate.aliases for candidate in current.candidates] == [[], []]
+
+    current.candidates[0].aliases = ['别名A']
+    with pytest.raises(ValueError, match='multiple candidate IDs'):
         current.validate_successor(previous)
-    assert '/candidates/1/aliases' in str(failure.value)
-    assert '/candidates/0/aliases' in str(failure.value)
-    assert '别名A' in str(failure.value) and '别名B' in str(failure.value)

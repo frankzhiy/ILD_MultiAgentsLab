@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from src.agents.common.clinical_concepts import normalize_differential_ranks
 from src.guidelines.models import GuidelineEvidencePointer
 from src.schemas.semantic_graphing.graph_unit import SpecialistTarget
 
@@ -115,9 +116,7 @@ class RheumaticDiseaseFormulation(ClinicalAssessmentItem):
 
     @model_validator(mode="after")
     def validate_formulation(self):
-        ranks = [item.rank for item in self.differential_diagnoses]
-        if len(ranks) != len(set(ranks)) or (ranks and sorted(ranks) != list(range(1, len(ranks) + 1))):
-            raise ValueError("Differential diagnosis ranks must be consecutive from 1")
+        normalize_differential_ranks(self.differential_diagnoses)
         needs_leading = self.classification_status not in {
             "autoimmune_features_insufficient", "insufficient_data"
         }

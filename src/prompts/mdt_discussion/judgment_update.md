@@ -27,7 +27,8 @@
 - 现有判断用当前 version_id 作 base_version_id；proposed_content 为完整更新后判断而非补丁，未改变条件原样保留。
 - supplement 保留仍适用指南依据；qualify/revise 逐条复核原指南，仅保留支持新判断者。
 - 更新后的每条 claim 同时填写 evidence_relations，只引用当前输入中实际支持、削弱或限定该判断的 Evidence ID，沿用仍适用的关联，不枚举全部组合。空列表只用于无直接病例证据的判断；claim_id、target_claim_id 与原文位置由程序补全。
-- trigger_issue_ids 只用本轮任务编号；considered_source_refs 只用输入实际来源，包括专业来源、回答、回答中判断或复核编号。
+- trigger_issue_ids 只用本轮输入任务的 issue_id；considered_source_refs 只用输入实际来源，包括专业来源、回答、回答中判断或复核编号。
+- evidence_relations 中，纯背景使用 function=background 和 direction=neutral；直接支持或削弱判断时，按证据的实际作用选择 function 和 direction。
 - supplement、qualify、revise、withdraw、create 均记录触发议题和实际参考来源。判断编号及版本号由程序生成。
 - 使用自然临床语言表达更新内容，只返回符合 schema 的简体中文 JSON。
 

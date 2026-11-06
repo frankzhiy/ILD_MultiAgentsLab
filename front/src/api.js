@@ -10,6 +10,9 @@ const deleteRecord = async (path) => {
   const response = await fetch(path, { method: 'DELETE' })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
+    if (response.status === 404 && body?.detail === 'Not Found') {
+      throw new Error('当前后端尚未加载永久删除功能，请在批次结束后重启工作台。')
+    }
     throw new Error(body?.detail || `请求失败（${response.status}）`)
   }
 }
@@ -19,14 +22,14 @@ export const api = {
   case: (caseId) => fetch(`/api/cases/${encodeURIComponent(caseId)}`).then(json),
   models: () => fetch('/api/models').then(json),
   runs: () => fetch('/api/runs').then(json),
-  deleteRun: (runId) => deleteRecord(`/api/runs/${encodeURIComponent(runId)}`),
+  deleteRun: (runId) => deleteRecord(`/api/runs/${encodeURIComponent(runId)}/files`),
   createRun: (payload) => fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).then(json),
   batches: () => fetch('/api/batches').then(json),
-  deleteBatch: (batchId) => deleteRecord(`/api/batches/${encodeURIComponent(batchId)}`),
+  deleteBatch: (batchId) => deleteRecord(`/api/batches/${encodeURIComponent(batchId)}/files`),
   createBatch: (payload) => fetch('/api/batches', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

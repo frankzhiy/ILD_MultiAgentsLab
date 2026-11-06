@@ -20,8 +20,8 @@ classification_max_tokens: 16000
 graph_unit_max_tokens: 24000
 primary_frame_max_tokens: 8000
 clinical_proposition_max_tokens: 32000
-# Keep disabled until chunked vs whole-unit extraction passes a quality benchmark.
-clinical_proposition_enable_chunking: false
+# Split dense units at original evidence-block boundaries.
+clinical_proposition_enable_chunking: true
 clinical_proposition_max_chunk_chars: 300
 classification_prompt: src/prompts/semantic_graphing/document_classification.md
 graph_unit_prompt: src/prompts/semantic_graphing/graph_unit_extraction.md

@@ -58,8 +58,6 @@ def resolve_evidence_pointers(
     for pointer in iter_evidence_pointers(value, pointer_type):
         if not pointer.evidence_ids:
             raise ValueError("Evidence pointer must include at least one evidence_id")
-        if len(pointer.evidence_ids) != len(set(pointer.evidence_ids)):
-            raise ValueError("Evidence pointer contains duplicate evidence_ids")
         missing = sorted(set(pointer.evidence_ids) - set(evidence_index))
         if missing:
             raise ValueError(f"Evidence pointer has unknown evidence_ids: {missing}")
